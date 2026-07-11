@@ -44,22 +44,21 @@ impl Identity {
     }
 
     /// store the identity and encrypt with password
-    fn store(&self, password: impl Into<String>) -> Result<()> {
+    fn store(&self, password: impl Into<String> + Copy) -> Result<()> {
         let salt: [u8; SALT_LEN] = rand::rng().random();
         let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
 
-        let password_bytes = password.into().as_bytes();
-        let mut key = derive_key(password_bytes, &salt)?;
-        let cypher = ChaCha20Poly1305::new((&key).into());
+        let mut key = Self::derive_key(password.into().as_bytes(), &salt)?;
+        let cipher = ChaCha20Poly1305::new((&key).into());
         let nonce = Nonce::from_slice(&nonce_bytes);
         
-        let plaintext = format!("{self.displayName}\n{self.secret}");
+        let plaintext = format!("{}\n{}",self.displayName,password.into());
+        let plaintext_bytes = plaintext.as_bytes();
 
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(nonce, plaintext_bytes)
             .map_err(|e| anyhow!("encryption failed: {e}"))?;
 
-        let mut file = fs::File::create(path)
         
         Ok(())
     }
