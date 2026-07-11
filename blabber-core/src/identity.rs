@@ -44,7 +44,7 @@ impl Identity {
     }
 
     /// store the identity and encrypt with password
-    fn store(&self, password: impl Into<String> + Copy) -> Result<()> {
+    fn store(&self, password: impl Into<String> + Copy, path: impl AsRef<Path>)) -> Result<()> {
         let salt: [u8; SALT_LEN] = rand::rng().random();
         let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
 
@@ -58,8 +58,11 @@ impl Identity {
         let ciphertext = cipher
             .encrypt(nonce, plaintext_bytes)
             .map_err(|e| anyhow!("encryption failed: {e}"))?;
-
-        
+    
+        let mut file = File::create(path).context("failed to create file")?;    
+        file.write_all(&salt)?;
+        file.write_all(&nonce_bytes)?;
+        file.write_all(&ciphertext)?;
         Ok(())
     }
     //
