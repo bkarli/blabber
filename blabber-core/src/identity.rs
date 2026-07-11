@@ -6,6 +6,9 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use argon2::Argon2;
+use std::path::Path;
+use std::fs::File;
+use std::io::Write;
 
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
@@ -44,7 +47,7 @@ impl Identity {
     }
 
     /// store the identity and encrypt with password
-    fn store(&self, password: impl Into<String> + Copy, path: impl AsRef<Path>)) -> Result<()> {
+    fn store(&self, password: impl Into<String> + Copy, path: impl AsRef<Path>) -> Result<()> {
         let salt: [u8; SALT_LEN] = rand::rng().random();
         let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
 
@@ -65,6 +68,7 @@ impl Identity {
         file.write_all(&ciphertext)?;
         Ok(())
     }
+
     //
     // /// load the identity 
     // pub fn load_from_disk(path: PathBuf) {
@@ -92,7 +96,7 @@ mod tests {
 
     #[test]
     fn store_identity_test() {
-        let id = Identity::new("Alice").store("SecurePassword");
+        let id = Identity::new("Alice").store("SecurePassword", "/tmp/test_identity.bin");
     }
 
     #[test]
