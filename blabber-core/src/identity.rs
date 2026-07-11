@@ -9,6 +9,7 @@ use argon2::Argon2;
 use std::path::Path;
 use std::fs::File;
 use std::io::Write;
+use std::io::Read;
 
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
@@ -48,18 +49,24 @@ impl Identity {
 
     /// store the identity and encrypt with password
     fn store(&self, password: impl Into<String> + Copy, path: impl AsRef<Path>) -> Result<()> {
+        let password_string = password.into();
+        let password_bytes = password_string.as_bytes();
+
         let salt: [u8; SALT_LEN] = rand::rng().random();
         let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
 
         let mut key = Self::derive_key(password.into().as_bytes(), &salt)?;
         let cipher = ChaCha20Poly1305::new((&key).into());
         let nonce = Nonce::from_slice(&nonce_bytes);
-        
-        let plaintext = format!("{}\n{}",self.displayName,password.into());
-        let plaintext_bytes = plaintext.as_bytes();
+
+        let name_bytes = self.displayName.as_bytes();
+        let mut plaintext = Vec::new();
+        plaintext.push(name_bytes.len() as u8);
+        plaintext.extend_from_slice(name_bytes);
+        plaintext.extend_from_slice(&self.secret);
 
         let ciphertext = cipher
-            .encrypt(nonce, plaintext_bytes)
+            .encrypt(nonce, plaintext.as_slice())
             .map_err(|e| anyhow!("encryption failed: {e}"))?;
     
         let mut file = File::create(path).context("failed to create file")?;    
@@ -69,11 +76,12 @@ impl Identity {
         Ok(())
     }
 
-    //
-    // /// load the identity 
-    // pub fn load_from_disk(path: PathBuf) {
-    //
-    // }
+    
+    //load the identity 
+   // pub fn load_from_disk(path: PathBuf) {
+    
+    //Ok(())    
+    //}
 
 }
 
