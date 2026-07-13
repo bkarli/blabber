@@ -11,4 +11,11 @@ zeroize = { workspace = true }
 anyhow = { workspace = true }
 cpal = "0.15"
 
+uuid = { workspace = true, features= ["v4"]}
+
+iroh = { workspace = true }
+iroh-docs = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

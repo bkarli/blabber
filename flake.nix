@@ -19,9 +19,9 @@
           clippy
           rust-analyzer
 
-          # Often required for compiling certain Rust crates
           pkg-config
           openssl
+          alsa-lib
         ];
 
         # Optional: Environment variables Neovim/rust-analyzer might need

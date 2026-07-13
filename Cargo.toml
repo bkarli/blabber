@@ -14,3 +14,9 @@ zeroize = "1.9.0"
 
 
 anyhow = "1.0.103"
+uuid = "1.23.5"
+
+
+iroh = "1.0.2"
+iroh-docs = "0.101.0"
+
