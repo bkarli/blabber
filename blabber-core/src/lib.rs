@@ -2,7 +2,7 @@ mod identity;
 mod node;
 mod space;
 mod invite;
-mod meta;
+//mod meta;
 //mod node;
 //mod space;
 //mod invite;

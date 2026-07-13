@@ -16,6 +16,7 @@ uuid = { workspace = true, features= ["v4"]}
 iroh = { workspace = true }
 iroh-docs = { workspace = true }
 iroh-gossip = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
