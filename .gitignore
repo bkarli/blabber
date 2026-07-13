@@ -1,5 +1,5 @@
 target/
-
+flake.lock
 .envrc
 .direnv
 .env
