@@ -1,7 +1,8 @@
 mod identity;
-//mod node;
-//mod space;
-//mod invite;
+mod node;
+mod space;
+mod invite;
+mod meta;
 mod gui;
 mod channel;
 
