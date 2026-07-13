@@ -1,5 +1,6 @@
 use crate::invite::Invite;
 use uuid::Uuid;
+use anyhow::Result;
 
 /// Space holds
 /// - Each endpoint connected to it
@@ -16,7 +17,7 @@ use uuid::Uuid;
 pub struct Space {
     id: uuid::Uuid, 
     name: String,
-
+    users: Vec<String>,
 }
 
 impl Space {
@@ -25,6 +26,7 @@ impl Space {
         Self {
             id: id,
             name: name.into(),
+            users: vec![],
         }
     }
 
@@ -33,7 +35,7 @@ impl Space {
     }
     
     // create a invite 
-    pub fn create_invite(&self) -> Invite {
-        todo!()
+    pub fn create_invite(&self) -> Result<Invite> {
+        Ok(Invite::from_space(self))
     }
 }

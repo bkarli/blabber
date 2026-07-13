@@ -166,27 +166,27 @@ fn decrypt_packet(cipher: &ChaCha20Poly1305, packet: &[u8]) -> Option<Vec<f32>> 
 }
 
 //test
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn loopback_test() -> Result<()> {
-        let key = [42u8; 32]; //hardcoded test key
-
-        let addr_a: SocketAddr = "127.0.0.1:6000".parse()?;
-        let addr_b: SocketAddr = "127.0.0.1:6001".parse()?;
-
-        //A sends to B, B sends to A
-        let channel_a = VoiceChannel::new(addr_a, addr_b, key)?;
-        let channel_b = VoiceChannel::new(addr_b, addr_a, key)?;
-        let _capture = channel_a.start_capture()?;   //A captures with mic
-        let _playback = channel_b.start_playback()?; //B plays it over speakers
-
-        println!("Sprich jetzt ins Mikrofon... (10 Sekunden)");
-        thread::sleep(Duration::from_secs(10));
-
-        Ok(())
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use std::time::Duration;
+//
+//     #[test]
+//     fn loopback_test() -> Result<()> {
+//         let key = [42u8; 32]; //hardcoded test key
+//
+//         let addr_a: SocketAddr = "127.0.0.1:6000".parse()?;
+//         let addr_b: SocketAddr = "127.0.0.1:6001".parse()?;
+//
+//         //A sends to B, B sends to A
+//         let channel_a = VoiceChannel::new(addr_a, addr_b, key)?;
+//         let channel_b = VoiceChannel::new(addr_b, addr_a, key)?;
+//         let _capture = channel_a.start_capture()?;   //A captures with mic
+//         let _playback = channel_b.start_playback()?; //B plays it over speakers
+//
+//         println!("Sprich jetzt ins Mikrofon... (10 Sekunden)");
+//         thread::sleep(Duration::from_secs(10));
+//
+//         Ok(())
+//     }
+// }
