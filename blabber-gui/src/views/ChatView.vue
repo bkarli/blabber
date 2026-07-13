@@ -1,16 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-
-interface Chat {
-  id: number;
-  name: string;
-  initials: string;
-  online: boolean;
-}
+import { tauriApi } from "../API/tauriAPI";
+import type { Chat, User } from "../API/tauriAPI";
 
 const props = defineProps<{
-  username: string;
+  user: User;
 }>();
 
 const emit = defineEmits<{
@@ -27,20 +21,34 @@ const defaultChats: Chat[] = [
 ];
 
 const chats = ref<Chat[]>([...defaultChats]);
+
 const selectedChatId = ref<number | null>(-1);
 const searchQuery = ref("");
+const messageText = ref("");
 
 const isLoading = ref(false);
+const isLoggingOut = ref(false);
+const isSendingMessage = ref(false);
+
 const loadError = ref("");
+const messageError = ref("");
 
 const profileName = computed(() => {
-  return props.username.trim() || "User";
+  return props.user.username;
 });
 
 const profileInitials = computed(() => {
+  if (props.user.initials) {
+    return props.user.initials;
+  }
+
   const parts = profileName.value
       .split(" ")
       .filter((part) => part.length > 0);
+
+  if (parts.length === 0) {
+    return "U";
+  }
 
   if (parts.length === 1) {
     return parts[0].slice(0, 2).toUpperCase();
@@ -55,7 +63,9 @@ const profileInitials = computed(() => {
 
 const selectedChat = computed(() => {
   return (
-      chats.value.find((chat) => chat.id === selectedChatId.value) ?? null
+      chats.value.find(
+          (chat) => chat.id === selectedChatId.value,
+      ) ?? null
   );
 });
 
@@ -73,10 +83,8 @@ const filteredChats = computed(() => {
 
 function openChat(chatId: number) {
   selectedChatId.value = chatId;
-}
-
-function logout() {
-  emit("logout");
+  messageText.value = "";
+  messageError.value = "";
 }
 
 async function loadChats() {
@@ -84,24 +92,86 @@ async function loadChats() {
   loadError.value = "";
 
   try {
-    const backendChats = await invoke<Chat[]>("get_chats");
+    const backendChats = await tauriApi.getChats();
 
     if (backendChats.length > 0) {
       chats.value = backendChats;
       selectedChatId.value = backendChats[0].id;
+    } else {
+      chats.value = [...defaultChats];
+      selectedChatId.value = -1;
     }
   } catch (error) {
     console.error("Could not load chats:", error);
 
     loadError.value =
         "Backend conversations are currently unavailable.";
+
+    chats.value = [...defaultChats];
+    selectedChatId.value = -1;
   } finally {
     isLoading.value = false;
   }
 }
 
+async function logout() {
+  isLoggingOut.value = true;
+
+  try {
+    await tauriApi.logout();
+    emit("logout");
+  } catch (error) {
+    console.error("Logout failed:", error);
+  } finally {
+    isLoggingOut.value = false;
+  }
+}
+
+async function createServer() {
+  const name = window.prompt("Enter a server name:");
+
+  if (!name?.trim()) {
+    return;
+  }
+
+  try {
+    await tauriApi.createServer(name.trim());
+  } catch (error) {
+    console.error("Could not create server:", error);
+  }
+}
+
+async function sendCurrentMessage() {
+  const chat = selectedChat.value;
+  const text = messageText.value.trim();
+
+  if (
+      !chat ||
+      chat.id === -1 ||
+      !text ||
+      isSendingMessage.value
+  ) {
+    return;
+  }
+
+  isSendingMessage.value = true;
+  messageError.value = "";
+
+  try {
+    await tauriApi.sendMessage(chat.id, text);
+    messageText.value = "";
+  } catch (error) {
+    console.error("Could not send message:", error);
+
+    messageError.value =
+        "The message could not be sent.";
+  } finally {
+    isSendingMessage.value = false;
+  }
+}
+
 onMounted(() => {
-  loadChats();
+  void loadChats();
 });
 </script>
 
@@ -109,25 +179,42 @@ onMounted(() => {
   <div class="app">
     <!-- Server navigation -->
     <aside class="server-sidebar">
-      <button class="server-button home-server">
+      <button
+          class="server-button home-server"
+          title="Blabber home"
+          @click="tauriApi.sayHello"
+      >
         B
       </button>
 
       <div class="server-divider"></div>
 
-      <button class="server-button active-server">
+      <button
+          class="server-button active-server"
+          title="Programming Group"
+      >
         PG
       </button>
 
-      <button class="server-button">
+      <button
+          class="server-button"
+          title="Cybersecurity"
+      >
         CS
       </button>
 
-      <button class="server-button add-server">
+      <button
+          class="server-button add-server"
+          title="Create server"
+          @click="createServer"
+      >
         +
       </button>
 
-      <button class="server-button settings-button">
+      <button
+          class="server-button settings-button"
+          title="Settings"
+      >
         ⚙
       </button>
     </aside>
@@ -175,7 +262,9 @@ onMounted(() => {
             v-for="chat in filteredChats"
             :key="chat.id"
             class="chat-item"
-            :class="{ selected: selectedChatId === chat.id }"
+            :class="{
+            selected: selectedChatId === chat.id,
+          }"
             @click="openChat(chat.id)"
         >
           <div class="avatar">
@@ -197,7 +286,10 @@ onMounted(() => {
         </button>
 
         <p
-            v-if="filteredChats.length === 0"
+            v-if="
+            !isLoading &&
+            filteredChats.length === 0
+          "
             class="no-results"
         >
           No conversations found.
@@ -217,6 +309,7 @@ onMounted(() => {
         <button
             class="logout-button"
             title="Log out"
+            :disabled="isLoggingOut"
             @click="logout"
         >
           ↪
@@ -237,7 +330,11 @@ onMounted(() => {
               <h2>{{ selectedChat.name }}</h2>
 
               <span>
-                {{ selectedChat.online ? "Online" : "Offline" }}
+                {{
+                  selectedChat.online
+                      ? "Online"
+                      : "Offline"
+                }}
               </span>
             </div>
           </div>
@@ -265,7 +362,8 @@ onMounted(() => {
           <h2>{{ selectedChat.name }}</h2>
 
           <p v-if="selectedChat.id === -1">
-            Select or create a conversation to start chatting.
+            Select or create a conversation to start
+            chatting.
           </p>
 
           <p v-else>
@@ -273,22 +371,47 @@ onMounted(() => {
           </p>
         </section>
 
+        <p
+            v-if="messageError"
+            class="message-error"
+        >
+          {{ messageError }}
+        </p>
+
         <footer
             v-if="selectedChat.id !== -1"
             class="message-bar"
         >
-          <button disabled>
+          <button
+              class="attachment-button"
+              type="button"
+              title="Add attachment"
+          >
             +
           </button>
 
           <input
-              disabled
+              v-model="messageText"
               type="text"
+              :disabled="isSendingMessage"
               :placeholder="`Message ${selectedChat.name}`"
+              @keyup.enter="sendCurrentMessage"
           />
 
-          <button disabled>
-            Send
+          <button
+              class="send-button"
+              type="button"
+              :disabled="
+              !messageText.trim() ||
+              isSendingMessage
+            "
+              @click="sendCurrentMessage"
+          >
+            {{
+              isSendingMessage
+                  ? "Sending..."
+                  : "Send"
+            }}
           </button>
         </footer>
       </template>
@@ -346,9 +469,14 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+}
+
 .app {
   display: grid;
-  grid-template-columns: 72px 290px minmax(0, 1fr);
+  grid-template-columns:
+    72px 290px minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   color: #f2f3f5;
@@ -512,7 +640,11 @@ button {
   place-items: center;
   border-radius: 50%;
   font-weight: 700;
-  background: linear-gradient(145deg, #5865f2, #8b5cf6);
+  background: linear-gradient(
+      145deg,
+      #5865f2,
+      #8b5cf6
+  );
 }
 
 .avatar {
@@ -602,9 +734,13 @@ button {
   font-size: 18px;
 }
 
-.logout-button:hover {
+.logout-button:hover:not(:disabled) {
   color: white;
   background: #30333c;
+}
+
+.logout-button:disabled {
+  opacity: 0.5;
 }
 
 /* Main chat area */
@@ -698,6 +834,12 @@ button {
   font-size: 34px;
 }
 
+.message-error {
+  margin: 0 22px 10px;
+  color: #f0b8b8;
+  font-size: 13px;
+}
+
 .message-bar {
   display: flex;
   align-items: center;
@@ -714,21 +856,41 @@ button {
   flex: 1;
   border: none;
   outline: none;
-  color: #9499a6;
+  color: white;
   background: transparent;
+}
+
+.message-bar input::placeholder {
+  color: #9499a6;
 }
 
 .message-bar button {
   padding: 9px 14px;
   border-radius: 8px;
   background: #414550;
-  opacity: 0.6;
-  cursor: not-allowed;
+}
+
+.attachment-button {
+  color: #b5bac1;
+}
+
+.send-button {
+  color: white;
+  background: #5865f2 !important;
+}
+
+.send-button:hover:not(:disabled) {
+  background: #4752c4 !important;
+}
+
+.send-button:disabled {
+  opacity: 0.5;
 }
 
 @media (max-width: 800px) {
   .app {
-    grid-template-columns: 64px 230px minmax(0, 1fr);
+    grid-template-columns:
+      64px 230px minmax(0, 1fr);
   }
 }
 </style>
