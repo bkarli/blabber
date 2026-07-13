@@ -2,30 +2,38 @@
 import { ref } from "vue";
 import LoginView from "./views/LoginView.vue";
 import ChatView from "./views/ChatView.vue";
+import type { User } from "./API/tauriAPI";
 
-const isLoggedIn = ref(true);
-const username = ref("");
+// true = Login überspringen
+// false = normale Login-Seite anzeigen
+const skipLogin = ref(true);
 
-function handleLogin(name: string) {
-  username.value = name;
-  isLoggedIn.value = true;
+const testUser: User = {
+  id: "test-user",
+  username: "Test User",
+  initials: "TU",
+};
+
+const currentUser = ref<User | null>(null);
+
+function handleLogin(user: User) {
+  currentUser.value = user;
 }
 
 function handleLogout() {
-  username.value = "";
-  isLoggedIn.value = false;
+  currentUser.value = null;
 }
 </script>
 
 <template>
   <LoginView
-      v-if="!isLoggedIn"
+      v-if="!skipLogin && currentUser === null"
       @login="handleLogin"
   />
 
   <ChatView
       v-else
-      :username="username"
+      :user="currentUser ?? testUser"
       @logout="handleLogout"
   />
 </template>
