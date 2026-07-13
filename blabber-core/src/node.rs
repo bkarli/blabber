@@ -1,7 +1,7 @@
 use crate::Identity;
 use anyhow::{Result};
-use iroh::{Endpoint, SecretKey};
-use iroh::endpoint::presets;
+use iroh::{protocol::Router, Endpoint, SecretKey, EndpointId, endpoint::presets};
+use iroh_gossip::{api::Event, Gossip, TopicId};
 
 pub struct Node {
     identity: Identity,
@@ -27,6 +27,25 @@ impl Node {
             .await?;
         // replace the endpoint in the strcut
         self.endpoint = Some(ep);
+        Ok(())
+    }
+    
+    /// Run the endpoint
+    ///
+    /// listen for incoming gossip connections
+    /// listen for incoming Voice connections
+    pub async fn run(&mut self) -> Result<()> {
+        
+        let gossip = Gossip::builder()
+            .spawn(self.endpoint.clone().expect("Node not created yet"));
+
+        let router = Router::builder(self.endpoint.clone().expect("Node not created yet"))
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .spawn();
+
+        // Do the listening
+
+
         Ok(())
     }
 }
