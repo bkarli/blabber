@@ -9,6 +9,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "logout"): void;
+  (event: "open-settings"):void;
 }>();
 
 const defaultChats: Chat[] = [
@@ -126,6 +127,9 @@ async function logout() {
     isLoggingOut.value = false;
   }
 }
+function openSettings(){
+  emit("open-settings");
+}
 
 async function createServer() {
   const name = window.prompt("Enter a server name:");
@@ -213,7 +217,8 @@ onMounted(() => {
 
       <button
           class="server-button settings-button"
-          title="Settings"
+          title="SettingsAlloAllo"
+          @click = "openSettings"
       >
         ⚙
       </button>

@@ -20,6 +20,7 @@ iroh-gossip = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 data-encoding = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
