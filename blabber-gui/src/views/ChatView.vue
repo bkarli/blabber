@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { tauriApi } from "../API/tauriAPI";
-import type { Chat, User } from "../API/tauriAPI";
+import type {
+  Chat,
+  User,
+} from "../API/tauriAPI";
 
 const props = defineProps<{
   user: User;
@@ -9,7 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "logout"): void;
-  (event: "open-settings"):void;
+  (event: "open-settings"): void;
 }>();
 
 const defaultChats: Chat[] = [
@@ -35,16 +38,13 @@ const loadError = ref("");
 const messageError = ref("");
 
 const profileName = computed(() => {
-  return props.user.username;
+  return props.user.displayName;
 });
 
 const profileInitials = computed(() => {
-  if (props.user.initials) {
-    return props.user.initials;
-  }
-
-  const parts = profileName.value
-      .split(" ")
+  const parts = props.user.displayName
+      .trim()
+      .split(/\s+/)
       .filter((part) => part.length > 0);
 
   if (parts.length === 0) {

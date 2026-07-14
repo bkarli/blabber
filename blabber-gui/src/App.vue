@@ -9,12 +9,10 @@ import type { User } from "./API/tauriAPI";
 // false = normale Login-Seite anzeigen
 type AppView = "login"|"chat"|"settings";
 
-const skipLogin = ref(true);
+const skipLogin = ref(false);
 
 const testUser: User = {
-  id: "test-user",
-  username: "Test User",
-  initials: "TU",
+  displayName: "Test User",
 };
 const currentView = ref<AppView>(
     skipLogin.value ? "chat":"login",

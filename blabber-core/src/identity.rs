@@ -48,7 +48,7 @@ impl Identity {
     }
 
     /// store the identity and encrypt with password
-    fn store(&self, password: impl Into<String> + Copy, path: impl AsRef<Path>) -> Result<()> {
+    pub fn store(&self, password: impl Into<String>, path: impl AsRef<Path>) -> Result<()> {
         let password_string = password.into();
         let password_bytes = password_string.as_bytes();
 
