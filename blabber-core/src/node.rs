@@ -56,7 +56,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn call(&self, peer: EndpointId)->Result<(cpal::Stream, cpal::Stream)>{
+    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<(cpal::Stream, cpal::Stream)>{
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
         let key = perform_key_exchange_as_initiator(&connection).await?;

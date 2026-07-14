@@ -1,5 +1,5 @@
-mod identity;
-mod node;
+pub mod identity;
+pub mod node;
 mod space;
 mod invite;
 mod meta;
