@@ -3,6 +3,7 @@ use crate::channel::{VoiceChannel, VoiceProtocol, VOICE_ALPN};
 use anyhow::{Result};
 use iroh::{protocol::Router, Endpoint, SecretKey, EndpointId, endpoint::presets};
 use iroh_gossip::{api::Event, Gossip, TopicId};
+use anyhow::Context;
 
 pub struct Node {
     identity: Identity,
@@ -37,7 +38,7 @@ impl Node {
     /// listen for incoming gossip connections
     /// listen for incoming Voice connections
     pub async fn run(&mut self) -> Result<()> {
-        let endpoint = self.endpoint.clone.context("couldnt clone ep -> not created yet");        
+        let endpoint = self.endpoint.clone().context("couldnt clone ep -> not created yet");        
         let gossip = Gossip::builder()
             .spawn(self.endpoint.clone().expect("Node not created yet"));
         let voice_key = [0u8; 32]; //TODO: key exchange ahluege und nid eif hardcode
@@ -47,20 +48,17 @@ impl Node {
         let router = Router::builder(self.endpoint.clone().expect("Node not created yet"))
             .accept(iroh_gossip::ALPN, gossip.clone()).accept(VOICE_ALPN,voice)
             .spawn();
-
-        // Do the listening
-
         Ok(())
     }
-    
+
     pub async fn call(&self, peer: EndpointId, key: [u8;32])->Result<(cpal::Stream, cpal::Stream)>{
-        let endpoint = self.endpoint.clone().context("Node not created yet");
+        let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call");
-        let channel = VoiceChannel::new(connection, key);
+        let channel = VoiceChannel::new(connection?, key);
         let capture_stream = channel.start_capture()?;
         let handle = tokio::runtime::Handle::current();
-        let capture_playback = channel.start_playback(&handle);
-        Ok((capture_stream,capture_playback))
+        let playback_stream = channel.start_playback(&handle);
+        Ok((capture_stream, playback_stream?))
     }
 }
 
