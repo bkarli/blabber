@@ -4,10 +4,13 @@ use anyhow::{Result};
 use iroh::{protocol::Router, Endpoint, SecretKey, EndpointId, endpoint::presets};
 use iroh_gossip::{api::Event, Gossip, TopicId};
 use anyhow::Context;
+use x25519_dalek::{EphemeralSecret, PublicKey};
+
 
 pub struct Node {
     identity: Identity,
-    pub endpoint: Option<Endpoint>
+    pub endpoint: Option<Endpoint>,
+    router: Option<Router>,
 }
 
 impl Node {
@@ -15,6 +18,7 @@ impl Node {
         Self {
             identity,
             endpoint: None,
+            router: None,
         }
     }
 
@@ -37,30 +41,60 @@ impl Node {
     ///
     /// listen for incoming gossip connections
     /// listen for incoming Voice connections
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {    
         let endpoint = self.endpoint.clone().context("couldnt clone ep -> not created yet");        
         let gossip = Gossip::builder()
             .spawn(self.endpoint.clone().expect("Node not created yet"));
-        let voice_key = [0u8; 32]; //TODO: key exchange ahluege und nid eif hardcode
-        let voice = VoiceProtocol::new(voice_key);
+        let voice = VoiceProtocol::new();
 
 
         let router = Router::builder(self.endpoint.clone().expect("Node not created yet"))
             .accept(iroh_gossip::ALPN, gossip.clone()).accept(VOICE_ALPN,voice)
             .spawn();
+
+        self.router = Some(router);
         Ok(())
     }
 
-    pub async fn call(&self, peer: EndpointId, key: [u8;32])->Result<(cpal::Stream, cpal::Stream)>{
+    pub async fn call(&self, peer: EndpointId)->Result<(cpal::Stream, cpal::Stream)>{
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
-        let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call");
-        let channel = VoiceChannel::new(connection?, key);
+        let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
+        let key = perform_key_exchange_as_initiator(&connection).await?;
+        
+        let channel = VoiceChannel::new(connection, key);
         let capture_stream = channel.start_capture()?;
         let handle = tokio::runtime::Handle::current();
         let playback_stream = channel.start_playback(&handle);
         Ok((capture_stream, playback_stream?))
     }
+
 }
+
+async fn diffie_hellman(send: &mut iroh::endpoint::SendStream,recv: &mut iroh::endpoint::RecvStream) -> Result<[u8; 32]> {
+    let my_secret = EphemeralSecret::random_from_rng(rand_core::OsRng);
+    let my_public = PublicKey::from(&my_secret);
+
+    send.write_all(my_public.as_bytes()).await?;
+    send.finish()?;
+
+    let mut their_public_bytes = [0u8; 32];
+    recv.read_exact(&mut their_public_bytes).await?;
+    let their_public = PublicKey::from(their_public_bytes);
+
+    let shared_secret = my_secret.diffie_hellman(&their_public);
+    Ok(*shared_secret.as_bytes())
+}
+
+pub async fn perform_key_exchange_as_initiator(connection: &iroh::endpoint::Connection) -> Result<[u8; 32]> {
+    let (mut send, mut recv) = connection.open_bi().await?;
+    diffie_hellman(&mut send, &mut recv).await
+}
+
+pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Connection) -> Result<[u8; 32]> {
+    let (mut send, mut recv) = connection.accept_bi().await?;
+    diffie_hellman(&mut send, &mut recv).await
+}
+    
 
 #[cfg(test)]
 mod tests {

@@ -108,18 +108,19 @@ impl VoiceChannel {
     }
 }
 
-//also must handle key exchange -> todo for later (maybe Diffie-Hellman)
 #[derive(Debug, Clone)]
-pub struct VoiceProtocol {
-    key: [u8; 32],}
+pub struct VoiceProtocol;
 
 impl VoiceProtocol {
-    pub fn new(key: [u8; 32]) -> Self {
-        Self{key}}}
+    pub fn new() -> Self {Self}}
 
 impl ProtocolHandler for VoiceProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let channel = VoiceChannel::new(connection.clone(), self.key);
+        //negotiate a fresh key
+        let key = crate::node::perform_key_exchange_as_acceptor(&connection).await.map_err(std::io::Error::other)?;
+
+        let channel = VoiceChannel::new(connection.clone(), key);
+
         let handle = tokio::runtime::Handle::current();
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let audio_thread = std::thread::spawn(move || -> Result<()> {
