@@ -45,7 +45,6 @@ impl Node {
 
         // Do the listening
 
-
         Ok(())
     }
 }
