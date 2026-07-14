@@ -4,3 +4,4 @@ flake.lock
 .direnv
 .env
 .log
+.idea/
