@@ -11,6 +11,7 @@ const username = ref("");
 const password = ref("");
 
 const isLoading = ref(false);
+const isRegistering = ref(false);
 const loginError = ref("");
 
 async function submitLogin() {
@@ -19,7 +20,6 @@ async function submitLogin() {
   if (!cleanUsername || !password.value) {
     loginError.value =
         "Please enter your username and password.";
-
     return;
   }
 
@@ -35,11 +35,36 @@ async function submitLogin() {
     emit("login", user);
   } catch (error) {
     console.error("Login failed:", error);
-
-    loginError.value =
-        "Login failed. Please check your information.";
+    loginError.value = String(error);
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function submitRegister() {
+  const cleanUsername = username.value.trim();
+
+  if (!cleanUsername || !password.value) {
+    loginError.value =
+        "Please enter your username and password.";
+    return;
+  }
+
+  isRegistering.value = true;
+  loginError.value = "";
+
+  try {
+    const user = await tauriApi.createIdentity(
+        cleanUsername,
+        password.value,
+    );
+
+    emit("login", user);
+  } catch (error) {
+    console.error("Identity creation failed:", error);
+    loginError.value = String(error);
+  } finally {
+    isRegistering.value = false;
   }
 }
 </script>
@@ -96,11 +121,25 @@ async function submitLogin() {
         <button
             class="login-button"
             type="submit"
-            :disabled="isLoading"
+            :disabled="isLoading || isRegistering"
         >
           {{ isLoading ? "Logging in..." : "Log in" }}
         </button>
+
+        <button
+            class="register-button"
+            type="button"
+            :disabled="isLoading || isRegistering"
+            @click="submitRegister"
+        >
+          {{
+            isRegistering
+                ? "Creating New Account..."
+                : "Create Account"
+          }}
+        </button>
       </form>
+
 
       <p class="login-footer">
         Peer-to-peer communication with Blabber.
@@ -251,6 +290,25 @@ input:disabled {
 }
 
 .login-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.register-button {
+  margin-top: 12px;
+  height: 46px;
+  border: none;
+  border-radius: 10px;
+  color: white;
+  background: #5865f2;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.register-button:hover:not(:disabled) {
+  background: #4752c4;
+}
+
+.register-button:disabled {
   opacity: 0.65;
   cursor: wait;
 }
