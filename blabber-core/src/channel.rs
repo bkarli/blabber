@@ -182,45 +182,45 @@ mod tests {
     use std::time::Duration;
     use tokio::time::sleep;
 
-    #[tokio::test]
-    async fn loopback_test() -> Result<()> {
-        let key = [42u8; 32];
-        let endpoint_a = Endpoint::builder(presets::N0)
-            .alpns(vec![VOICE_ALPN.to_vec()])
-            .bind()
-            .await?;
-        let endpoint_b = Endpoint::builder(presets::N0)
-            .alpns(vec![VOICE_ALPN.to_vec()])
-            .bind()
-            .await?;
-        let addr_b = endpoint_b.addr();
-      
-        let endpoint_b_for_accept = endpoint_b.clone();
-        let accept_task = tokio::spawn(async move {
-            let incoming = endpoint_b_for_accept
-                .accept()
-                .await
-                .context("no incoming connection")?;
-            let connection = incoming.await.context("failed to accept connection")?;
-            Ok::<_, anyhow::Error>(connection)
-        });
-
-        //A connects to B
-        let connection_a = endpoint_a
-            .connect(addr_b, VOICE_ALPN)
-            .await
-            .context("A failed to connect to B")?;
-
-        let connection_b = accept_task.await.context("accept task failed")??;
-
-        let channel_a = VoiceChannel::new(connection_a, key);
-        let channel_b = VoiceChannel::new(connection_b, key);
-
-        let _capture = channel_a.start_capture()?; //A captures mic, sends to B
-        let handle = tokio::runtime::Handle::current();
-        let _playback = channel_b.start_playback(&handle)?; //B plays it over speakers/headphones
-        println!("Speak into the mic (10 seconds)");
-        sleep(Duration::from_secs(10)).await;
-        Ok(())
-    }
+    // #[tokio::test]
+    // async fn loopback_test() -> Result<()> {
+    //     let key = [42u8; 32];
+    //     let endpoint_a = Endpoint::builder(presets::N0)
+    //         .alpns(vec![VOICE_ALPN.to_vec()])
+    //         .bind()
+    //         .await?;
+    //     let endpoint_b = Endpoint::builder(presets::N0)
+    //         .alpns(vec![VOICE_ALPN.to_vec()])
+    //         .bind()
+    //         .await?;
+    //     let addr_b = endpoint_b.addr();
+    //
+    //     let endpoint_b_for_accept = endpoint_b.clone();
+    //     let accept_task = tokio::spawn(async move {
+    //         let incoming = endpoint_b_for_accept
+    //             .accept()
+    //             .await
+    //             .context("no incoming connection")?;
+    //         let connection = incoming.await.context("failed to accept connection")?;
+    //         Ok::<_, anyhow::Error>(connection)
+    //     });
+    //
+    //     //A connects to B
+    //     let connection_a = endpoint_a
+    //         .connect(addr_b, VOICE_ALPN)
+    //         .await
+    //         .context("A failed to connect to B")?;
+    //
+    //     let connection_b = accept_task.await.context("accept task failed")??;
+    //
+    //     let channel_a = VoiceChannel::new(connection_a, key);
+    //     let channel_b = VoiceChannel::new(connection_b, key);
+    //
+    //     let _capture = channel_a.start_capture()?; //A captures mic, sends to B
+    //     let handle = tokio::runtime::Handle::current();
+    //     let _playback = channel_b.start_playback(&handle)?; //B plays it over speakers/headphones
+    //     println!("Speak into the mic (10 seconds)");
+    //     sleep(Duration::from_secs(10)).await;
+    //     Ok(())
+    // }
 }

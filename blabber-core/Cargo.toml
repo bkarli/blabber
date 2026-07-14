@@ -11,16 +11,19 @@ zeroize = { workspace = true }
 anyhow = { workspace = true }
 cpal = "0.15"
 
-uuid = { workspace = true, features= ["v4"]}
+uuid = { workspace = true, features= ["v4", "serde"]}
 
-iroh = { workspace = true }
-iroh-docs = { workspace = true }
+iroh = { workspace = true}
+iroh-docs = { workspace = true , features = ["fs-store"] }
+iroh-blobs = { workspace = true }
 iroh-gossip = { workspace = true }
 
 serde = { workspace = true }
 postcard = { workspace = true }
 data-encoding = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+n0-future = { workspace = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-
+tempfile = "3.27.0"
