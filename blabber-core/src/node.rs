@@ -99,6 +99,10 @@ pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Conne
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::VOICE_ALPN;
+    use iroh::endpoint::presets;
+    use iroh::Endpoint;
+    use anyhow::Context;
     
     #[tokio::test]
     async fn test_create_endpoint() {
@@ -114,7 +118,42 @@ mod tests {
     #[tokio::test]
     async fn test_same_id_same_ep(){
         
+    }
 
+    #[tokio::test]
+    async fn test_dh_key_exchange_produces_matching_keys() -> Result<()> {
+        let endpoint_a = Endpoint::builder(presets::N0)
+            .alpns(vec![VOICE_ALPN.to_vec()])
+            .bind()
+            .await?;
+        let endpoint_b = Endpoint::builder(presets::N0)
+            .alpns(vec![VOICE_ALPN.to_vec()])
+            .bind()
+            .await?;
+
+        let addr_b = endpoint_b.addr();
+        let endpoint_b_for_accept = endpoint_b.clone();
+        let accept_task = tokio::spawn(async move {
+            let incoming = endpoint_b_for_accept
+                .accept()
+                .await
+                .context("no incoming connection")?;
+            let connection = incoming.await.context("failed to accept connection")?;
+            Ok::<_, anyhow::Error>(connection)
+        });
+
+        let connection_a = endpoint_a
+            .connect(addr_b, VOICE_ALPN)
+            .await
+            .context("A failed to connect to B")?;
+        let connection_b = accept_task.await.context("accept task panicked")??;
+
+        let (key_a, key_b) = tokio::try_join!(
+            perform_key_exchange_as_initiator(&connection_a),
+            perform_key_exchange_as_acceptor(&connection_b),
+        )?;
+        assert_eq!(key_a, key_b);
+        Ok(())
     }
 
 }
