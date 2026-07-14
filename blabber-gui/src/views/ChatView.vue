@@ -209,7 +209,6 @@ function returnToServerChoice() {
 
 <template>
   <div class="app">
-    <!-- Server navigation -->
     <aside class="server-sidebar">
       <button
           class="server-button home-server"
@@ -600,7 +599,7 @@ function returnToServerChoice() {
       BlinkMacSystemFont,
       "Segoe UI",
       sans-serif;
-  background: #111318;
+  background: #242321;
 }
 
 button,
@@ -621,10 +620,10 @@ button:disabled {
 .app {
   display: grid;
   grid-template-columns:
-    72px 290px minmax(0, 1fr);
+      72px 290px minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
-  color: #f2f3f5;
+  color: #f7f3e8;
 }
 
 /* Server navigation */
@@ -635,39 +634,42 @@ button:disabled {
   align-items: center;
   gap: 11px;
   padding: 14px 0;
-  background: #17191f;
-  border-right: 1px solid #292c34;
+  border-right: 1px solid #45423e;
+  background: #242321;
 }
 
 .server-button {
   width: 48px;
   height: 48px;
-  border-radius: 16px;
-  background: #2b2e36;
+  border-radius: 12px;
+  background: #45423e;
   font-weight: 700;
   transition:
       background 150ms ease,
-      border-radius 150ms ease;
+      border-radius 150ms ease,
+      transform 150ms ease;
 }
 
 .server-button:hover,
 .active-server {
-  border-radius: 13px;
-  background: #5865f2;
+  border-radius: 8px;
+  background: #f05a24;
+  transform: translateY(-1px);
 }
 
 .home-server {
-  background: #5865f2;
+  color: #fff7ef;
+  background: #f05a24;
 }
 
 .server-divider {
   width: 34px;
   height: 1px;
-  background: #343740;
+  background: #56514b;
 }
 
 .add-server {
-  color: #23a55a;
+  color: #f05a24;
 }
 
 .settings-button {
@@ -680,8 +682,8 @@ button:disabled {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  background: #1d1f26;
-  border-right: 1px solid #292c34;
+  border-right: 1px solid #45423e;
+  background: #302e2b;
 }
 
 .sidebar-header {
@@ -690,29 +692,35 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
-  border-bottom: 1px solid #292c34;
+  border-bottom: 1px solid #45423e;
 }
 
 .sidebar-header h1 {
   margin: 0;
+  color: #f7f3e8;
   font-size: 20px;
 }
 
 .sidebar-header span {
-  color: #9499a6;
+  color: #c9c3b8;
   font-size: 12px;
 }
 
-.new-chat-button {
+.new-conversation-button {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  background: #2b2e36;
+  border-radius: 7px;
+  color: #f7f3e8;
+  background: #45423e;
   font-size: 22px;
+  transition:
+      background 150ms ease,
+      transform 150ms ease;
 }
 
-.new-chat-button:hover {
-  background: #383c46;
+.new-conversation-button:hover {
+  background: #f05a24;
+  transform: translateY(-1px);
 }
 
 .search-container {
@@ -724,14 +732,19 @@ button:disabled {
   height: 40px;
   padding: 0 13px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 7px;
   outline: none;
-  color: white;
-  background: #121419;
+  color: #f7f3e8;
+  background: #242321;
+  transition: border-color 150ms ease;
+}
+
+.search-container input::placeholder {
+  color: #8f877d;
 }
 
 .search-container input:focus {
-  border-color: #5865f2;
+  border-color: #f05a24;
 }
 
 .chat-list {
@@ -743,16 +756,16 @@ button:disabled {
 .backend-status {
   margin: 4px 6px 12px;
   padding: 9px;
-  border-radius: 8px;
-  color: #b5bac1;
-  background: #272a32;
+  border-radius: 6px;
+  color: #c9c3b8;
+  background: #45423e;
   font-size: 12px;
   text-align: center;
 }
 
 .backend-status.warning {
-  color: #f0b8b8;
-  background: rgba(237, 66, 69, 0.12);
+  color: #ffd3c1;
+  background: rgba(240, 90, 36, 0.16);
 }
 
 .chat-item {
@@ -762,17 +775,21 @@ button:disabled {
   gap: 12px;
   padding: 10px;
   margin-bottom: 4px;
-  border-radius: 10px;
+  border-radius: 7px;
   text-align: left;
   background: transparent;
+  transition:
+      background 150ms ease,
+      transform 150ms ease;
 }
 
 .chat-item:hover {
-  background: #272a32;
+  background: #45423e;
 }
 
 .chat-item.selected {
-  background: #353943;
+  background: #544f49;
+  box-shadow: inset 4px 0 0 #f05a24;
 }
 
 .avatar,
@@ -783,13 +800,10 @@ button:disabled {
   display: grid;
   flex-shrink: 0;
   place-items: center;
-  border-radius: 50%;
+  border-radius: 10px;
+  color: #fff7ef;
   font-weight: 700;
-  background: linear-gradient(
-      145deg,
-      #5865f2,
-      #8b5cf6
-  );
+  background: #f05a24;
 }
 
 .avatar {
@@ -804,13 +818,13 @@ button:disabled {
   bottom: -1px;
   width: 13px;
   height: 13px;
-  border: 3px solid #1d1f26;
+  border: 3px solid #302e2b;
   border-radius: 50%;
-  background: #747982;
+  background: #8b857d;
 }
 
 .status.online {
-  background: #23a55a;
+  background: #f05a24;
 }
 
 .chat-information {
@@ -821,19 +835,20 @@ button:disabled {
 
 .chat-information strong {
   overflow: hidden;
+  color: #f7f3e8;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .chat-information span {
   margin-top: 3px;
-  color: #9499a6;
+  color: #c9c3b8;
   font-size: 12px;
 }
 
 .no-results {
   padding: 20px;
-  color: #9499a6;
+  color: #c9c3b8;
   text-align: center;
 }
 
@@ -843,7 +858,7 @@ button:disabled {
   align-items: center;
   gap: 10px;
   padding: 10px;
-  background: #17191f;
+  background: #242321;
 }
 
 .profile-avatar {
@@ -860,12 +875,13 @@ button:disabled {
 
 .profile-information strong {
   overflow: hidden;
+  color: #f7f3e8;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .profile-information span {
-  color: #23a55a;
+  color: #f05a24;
   font-size: 12px;
 }
 
@@ -873,15 +889,15 @@ button:disabled {
   width: 34px;
   height: 34px;
   padding: 7px;
-  border-radius: 7px;
-  color: #b5bac1;
+  border-radius: 6px;
+  color: #c9c3b8;
   background: transparent;
   font-size: 18px;
 }
 
 .logout-button:hover:not(:disabled) {
-  color: white;
-  background: #30333c;
+  color: #fff;
+  background: #45423e;
 }
 
 .logout-button:disabled {
@@ -894,7 +910,7 @@ button:disabled {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  background: #23262d;
+  background: #383633;
 }
 
 .chat-header {
@@ -903,7 +919,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
-  border-bottom: 1px solid #30333b;
+  border-bottom: 1px solid #45423e;
 }
 
 .chat-user {
@@ -919,11 +935,12 @@ button:disabled {
 
 .chat-user h2 {
   margin: 0;
+  color: #f7f3e8;
   font-size: 17px;
 }
 
 .chat-user span {
-  color: #9499a6;
+  color: #c9c3b8;
   font-size: 12px;
 }
 
@@ -935,14 +952,14 @@ button:disabled {
 .chat-actions button {
   width: 38px;
   height: 38px;
-  border-radius: 9px;
-  color: #b5bac1;
+  border-radius: 7px;
+  color: #c9c3b8;
   background: transparent;
 }
 
 .chat-actions button:hover {
-  color: white;
-  background: #30343d;
+  color: #fff;
+  background: #45423e;
 }
 
 .empty-chat,
@@ -965,12 +982,13 @@ button:disabled {
 .empty-chat h2,
 .no-chat-selected h2 {
   margin: 18px 0 6px;
+  color: #f7f3e8;
 }
 
 .empty-chat p,
 .no-chat-selected p {
   margin: 0;
-  color: #9499a6;
+  color: #c9c3b8;
 }
 
 .empty-icon {
@@ -981,7 +999,7 @@ button:disabled {
 
 .message-error {
   margin: 0 22px 10px;
-  color: #f0b8b8;
+  color: #ffb69a;
   font-size: 13px;
 }
 
@@ -991,8 +1009,9 @@ button:disabled {
   gap: 10px;
   margin: 0 22px 22px;
   padding: 9px 10px;
-  border-radius: 12px;
-  background: #31343d;
+  border: 1px solid #56514b;
+  border-radius: 8px;
+  background: #45423e;
 }
 
 .message-bar input {
@@ -1001,36 +1020,38 @@ button:disabled {
   flex: 1;
   border: none;
   outline: none;
-  color: white;
+  color: #f7f3e8;
   background: transparent;
 }
 
 .message-bar input::placeholder {
-  color: #9499a6;
+  color: #a79f95;
 }
 
 .message-bar button {
   padding: 9px 14px;
-  border-radius: 8px;
-  background: #414550;
+  border-radius: 6px;
+  background: #5a5651;
 }
 
 .attachment-button {
-  color: #b5bac1;
+  color: #c9c3b8;
 }
 
 .send-button {
-  color: white;
-  background: #5865f2 !important;
+  color: #fff7ef;
+  background: #f05a24 !important;
 }
 
 .send-button:hover:not(:disabled) {
-  background: #4752c4 !important;
+  background: #d94c1b !important;
 }
 
 .send-button:disabled {
   opacity: 0.5;
 }
+/* Server modal */
+
 .modal-backdrop {
   position: fixed;
   z-index: 1000;
@@ -1038,28 +1059,30 @@ button:disabled {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(6, 7, 10, 0.72);
+  background: rgba(20, 19, 18, 0.8);
+  backdrop-filter: blur(4px);
 }
 
 .server-modal {
   position: relative;
   width: min(420px, 100%);
   padding: 32px;
-  border: 1px solid #353844;
-  border-radius: 18px;
-  color: #f2f3f5;
-  background: #1d1f26;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+  border: 1px solid #5a5651;
+  border-radius: 10px;
+  color: #f7f3e8;
+  background: #302e2b;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
 }
 
 .server-modal h2 {
   margin: 0;
+  color: #f7f3e8;
   text-align: center;
 }
 
 .modal-description {
   margin: 10px 0 24px;
-  color: #9499a6;
+  color: #c9c3b8;
   text-align: center;
 }
 
@@ -1068,14 +1091,14 @@ button:disabled {
   top: 12px;
   right: 16px;
   border: none;
-  color: #9499a6;
+  color: #c9c3b8;
   background: transparent;
   font-size: 28px;
   cursor: pointer;
 }
 
 .modal-close-button:hover {
-  color: white;
+  color: #f05a24;
 }
 
 .server-choice-list {
@@ -1086,31 +1109,50 @@ button:disabled {
 
 .server-choice-button {
   height: 48px;
-  border: none;
-  border-radius: 10px;
-  color: white;
-  background: #5865f2;
+  border: 1px solid #6a635b;
+  border-radius: 7px;
+  color: #f7f3e8;
+  background: #45423e;
   font-weight: 700;
   cursor: pointer;
+  transition:
+      border-color 150ms ease,
+      background 150ms ease,
+      transform 150ms ease;
 }
 
 .server-choice-button:hover {
-  background: #4752c4;
+  border-color: #f05a24;
+  background: #514d48;
+  transform: translateY(-1px);
+}
+
+.server-choice-button:first-child {
+  border-color: #f05a24;
+  background: #f05a24;
+}
+
+.server-choice-button:first-child:hover {
+  background: #d94c1b;
 }
 
 .modal-back-button {
   margin-bottom: 18px;
   padding: 0;
   border: none;
-  color: #b5bac1;
+  color: #c9c3b8;
   background: transparent;
   cursor: pointer;
+}
+
+.modal-back-button:hover {
+  color: #f05a24;
 }
 
 .server-modal label {
   display: block;
   margin-bottom: 8px;
-  color: #b5bac1;
+  color: #c9c3b8;
   font-size: 13px;
   font-weight: 600;
 }
@@ -1119,15 +1161,23 @@ button:disabled {
   width: 100%;
   height: 48px;
   padding: 0 14px;
-  border: 1px solid transparent;
-  border-radius: 10px;
+  border: 1px solid #56514b;
+  border-radius: 7px;
   outline: none;
-  color: white;
-  background: #121419;
+  color: #f7f3e8;
+  background: #242321;
+  transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease;
+}
+
+.server-modal input::placeholder {
+  color: #8f877d;
 }
 
 .server-modal input:focus {
-  border-color: #5865f2;
+  border-color: #f05a24;
+  box-shadow: 0 0 0 3px rgba(240, 90, 36, 0.12);
 }
 
 .primary-modal-button {
@@ -1135,21 +1185,102 @@ button:disabled {
   height: 46px;
   margin-top: 18px;
   border: none;
-  border-radius: 10px;
-  color: white;
-  background: #5865f2;
+  border-radius: 7px;
+  color: #fff7ef;
+  background: #f05a24;
   font-weight: 700;
   cursor: pointer;
+  transition:
+      background 150ms ease,
+      transform 150ms ease;
 }
 
 .primary-modal-button:hover {
-  background: #4752c4;
+  background: #d94c1b;
+  transform: translateY(-1px);
 }
 
-@media (max-width: 800px) {
+.primary-modal-button:disabled,
+.server-choice-button:disabled,
+.modal-close-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Scrollbars */
+
+.chat-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #5a5651;
+  background-clip: padding-box;
+}
+
+.chat-list::-webkit-scrollbar-thumb:hover {
+  background: #6a635b;
+  background-clip: padding-box;
+}
+
+/* Smaller windows */
+
+@media (max-width: 850px) {
   .app {
     grid-template-columns:
-      64px 230px minmax(0, 1fr);
+        64px 250px minmax(0, 1fr);
+  }
+
+  .server-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .sidebar-header {
+    padding: 0 14px;
+  }
+
+  .chat-header {
+    padding: 0 18px;
+  }
+}
+
+@media (max-width: 650px) {
+  .app {
+    grid-template-columns:
+        58px 210px minmax(0, 1fr);
+  }
+
+  .server-sidebar {
+    gap: 8px;
+  }
+
+  .server-button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .chat-sidebar {
+    font-size: 14px;
+  }
+
+  .sidebar-header h1 {
+    font-size: 17px;
+  }
+
+  .chat-header {
+    padding: 0 14px;
+  }
+
+  .message-bar {
+    margin-right: 14px;
+    margin-left: 14px;
   }
 }
 </style>

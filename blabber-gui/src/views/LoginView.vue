@@ -168,7 +168,7 @@ async function submitRegister() {
       BlinkMacSystemFont,
       "Segoe UI",
       sans-serif;
-  background: #111318;
+  background: #242321;
 }
 
 button,
@@ -182,28 +182,28 @@ input {
   min-height: 100vh;
   place-items: center;
   padding: 24px;
-  color: #f2f3f5;
+  color: #f7f3e8;
   background:
       radial-gradient(
           circle at top left,
-          rgba(88, 101, 242, 0.25),
-          transparent 36%
+          rgba(240, 90, 36, 0.12),
+          transparent 35%
       ),
       radial-gradient(
           circle at bottom right,
-          rgba(139, 92, 246, 0.18),
-          transparent 34%
+          rgba(201, 195, 184, 0.08),
+          transparent 40%
       ),
-      #111318;
+      #242321;
 }
 
 .login-card {
   width: min(420px, 100%);
   padding: 38px;
-  border: 1px solid #30333b;
-  border-radius: 20px;
-  background: #1d1f26;
-  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.35);
+  border: 1px solid #45423e;
+  border-radius: 12px;
+  background: #302e2b;
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.45);
 }
 
 .logo {
@@ -212,10 +212,11 @@ input {
   height: 64px;
   margin: 0 auto 22px;
   place-items: center;
-  border-radius: 20px;
+  border-radius: 12px;
   font-size: 27px;
   font-weight: 800;
-  background: linear-gradient(145deg, #5865f2, #8b5cf6);
+  color: #f7f3e8;
+  background: #f05a24;
 }
 
 .login-heading {
@@ -226,11 +227,12 @@ input {
 .login-heading h1 {
   margin: 0;
   font-size: 26px;
+  color: #f7f3e8;
 }
 
 .login-heading p {
   margin: 9px 0 0;
-  color: #9499a6;
+  color: #c9c3b8;
   font-size: 14px;
 }
 
@@ -241,7 +243,7 @@ form {
 
 label {
   margin: 0 0 7px;
-  color: #b5bac1;
+  color: #c9c3b8;
   font-size: 13px;
   font-weight: 600;
 }
@@ -252,14 +254,19 @@ input {
   margin-bottom: 18px;
   padding: 0 14px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   outline: none;
-  color: white;
-  background: #121419;
+  color: #f7f3e8;
+  background: #242321;
+  transition: border-color 150ms ease;
+}
+
+input::placeholder {
+  color: #8f877d;
 }
 
 input:focus {
-  border-color: #5865f2;
+  border-color: #f05a24;
 }
 
 input:disabled {
@@ -270,44 +277,36 @@ input:disabled {
   margin: -5px 0 16px;
   padding: 10px 12px;
   border-radius: 8px;
-  color: #f0b8b8;
-  background: rgba(237, 66, 69, 0.12);
+  color: #f7f3e8;
+  background: rgba(240, 90, 36, 0.15);
   font-size: 13px;
 }
 
-.login-button {
+.login-button,
+.register-button {
   height: 46px;
   border: none;
-  border-radius: 10px;
-  color: white;
-  background: #5865f2;
+  border-radius: 8px;
+  color: #f7f3e8;
+  background: #f05a24;
   font-weight: 700;
   cursor: pointer;
+  transition:
+      background 150ms ease,
+      transform 120ms ease;
 }
 
-.login-button:hover:not(:disabled) {
-  background: #4752c4;
-}
-
-.login-button:disabled {
-  opacity: 0.65;
-  cursor: wait;
-}
 .register-button {
   margin-top: 12px;
-  height: 46px;
-  border: none;
-  border-radius: 10px;
-  color: white;
-  background: #5865f2;
-  font-weight: 700;
-  cursor: pointer;
 }
 
+.login-button:hover:not(:disabled),
 .register-button:hover:not(:disabled) {
-  background: #4752c4;
+  background: #d94c1b;
+  transform: translateY(-1px);
 }
 
+.login-button:disabled,
 .register-button:disabled {
   opacity: 0.65;
   cursor: wait;
@@ -315,7 +314,7 @@ input:disabled {
 
 .login-footer {
   margin: 24px 0 0;
-  color: #747982;
+  color: #a79f95;
   font-size: 12px;
   text-align: center;
 }
