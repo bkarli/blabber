@@ -26,6 +26,9 @@ pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
 
 const NONCE_LEN: usize = 12;
 const MAX_DATAGRAM_SIZE: usize = 1200;
+const PACKET_OVERHEAD: usize = 16 + 8;
+const MAX_PLAINTEXT_BYTES: usize = MAX_DATAGRAM_SIZE - PACKET_OVERHEAD;
+const SAMPLES_PER_PACKET: usize = MAX_PLAINTEXT_BYTES / 4;
 
 pub struct VoiceChannel {
     connection: Connection,
@@ -108,18 +111,19 @@ impl VoiceChannel {
     }
 }
 
-//also must handle key exchange -> todo for later (maybe Diffie-Hellman)
 #[derive(Debug, Clone)]
-pub struct VoiceProtocol {
-    key: [u8; 32],}
+pub struct VoiceProtocol;
 
 impl VoiceProtocol {
-    pub fn new(key: [u8; 32]) -> Self {
-        Self{key}}}
+    pub fn new() -> Self {Self}}
 
 impl ProtocolHandler for VoiceProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let channel = VoiceChannel::new(connection.clone(), self.key);
+        //negotiate a fresh key
+        let key = crate::node::perform_key_exchange_as_acceptor(&connection).await.map_err(std::io::Error::other)?;
+
+        let channel = VoiceChannel::new(connection.clone(), key);
+
         let handle = tokio::runtime::Handle::current();
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let audio_thread = std::thread::spawn(move || -> Result<()> {
@@ -135,9 +139,6 @@ impl ProtocolHandler for VoiceProtocol {
     }
 }
 
-const PACKET_OVERHEAD: usize = 16 + 8;
-const MAX_PLAINTEXT_BYTES: usize = MAX_DATAGRAM_SIZE - PACKET_OVERHEAD;
-const SAMPLES_PER_PACKET: usize = MAX_PLAINTEXT_BYTES / 4;
 
 fn send_audio_chunk(connection: &Connection,cipher: &ChaCha20Poly1305,counter: &AtomicU64,data: &[f32],) {
     for sub_chunk in data.chunks(SAMPLES_PER_PACKET) {
