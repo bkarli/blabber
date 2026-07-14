@@ -19,5 +19,4 @@ uuid = "1.23.5"
 
 iroh = "1.0.2"
 iroh-docs = "0.101.0"
-iroh-blobs = "0.103.0"
 iroh-gossip = "0.101.0"

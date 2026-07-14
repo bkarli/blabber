@@ -16,7 +16,10 @@ uuid = { workspace = true, features= ["v4"]}
 iroh = { workspace = true }
 iroh-docs = { workspace = true }
 iroh-gossip = { workspace = true }
+
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+x25519-dalek = "2"
+rand_core = "0.6"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
