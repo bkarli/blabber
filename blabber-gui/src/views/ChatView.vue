@@ -186,7 +186,6 @@ onMounted(() => {
       <button
           class="server-button home-server"
           title="Blabber home"
-          @click="tauriApi.sayHello"
       >
         B
       </button>

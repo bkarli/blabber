@@ -49,4 +49,25 @@ export const tauriApi = {
     async listIdentities(): Promise<string[]> {
         return await invoke<string[]>("list_identities");
     },
+    async getChats(): Promise<Chat[]> {
+        return [];
+    },
+
+    async logout(): Promise<void> {
+        return;
+    },
+
+    async createServer(name: string): Promise<void> {
+        console.log("Create server not implemented yet:", name);
+    },
+    async sendMessage(
+        chatId: number,
+        text: string,
+    ): Promise<void> {
+        console.log(
+            "Send message not implemented yet:",
+            chatId,
+            text,
+        );
+    }
 };
