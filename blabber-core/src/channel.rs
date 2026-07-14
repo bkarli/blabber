@@ -26,6 +26,9 @@ pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
 
 const NONCE_LEN: usize = 12;
 const MAX_DATAGRAM_SIZE: usize = 1200;
+const PACKET_OVERHEAD: usize = 16 + 8;
+const MAX_PLAINTEXT_BYTES: usize = MAX_DATAGRAM_SIZE - PACKET_OVERHEAD;
+const SAMPLES_PER_PACKET: usize = MAX_PLAINTEXT_BYTES / 4;
 
 pub struct VoiceChannel {
     connection: Connection,
@@ -136,9 +139,6 @@ impl ProtocolHandler for VoiceProtocol {
     }
 }
 
-const PACKET_OVERHEAD: usize = 16 + 8;
-const MAX_PLAINTEXT_BYTES: usize = MAX_DATAGRAM_SIZE - PACKET_OVERHEAD;
-const SAMPLES_PER_PACKET: usize = MAX_PLAINTEXT_BYTES / 4;
 
 fn send_audio_chunk(connection: &Connection,cipher: &ChaCha20Poly1305,counter: &AtomicU64,data: &[f32],) {
     for sub_chunk in data.chunks(SAMPLES_PER_PACKET) {
