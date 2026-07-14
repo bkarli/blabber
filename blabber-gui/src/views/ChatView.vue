@@ -177,6 +177,34 @@ async function sendCurrentMessage() {
 onMounted(() => {
   void loadChats();
 });
+type ServerModalView = "choice" | "join" | "create";
+const showServerModal = ref(false);
+const serverModalView = ref<ServerModalView>("choice");
+const serverTicket = ref("");
+const serverName = ref("");
+
+function openServerModal() {
+  serverModalView.value = "choice";
+  serverTicket.value = "";
+  serverName.value = "";
+  showServerModal.value = true;
+}
+
+function closeServerModal() {
+  showServerModal.value = false;
+}
+
+function showJoinServer() {
+  serverModalView.value = "join";
+}
+
+function showCreateServer() {
+  serverModalView.value = "create";
+}
+
+function returnToServerChoice() {
+  serverModalView.value = "choice";}
+
 </script>
 
 <template>
@@ -232,8 +260,10 @@ onMounted(() => {
         </div>
 
         <button
-            class="new-chat-button"
-            title="New conversation"
+            class="new-conversation-button"
+            type="button"
+            title="Add server"
+            @click="openServerModal"
         >
           +
         </button>
@@ -436,6 +466,117 @@ onMounted(() => {
       </section>
     </main>
   </div>
+  <Teleport to="body">
+    <div
+        v-if="showServerModal"
+        class="modal-backdrop"
+        @click.self="closeServerModal"
+    >
+      <section class="server-modal">
+        <button
+            class="modal-close-button"
+            type="button"
+            @click="closeServerModal"
+        >
+          ×
+        </button>
+
+        <template v-if="serverModalView === 'choice'">
+          <h2>Add a server</h2>
+
+          <p class="modal-description">
+            Create a new server or join an existing one.
+          </p>
+
+          <div class="server-choice-list">
+            <button
+                class="server-choice-button"
+                type="button"
+                @click="showCreateServer"
+            >
+              Create Server
+            </button>
+
+            <button
+                class="server-choice-button"
+                type="button"
+                @click="showJoinServer"
+            >
+              Join Server
+            </button>
+          </div>
+        </template>
+
+        <template v-else-if="serverModalView === 'join'">
+          <button
+              class="modal-back-button"
+              type="button"
+              @click="returnToServerChoice"
+          >
+            ← Back
+          </button>
+
+          <h2>Join a server</h2>
+
+          <p class="modal-description">
+            Enter the server ticket.
+          </p>
+
+          <label for="server-ticket">
+            Server ticket
+          </label>
+
+          <input
+              id="server-ticket"
+              v-model="serverTicket"
+              type="text"
+              placeholder="Enter server ticket"
+          />
+
+          <button
+              class="primary-modal-button"
+              type="button"
+          >
+            Join Server
+          </button>
+        </template>
+
+        <template v-else>
+          <button
+              class="modal-back-button"
+              type="button"
+              @click="returnToServerChoice"
+          >
+            ← Back
+          </button>
+
+          <h2>Create a server</h2>
+
+          <p class="modal-description">
+            Enter a name for the new server.
+          </p>
+
+          <label for="server-name">
+            Server name
+          </label>
+
+          <input
+              id="server-name"
+              v-model="serverName"
+              type="text"
+              placeholder="Enter server name"
+          />
+
+          <button
+              class="primary-modal-button"
+              type="button"
+          >
+            Create Server
+          </button>
+        </template>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -889,6 +1030,120 @@ button:disabled {
 
 .send-button:disabled {
   opacity: 0.5;
+}
+.modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 7, 10, 0.72);
+}
+
+.server-modal {
+  position: relative;
+  width: min(420px, 100%);
+  padding: 32px;
+  border: 1px solid #353844;
+  border-radius: 18px;
+  color: #f2f3f5;
+  background: #1d1f26;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+}
+
+.server-modal h2 {
+  margin: 0;
+  text-align: center;
+}
+
+.modal-description {
+  margin: 10px 0 24px;
+  color: #9499a6;
+  text-align: center;
+}
+
+.modal-close-button {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  border: none;
+  color: #9499a6;
+  background: transparent;
+  font-size: 28px;
+  cursor: pointer;
+}
+
+.modal-close-button:hover {
+  color: white;
+}
+
+.server-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.server-choice-button {
+  height: 48px;
+  border: none;
+  border-radius: 10px;
+  color: white;
+  background: #5865f2;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.server-choice-button:hover {
+  background: #4752c4;
+}
+
+.modal-back-button {
+  margin-bottom: 18px;
+  padding: 0;
+  border: none;
+  color: #b5bac1;
+  background: transparent;
+  cursor: pointer;
+}
+
+.server-modal label {
+  display: block;
+  margin-bottom: 8px;
+  color: #b5bac1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.server-modal input {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  outline: none;
+  color: white;
+  background: #121419;
+}
+
+.server-modal input:focus {
+  border-color: #5865f2;
+}
+
+.primary-modal-button {
+  width: 100%;
+  height: 46px;
+  margin-top: 18px;
+  border: none;
+  border-radius: 10px;
+  color: white;
+  background: #5865f2;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-modal-button:hover {
+  background: #4752c4;
 }
 
 @media (max-width: 800px) {
