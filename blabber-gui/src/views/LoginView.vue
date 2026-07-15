@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted,ref } from "vue";
 import { tauriApi } from "../API/tauriAPI";
 import type { User } from "../API/tauriAPI";
 
@@ -10,28 +10,53 @@ const emit = defineEmits<{
 const username = ref("");
 const password = ref("");
 
+const identities = ref<string[]>([]);
+const identitiesOpen = ref(false);
+const identitiesError = ref("");
+const isLoadingIdentities = ref(false)
+
+async function loadIdentities() {
+  isLoadingIdentities.value = true;
+  identitiesError.value = "";
+  try {
+    identities.value = await tauriApi.listIdentities();
+  } catch (error) {
+    console.error("Could not load identities:", error);
+    identitiesError.value = String(error);
+  } finally {
+    isLoadingIdentities.value = false;
+  }
+
+}
+
+function toggleIdentities() {
+  identitiesOpen.value = !identitiesOpen.value;
+}
+
+function selectIdentity(identityName: string) {
+  username.value = identityName;
+  identitiesOpen.value = false;
+  loginError.value = "";
+}
+
 const isLoading = ref(false);
 const isRegistering = ref(false);
 const loginError = ref("");
 
 async function submitLogin() {
   const cleanUsername = username.value.trim();
-
   if (!cleanUsername || !password.value) {
     loginError.value =
         "Please enter your username and password.";
     return;
   }
-
   isLoading.value = true;
   loginError.value = "";
-
   try {
     const user = await tauriApi.login(
         cleanUsername,
         password.value,
     );
-
     emit("login", user);
   } catch (error) {
     console.error("Login failed:", error);
@@ -43,22 +68,18 @@ async function submitLogin() {
 
 async function submitRegister() {
   const cleanUsername = username.value.trim();
-
   if (!cleanUsername || !password.value) {
     loginError.value =
         "Please enter your username and password.";
     return;
   }
-
   isRegistering.value = true;
   loginError.value = "";
-
   try {
     const user = await tauriApi.createIdentity(
         cleanUsername,
         password.value,
     );
-
     emit("login", user);
   } catch (error) {
     console.error("Identity creation failed:", error);
@@ -67,6 +88,9 @@ async function submitRegister() {
     isRegistering.value = false;
   }
 }
+onMounted(() => {
+  loadIdentities();
+});
 </script>
 
 <template>
@@ -138,6 +162,63 @@ async function submitRegister() {
                 : "Create Account"
           }}
         </button>
+        <div class="identity-accordion">
+          <button
+              class="identity-accordion-button"
+              type="button"
+              :aria-expanded="identitiesOpen"
+              @click="toggleIdentities"
+          >
+    <span>
+      Existing identities
+    </span>
+            <span
+                class="identity-arrow"
+                :class="{ open: identitiesOpen }"
+            >
+      ▼
+    </span>
+          </button>
+          <div
+              v-if="identitiesOpen"
+              class="identity-accordion-content"
+          >
+            <p
+                v-if="isLoadingIdentities"
+                class="identity-status"
+            >
+              Loading identities...
+            </p>
+            <p
+                v-else-if="identitiesError"
+                class="identity-status identity-error"
+            >
+              {{ identitiesError }}
+            </p>
+            <p
+                v-else-if="identities.length === 0"
+                class="identity-status"
+            >
+              No identities found.
+            </p>
+            <button
+                v-for="identity in identities"
+                v-else
+                :key="identity"
+                class="identity-item"
+                type="button"
+                @click="selectIdentity(identity)"
+            >
+      <span class="identity-avatar">
+        {{ identity.charAt(0).toUpperCase() }}
+      </span>
+
+              <span class="identity-name">
+        {{ identity }}
+      </span>
+            </button>
+          </div>
+        </div>
       </form>
 
 
@@ -160,6 +241,10 @@ async function submitRegister() {
   height: 100%;
   margin: 0;
 }
+:global(body),
+:global(#app) {
+  overflow-y: auto;
+}
 
 :global(body) {
   font-family:
@@ -178,10 +263,11 @@ input {
 
 .login-page {
   display: grid;
-  width: 100vw;
-  min-height: 100vh;
-  place-items: center;
-  padding: 24px;
+  width: 100%;
+  min-height: 100%;
+  place-items: start center;
+  padding: 40px 24px;
+  overflow-y: auto;
   color: #f7f3e8;
   background:
       radial-gradient(
@@ -199,6 +285,7 @@ input {
 
 .login-card {
   width: min(420px, 100%);
+  margin: auto 0;
   padding: 38px;
   border: 1px solid #45423e;
   border-radius: 12px;
@@ -317,5 +404,99 @@ input:disabled {
   color: #a79f95;
   font-size: 12px;
   text-align: center;
+}
+.identity-accordion {
+  margin-top: 16px;
+  margin-bottom: 22px;
+  border: 1px solid #45423e;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #242321;
+}
+
+.identity-accordion-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: none;
+  color: #f7f3e8;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.identity-accordion-button:hover {
+  background: #383633;
+}
+
+.identity-arrow {
+  color: #f05a24;
+  font-size: 11px;
+  transition: transform 150ms ease;
+}
+
+.identity-arrow.open {
+  transform: rotate(180deg);
+}
+
+.identity-accordion-content {
+  padding: 6px;
+  border-top: 1px solid #45423e;
+}
+
+.identity-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 46px;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 7px;
+  color: #f7f3e8;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.identity-item:hover {
+  background: #383633;
+}
+
+.identity-avatar {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  margin-right: 11px;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: #f7f3e8;
+  background: #f05a24;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.identity-name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-status {
+  margin: 0;
+  padding: 12px;
+  color: #a79f95;
+  font-size: 13px;
+  text-align: center;
+}
+
+.identity-error {
+  color: #f05a24;
 }
 </style>
