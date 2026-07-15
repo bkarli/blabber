@@ -10,7 +10,7 @@ pub async fn start_call(state: State<'_, AppState>, peer_endpoint_id: String)->R
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not created yet")?;
     let call = node.call(peer_id).await.map_err(|e| e.to_string())?;
-    *state.active_call.lock().unwrap() = Some(call);
+    //*state.active_call.lock().unwrap() = Some(call); <- das no ahluege
     Ok(())
 }
 
