@@ -9,7 +9,7 @@ use login::{create_identity, list_identities, login};
 
 #[path = "commands/voice_channel.rs"]
 mod voice_channel;
-use voice_channel::{hang_up, start_call};
+use voice_channel::{hang_up, start_call, my_endpoint_id};
 
 #[derive(Default)]
 pub struct AppState {
@@ -37,7 +37,8 @@ pub fn run() {
             list_identities,
             start_call,
             hang_up,
-            create_server
+            create_server,
+            my_endpoint_id,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

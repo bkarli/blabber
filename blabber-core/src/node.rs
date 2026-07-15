@@ -243,16 +243,13 @@ impl Node {
         Ok(())
     }
 
-    //passt nonig zum tauri command (no ahluege)
-    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<(cpal::Stream, cpal::Stream)>{
+    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<crate::channel::ActiveVoiceCall>{
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
         let key = perform_key_exchange_as_initiator(&connection).await?;        
         let channel = VoiceChannel::new(connection, key);
-        let capture_stream = channel.start_capture()?;
         let handle = tokio::runtime::Handle::current();
-        let playback_stream = channel.start_playback(&handle);
-        Ok((capture_stream, playback_stream?))
+        Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
 
 }
