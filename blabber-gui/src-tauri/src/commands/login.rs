@@ -1,7 +1,10 @@
-use blabber_core::Identity;
+use blabber_core::identity::Identity;
+use blabber_core::node::Node;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
+
+use crate::AppState;
 
 fn identities_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app
@@ -34,9 +37,29 @@ fn identity_path(
     Ok(directory.join(format!("{safe_name}.bin")))
 }
 
+
+async fn start_node_for_identity(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    identity: Identity,
+) -> Result<(), String> {
+    let blobs_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("blobs");
+    fs::create_dir_all(&blobs_path).map_err(|error| error.to_string())?;
+
+    let mut node = Node::new(identity);
+    node.run(blobs_path).await.map_err(|e| e.to_string())?;
+    *state.node.lock().await = Some(node);
+    Ok(())
+}
+
 #[tauri::command]
-pub fn create_identity(
+pub async fn create_identity(
     app: AppHandle,
+    state: State<'_, AppState>,
     display_name: String,
     password: String,
 ) -> Result<String, String> {
@@ -51,16 +74,23 @@ pub fn create_identity(
     if path.exists() {
         return Err("An identity with this name already exists".to_string());
     }
+
     let identity = Identity::new(display_name);
     identity
         .store(password, path)
         .map_err(|error| error.to_string())?;
-    Ok(identity.displayName)
+
+    let display_name_for_return = identity.displayName.clone();
+
+    start_node_for_identity(&app, &state, identity).await?;
+
+    Ok(display_name_for_return)
 }
 
 #[tauri::command]
-pub fn login(
+pub async fn login(
     app: AppHandle,
+    state: State<'_, AppState>,
     display_name: String,
     password: String,
 ) -> Result<String, String> {
@@ -70,7 +100,12 @@ pub fn login(
     }
     let identity = Identity::load_from_disk(path, password)
         .map_err(|error| error.to_string())?;
-    Ok(identity.displayName)
+
+    let display_name_for_return = identity.displayName.clone();
+
+    start_node_for_identity(&app, &state, identity).await?;
+
+    Ok(display_name_for_return)
 }
 
 #[tauri::command]

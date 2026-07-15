@@ -4,7 +4,7 @@ mod space;
 mod invite;
 mod meta;
 mod room;
-mod channel;
+pub mod channel;
 
 pub use identity::Identity;
 pub use node::Node;

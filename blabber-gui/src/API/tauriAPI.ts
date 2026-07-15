@@ -11,6 +11,11 @@ export interface User {
     displayName: string;
 }
 
+export interface SpaceInfo{
+    id: string;
+    name: string;
+}
+
 export const tauriApi = {
     async login(
         displayName: string,
@@ -57,8 +62,23 @@ export const tauriApi = {
         return;
     },
 
-    async createServer(name: string): Promise<void> {
-        console.log("Create server not implemented yet:", name);
+    async createServer(name: string): Promise<SpaceInfo> {
+        return await invoke<SpaceInfo>(
+            "create_server",
+            {
+                name,
+            },
+        );
+    },
+
+    async startCall(peerEndpointId: string): Promise<void>{
+        await invoke<void>("start_call",{peerEndpointId,
+            },
+        );
+    },
+
+    async hangUp(): Promise<void>{
+        await invoke<void>("hang_up");
     },
     async sendMessage(
         chatId: number,

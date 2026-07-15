@@ -131,20 +131,6 @@ function openSettings(){
   emit("open-settings");
 }
 
-async function createServer() {
-  const name = window.prompt("Enter a server name:");
-
-  if (!name?.trim()) {
-    return;
-  }
-
-  try {
-    await tauriApi.createServer(name.trim());
-  } catch (error) {
-    console.error("Could not create server:", error);
-  }
-}
-
 async function sendCurrentMessage() {
   const chat = selectedChat.value;
   const text = messageText.value.trim();
@@ -177,16 +163,21 @@ async function sendCurrentMessage() {
 onMounted(() => {
   void loadChats();
 });
+
 type ServerModalView = "choice" | "join" | "create";
 const showServerModal = ref(false);
 const serverModalView = ref<ServerModalView>("choice");
 const serverTicket = ref("");
 const serverName = ref("");
 
+const isCreatingServer = ref(false);
+const createServerError = ref("");
+
 function openServerModal() {
   serverModalView.value = "choice";
   serverTicket.value = "";
   serverName.value = "";
+  createServerError.value = "";
   showServerModal.value = true;
 }
 
@@ -203,8 +194,63 @@ function showCreateServer() {
 }
 
 function returnToServerChoice() {
-  serverModalView.value = "choice";}
+  serverModalView.value = "choice";
+}
 
+async function submitCreateServer() {
+  const name = serverName.value.trim();
+
+  if (!name) {
+    createServerError.value = "Server name cannot be empty.";
+    return;
+  }
+
+  isCreatingServer.value = true;
+  createServerError.value = "";
+
+  try {
+    const space = await tauriApi.createServer(name);
+    console.log("Server created:", space.id, space.name);
+
+    // TODO: neuen Server in die server-sidebar Liste aufnehmen
+    //sobald es dort eine echte (nicht hardcoded) Serverliste gibt
+    closeServerModal();
+  } catch (error) {
+    console.error("Could not create server:", error);
+    createServerError.value = (error as Error).message;
+  } finally {
+    isCreatingServer.value = false;
+  }
+}
+
+// TODO: nur zum Testen -> später durch echte Peer-EndpointId aus dem Chat/Space ersetzen
+const TEST_PEER_ENDPOINT_ID = "eb6601f820aa05dac332e5ddb7e4a405dba665fbc8e3abf72f1e8bac498a1728";
+
+const isInCall = ref(false);
+const callError = ref("");
+
+async function toggleVoiceCall() {
+  callError.value = "";
+
+  if (isInCall.value) {
+    try {
+      await tauriApi.hangUp();
+      isInCall.value = false;
+    } catch (error) {
+      console.error("Could not hang up:", error);
+      callError.value = (error as Error).message;
+    }
+    return;
+  }
+
+  try {
+    await tauriApi.startCall(TEST_PEER_ENDPOINT_ID);
+    isInCall.value = true;
+  } catch (error) {
+    console.error("Could not start call:", error);
+    callError.value = (error as Error).message;
+  }
+}
 </script>
 
 <template>
@@ -236,7 +282,7 @@ function returnToServerChoice() {
       <button
           class="server-button add-server"
           title="Create server"
-          @click="createServer"
+          @click="openServerModal"
       >
         +
       </button>
@@ -373,8 +419,12 @@ function returnToServerChoice() {
           </div>
 
           <div class="chat-actions">
-            <button title="Voice call">
-              ☎
+            <button
+                title="Voice call"
+                :class="{ 'call-active': isInCall }"
+                @click="toggleVoiceCall"
+            >
+              {{ isInCall ? "☎ Hang up" : "☎" }}
             </button>
 
             <button title="Video call">
@@ -386,6 +436,13 @@ function returnToServerChoice() {
             </button>
           </div>
         </header>
+
+        <p
+            v-if="callError"
+            class="call-error"
+        >
+          {{ callError }}
+        </p>
 
         <section class="empty-chat">
           <div class="large-avatar">
@@ -564,13 +621,21 @@ function returnToServerChoice() {
               v-model="serverName"
               type="text"
               placeholder="Enter server name"
+              :disabled="isCreatingServer"
+              @keyup.enter="submitCreateServer"
           />
+
+          <p v-if="createServerError" class="modal-error">
+            {{ createServerError }}
+          </p>
 
           <button
               class="primary-modal-button"
               type="button"
+              :disabled="isCreatingServer"
+              @click="submitCreateServer"
           >
-            Create Server
+            {{ isCreatingServer ? "Creating..." : "Create Server" }}
           </button>
         </template>
       </section>
@@ -962,6 +1027,11 @@ button:disabled {
   background: #45423e;
 }
 
+.chat-actions button.call-active {
+  color: #fff7ef;
+  background: #f05a24;
+}
+
 .empty-chat,
 .no-chat-selected {
   display: flex;
@@ -998,6 +1068,12 @@ button:disabled {
 }
 
 .message-error {
+  margin: 0 22px 10px;
+  color: #ffb69a;
+  font-size: 13px;
+}
+
+.call-error {
   margin: 0 22px 10px;
   color: #ffb69a;
   font-size: 13px;
@@ -1083,6 +1159,13 @@ button:disabled {
 .modal-description {
   margin: 10px 0 24px;
   color: #c9c3b8;
+  text-align: center;
+}
+
+.modal-error {
+  margin-top: 8px;
+  color: #ffb69a;
+  font-size: 13px;
   text-align: center;
 }
 
