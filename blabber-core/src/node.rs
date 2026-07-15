@@ -462,3 +462,5 @@ mod tests {
         .await;
         assert!(found.is_ok(), "Bob never discovered the room or received Alice's message");
     }
+
+}
