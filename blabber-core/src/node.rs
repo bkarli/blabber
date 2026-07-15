@@ -238,7 +238,10 @@ impl Node {
     /// listen for incoming Voice connections
     pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
         self.create_endpoint().await?;
-        self.wait_online().await?;
+        #[cfg(test)]
+        {
+            self.wait_online().await?; // only run this when testing
+        }
         self.create_gossip().await?;
         self.create_blobs(&blobs_path).await?;
         self.create_docs_engine(&blobs_path).await?;
