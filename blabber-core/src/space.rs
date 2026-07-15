@@ -1,10 +1,12 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
-use crate::invite::Invite;
+
+use crate::{Node, invite::Invite};
 use anyhow::{Ok, Result};
 use iroh_blobs::store::fs::FsStore;
-use iroh_docs::{AuthorId, DocTicket, engine::LiveEvent, store::Query};
+use iroh_docs::{AuthorId, DocTicket, api::protocol::ShareMode, engine::LiveEvent, store::Query};
 use n0_future::{Stream, StreamExt};
+use tokio::{sync::Mutex, task::JoinHandle};
 use crate::room::Room;
 use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
@@ -17,6 +19,13 @@ pub struct Member {
     pub endpoint_id: String,   // stringified EndpointId, for easy postcard/display
     pub display_name: String,
     pub joined_at: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RoomRecord {
+    id: Uuid,
+    name: String,
+    ticket: String,
 }
 
 /// Space holds
@@ -39,7 +48,7 @@ pub struct Space {
     pub info: Doc,
     pub members: Doc,
     users: Vec<String>,
-    rooms: Vec<Room>,
+    pub rooms: Arc<Mutex<Vec<Room>>>,
 }
 
 impl Space {
@@ -59,7 +68,7 @@ impl Space {
             info,
             members,
             users: vec![],
-            rooms: vec![],
+            rooms: Arc::new(Mutex::new(Vec::new())),
         };
         
         space
@@ -115,7 +124,7 @@ impl Space {
             info,
             members,
             users: vec![],
-            rooms: vec![],
+            rooms: Arc::new(Mutex::new(Vec::new())),
         };
 
         space
@@ -158,6 +167,68 @@ impl Space {
 
         Ok(members)
     }
+
+    /// Create a completely new room
+    pub async fn create_room(&self, docs: &Docs, author: AuthorId, name: impl Into<String>) -> Result<Room> {
+        let name = name.into();
+        let room = Room::new(docs, name.clone()).await?;
+
+        let ticket = room.messages.share(ShareMode::Write, Default::default()).await?;
+
+        let record = RoomRecord {
+            id: room.id,
+            name: name.clone(),
+            ticket: ticket.to_string(),
+        };
+
+        let key = format!("room/{}", room.id);
+
+        let value = postcard::to_allocvec(&record)?;
+
+        self.info.set_bytes(author, key.into_bytes(), value).await?;
+
+        self.rooms.lock().await.push(room.clone());
+
+        Ok(room)
+
+    }
+
+    /// initially called when joining a space just to update the in memory
+    /// information on the rooms currently on that space
+    pub async fn sync_rooms(&self, node: &Node, docs: &Docs, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
+        let entries = self
+            .info
+            .get_many(Query::single_latest_per_key().key_prefix("room/"))
+            .await?;
+        
+        let mut entries = std::pin::pin!(entries);
+
+        // go through the entries and create RoomRecors
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
+            let record: RoomRecord = postcard::from_bytes(&bytes)?;
+
+            let already_known = {
+                let rooms = self.rooms.lock().await;
+                rooms.iter().any(|r| r.id == record.id)
+            };
+
+            if !already_known {
+                let ticket = DocTicket::from_str(&record.ticket)?;
+                let room = Room::from_ticket(docs, record.id, record.name, ticket).await?;
+                self.rooms.lock().await.push(room);
+            }
+        }
+
+        let rooms = self.rooms.lock().await;
+        let mut handles = Vec::new();
+        for room in rooms.iter() {
+            let label = format!("{}/{}", self.name, room.name);
+            handles.push(room.watch(node, blobs.clone(), label).await?);
+        }
+        Ok(handles)
+    }
     
     /// subscribe to the info Document
     pub async fn subscribe_info(&self) -> Result<impl Stream<Item = Result<LiveEvent>>> {
@@ -179,3 +250,4 @@ impl Space {
         &self.name
     }
 }
+

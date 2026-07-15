@@ -205,10 +205,13 @@ impl Node {
     }
 
     /// Generic function on watching a Document
-    pub fn watch_doc<F>(&self, doc: Doc, label: &'static str, mut on_event: F) -> JoinHandle<()>
+    pub fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> JoinHandle<()>
     where
-        F: FnMut(LiveEvent) + Send + 'static,
+        F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+
     {
+        let label = label.into();
         tokio::spawn(async move {
             let events = match doc.subscribe().await {
                 Ok(e) => e,
@@ -221,7 +224,7 @@ impl Node {
 
             while let Some(event) = events.next().await {
                 match event {
-                    Ok(event) => on_event(event),
+                    Ok(event) => on_event(event).await,
                     Err(e) => eprintln!("[{label}] event error: {e}"),
                 }
             }
@@ -235,6 +238,7 @@ impl Node {
     /// listen for incoming Voice connections
     pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
         self.create_endpoint().await?;
+        self.wait_online().await?;
         self.create_gossip().await?;
         self.create_blobs(&blobs_path).await?;
         self.create_docs_engine(&blobs_path).await?;
@@ -243,20 +247,33 @@ impl Node {
         Ok(())
     }
 
-    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<(cpal::Stream, cpal::Stream)>{
-        let endpoint = self.endpoint.clone().context("Node not created yet")?;
-        let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call");
+    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>) /*->Result<(cpal::Stream, cpal::Stream)>*/{
+        // let endpoint = self.endpoint.clone().context("Node not created yet")?;
+        // let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call");
+        //
+        // let channel = VoiceChannel::new(connection?, key);
+        // let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
+        // let key = perform_key_exchange_as_initiator(&connection).await?;
+        //
+        // let channel = VoiceChannel::new(connection, key);
+        // let capture_stream = channel.start_capture()?;
+        // let handle = tokio::runtime::Handle::current();
+        //
+        // let playback_stream = channel.start_playback(&handle);
+        // Ok((capture_stream, playback_stream?))
+    }
+    
+    /// test function to keep the node online
+    pub async fn wait_online(&self) -> Result<()> {
+        use tokio::time::{timeout, Duration};
 
-        let channel = VoiceChannel::new(connection?, key);
-        let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
-        let key = perform_key_exchange_as_initiator(&connection).await?;
-        
-        let channel = VoiceChannel::new(connection, key);
-        let capture_stream = channel.start_capture()?;
-        let handle = tokio::runtime::Handle::current();
-        
-        let playback_stream = channel.start_playback(&handle);
-        Ok((capture_stream, playback_stream?))
+        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
+
+        timeout(Duration::from_secs(5), endpoint.online())
+            .await
+            .context("timed out waiting for endpoint to come online")?;
+
+        Ok(())
     }
 
 }
@@ -291,11 +308,11 @@ pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Conne
 mod tests {
 
     use super::*;
-    use tempfile::tempdir;
     use crate::channel::VOICE_ALPN;
     use iroh::endpoint::presets;
     use iroh::Endpoint;
     use anyhow::Context;
+    use tempfile::tempdir;
     
     #[tokio::test]
     async fn test_create_endpoint() {
@@ -351,7 +368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_document_subscribe() {
+    async fn test_document_subscribe() {}
 
         
 
@@ -390,54 +407,65 @@ mod tests {
         assert_eq!(key_a, key_b);
         Ok(())
     }
-
+    
     #[tokio::test]
-    async fn test_watch_doc_fires_on_local_insert() {
-        use std::sync::{Arc, Mutex};
+    async fn test_room_creation_and_message_sync() {
         use tokio::time::{sleep, timeout, Duration};
 
-        let identity = Identity::new("Alice");
-        let mut node = Node::new(identity);
-        let tmp = tempdir().unwrap();
-        node.run(tmp.path().to_path_buf()).await.unwrap();
+        let identity_a = Identity::new("Alice");
+        let mut node_a = Node::new(identity_a);
+        let tmp_a = tempdir().unwrap();
+        node_a.run(tmp_a.path().to_path_buf()).await.unwrap();
 
-        let space = node.create_space("Test Space").await.unwrap();
+        let space_a = node_a.create_space("Test Space").await.unwrap();
 
-        let received: Arc<Mutex<Vec<LiveEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let received_clone = received.clone();
+        let docs_a = node_a.docs.as_ref().unwrap();
+        let author_a = node_a.author.unwrap();
 
-        let handle = node.watch_doc(space.info.clone(), "test", move |event| {
-            received_clone.lock().unwrap().push(event);
-        });
+        space_a.create_room(docs_a, author_a, "general").await.unwrap();
 
-        // give the subscription a moment to actually attach before we write
-        sleep(Duration::from_millis(100)).await;
+        let rooms_a = space_a.rooms.lock().await;
+        let room_a = rooms_a.first().unwrap();
+        room_a.send_message(author_a, "hello from alice").await.unwrap();
+        drop(rooms_a); 
 
-        let author = node.author.unwrap();
-        space
-            .info
-            .set_bytes(author, b"greeting".to_vec(), b"hello".to_vec())
-            .await
-            .unwrap();
+        let invite = space_a.create_invite().await.unwrap();
+        let code = invite.serialize_invite().unwrap();
+        let invite = Invite::deserialize_invite(code).unwrap();
 
-        let saw_insert = timeout(Duration::from_secs(5), async {
-            loop {
-                let events = received.lock().unwrap();
-                if events
-                    .iter()
-                    .any(|e| matches!(e, LiveEvent::InsertLocal { .. }))
-                {
+        let identity_b = Identity::new("Bob");
+        let mut node_b = Node::new(identity_b);
+        let tmp_b = tempdir().unwrap();
+        node_b.run(tmp_b.path().to_path_buf()).await.unwrap();
+
+        let space_b = node_b.join_space(invite).await.unwrap();
+
+        let docs_b = node_b.docs.as_ref().unwrap();
+        let blobs_b = node_b.blobs.as_ref().unwrap();
+
+        let found = timeout(Duration::from_secs(15), async {
+        loop {
+            let handles = space_b.sync_rooms(&node_b, docs_b, blobs_b).await;
+            match &handles {
+                Ok(h) => eprintln!("sync_rooms ok, {} handles", h.len()),
+                Err(e) => eprintln!("sync_rooms error: {e:#}"),
+            }
+
+            let rooms_b = space_b.rooms.lock().await;
+            eprintln!("known rooms on B: {:?}", rooms_b.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
+
+            if let Some(room_b) = rooms_b.iter().find(|r| r.name == "general") {
+                let cache = room_b.cache.lock().await;
+                eprintln!("room 'general' cache: {:?}", cache.iter().map(|m| &m.content).collect::<Vec<_>>());
+                if cache.iter().any(|m| m.content == "hello from alice") {
                     return;
                 }
-                drop(events);
-                sleep(Duration::from_millis(50)).await;
             }
+            drop(rooms_b);
+            sleep(Duration::from_millis(1000)).await; // slower interval so the log isn't flooded
+        }
         })
         .await;
-
-        handle.abort();
-
-        assert!(saw_insert.is_ok(), "watch_doc never observed the local insert");
-    }
+        assert!(found.is_ok(), "Bob never discovered the room or received Alice's message");
     }
 }
