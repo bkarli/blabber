@@ -37,9 +37,7 @@ fn identity_path(
     Ok(directory.join(format!("{safe_name}.bin")))
 }
 
-/// baut aus einer Identity einen Node, startet Endpoint + Router,
-/// und legt ihn im AppState ab, damit spaetere Commands (create_server,
-/// start_call, ...) ihn wiederfinden.
+
 async fn start_node_for_identity(
     app: &AppHandle,
     state: &State<'_, AppState>,
