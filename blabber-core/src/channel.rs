@@ -57,7 +57,6 @@ impl VoiceChannel {
         let connection = self.connection.clone();
         let cipher = Arc::clone(&self.cipher);
         let counter = Arc::clone(&self.send_counter);
-
         let stream = device.build_input_stream(&stream_config, move |data: &[f32], _: &cpal::InputCallbackInfo| {send_audio_chunk(&connection, &cipher, &counter, data);},
             move |err| { eprintln!("audio capture error: {err}");},
             None,)?;
@@ -147,19 +146,41 @@ impl Drop for ActiveVoiceCall {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct VoiceProtocol;
+pub type IncomingCallHandler = Arc<dyn Fn(String) + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct VoiceProtocol {
+    on_incoming: Option<IncomingCallHandler>,
+}
+
+impl std::fmt::Debug for VoiceProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceProtocol")
+            .field("on_incoming", &self.on_incoming.is_some())
+            .finish()
+    }
+}
 
 impl VoiceProtocol {
-    pub fn new() -> Self {Self}}
+    pub fn new() -> Self {
+        Self { on_incoming: None }
+    }
+    pub fn with_incoming_handler(mut self, handler: IncomingCallHandler) -> Self {
+        self.on_incoming = Some(handler);
+        self
+    }
+}
 
 impl ProtocolHandler for VoiceProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        //negotiate a fresh key
-        let key = crate::node::perform_key_exchange_as_acceptor(&connection).await.map_err(std::io::Error::other)?;
-
+        if let Some(handler) = &self.on_incoming {
+            let remote_id = connection.remote_id();
+            handler(remote_id.to_string());
+        }
+        let key = crate::node::perform_key_exchange_as_acceptor(&connection)
+            .await
+            .map_err(std::io::Error::other)?;
         let channel = VoiceChannel::new(connection.clone(), key);
-
         let handle = tokio::runtime::Handle::current();
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let audio_thread = std::thread::spawn(move || -> Result<()> {
@@ -174,6 +195,7 @@ impl ProtocolHandler for VoiceProtocol {
         Ok(())
     }
 }
+
 
 
 fn send_audio_chunk(connection: &Connection,cipher: &ChaCha20Poly1305,counter: &AtomicU64,data: &[f32],) {

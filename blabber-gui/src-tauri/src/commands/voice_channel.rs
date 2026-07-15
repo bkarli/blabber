@@ -1,6 +1,6 @@
 use blabber_core::channel::VoiceChannel;
 use tauri::State;
-use crate::AppState; //ev pfad ahpasse
+use crate::AppState;
 
 
 #[tauri::command]
