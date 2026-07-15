@@ -31,6 +31,7 @@ pub struct Node {
     pub blobs: Option<FsStore>,
     pub docs: Option<Docs>,
     pub author: Option<AuthorId>,
+    on_incoming_call: Option<crate::channel::IncomingCallHandler>,
 }
 
 impl Node {
@@ -43,7 +44,15 @@ impl Node {
             blobs: None,
             docs: None,
             author: None,
+            on_incoming_call: None,
         }
+    }
+
+    pub fn set_incoming_call_handler(
+        &mut self,
+        handler: impl Fn(String) + Send + Sync + 'static,
+    ) {
+        self.on_incoming_call = Some(std::sync::Arc::new(handler));
     }
 
     /// Create the endpoint from the identity
@@ -124,7 +133,11 @@ impl Node {
             .clone()
             .context("docs not created yet")?;
 
-        let voice = VoiceProtocol::new();
+        let mut voice = VoiceProtocol::new();
+
+        if let Some(handler) = &self.on_incoming_call {
+            voice = voice.with_incoming_handler(handler.clone());
+        }
 
         let router = Router::builder(endpoint)
             .accept(GOSSIP_ALPN, gossip)
@@ -272,6 +285,7 @@ impl Node {
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
+
 
 }
 
