@@ -111,6 +111,42 @@ impl VoiceChannel {
     }
 }
 
+pub struct ActiveVoiceCall {
+    stop_tx: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<Result<()>>>,
+}
+impl ActiveVoiceCall {
+    pub fn start(channel: VoiceChannel, handle: tokio::runtime::Handle) -> Self {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+
+        let thread = std::thread::spawn(move || -> Result<()> {
+            let _capture = channel.start_capture()?;
+            let _playback = channel.start_playback(&handle)?;
+            let _ = stop_rx.recv();
+            Ok(())
+        });
+
+        Self {
+            stop_tx,
+            thread: Some(thread),
+        }
+    }
+    pub fn hang_up(mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+impl Drop for ActiveVoiceCall {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct VoiceProtocol;
 
