@@ -36,6 +36,8 @@ const isSendingMessage = ref(false);
 
 const loadError = ref("");
 const messageError = ref("");
+const isCreatingServer = ref(false);
+const createServerError = ref("");
 
 const profileName = computed(() => {
   return props.user.displayName;
@@ -131,19 +133,6 @@ function openSettings(){
   emit("open-settings");
 }
 
-async function createServer() {
-  const name = window.prompt("Enter a server name:");
-
-  if (!name?.trim()) {
-    return;
-  }
-
-  try {
-    await tauriApi.createServer(name.trim());
-  } catch (error) {
-    console.error("Could not create server:", error);
-  }
-}
 
 async function sendCurrentMessage() {
   const chat = selectedChat.value;
@@ -205,6 +194,26 @@ function showCreateServer() {
 function returnToServerChoice() {
   serverModalView.value = "choice";}
 
+async function submitCreateServer(){
+  const name = serverName.value.trim();
+  if(!name) {
+    createServerError.value = "Server name cannot be empty";
+    return;
+  }
+  isCreatingServer.value = true;
+  createServerError.value = "";
+  try{
+    const space = await tauriApi.createServer(name);
+    console.log("Server created: ", space.id, space.name);
+    //TODO: neuen server in die server-sidebar liste nehmen
+    closeServerModal();}
+  catch (error){
+    console.error("Could not create Server: ", error);
+    createServerError.value = (error as Error).message;
+  }finally{
+    isCreatingServer.value = false;
+  }}
+
 </script>
 
 <template>
@@ -236,7 +245,7 @@ function returnToServerChoice() {
       <button
           class="server-button add-server"
           title="Create server"
-          @click="createServer"
+          @click="openServerModal"
       >
         +
       </button>
@@ -564,13 +573,17 @@ function returnToServerChoice() {
               v-model="serverName"
               type="text"
               placeholder="Enter server name"
+              :disabled="isCreatingServer"
+              @keyup.enter="submitCreateServer"
           />
-
+          <p v-if="createServerError" class="modal-error">{{ createServerError }}</p>
           <button
               class="primary-modal-button"
               type="button"
+              :disabled="isCreatingServer"
+              @click="submitCreateServer"
           >
-            Create Server
+            {{ isCreatingServer ? "Creating..." : "Create Server" }}
           </button>
         </template>
       </section>
@@ -1083,6 +1096,13 @@ button:disabled {
 .modal-description {
   margin: 10px 0 24px;
   color: #c9c3b8;
+  text-align: center;
+}
+
+.modal-error {
+  margin-top: 8px;
+  color: #ffb69a;
+  font-size: 13px;
   text-align: center;
 }
 

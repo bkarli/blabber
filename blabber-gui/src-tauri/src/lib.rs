@@ -16,6 +16,9 @@ pub struct AppState {
     pub node: TokioMutex<Option<Node>>,
     pub active_call: Mutex<Option<ActiveVoiceCall>>,
 }
+#[path = "commands/space.rs"]
+mod space;
+use space::create_server;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -33,7 +36,8 @@ pub fn run() {
             login,
             list_identities,
             start_call,
-            hang_up
+            hang_up,
+            create_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
