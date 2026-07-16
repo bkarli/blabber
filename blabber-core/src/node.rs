@@ -197,6 +197,7 @@ impl Node {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
+        let blobs = self.blobs.as_ref().context("blobs not created yet")?;
         let endpoint_id = endpoint.id().to_string();
         let display_name = self.identity.displayName.clone();
         
@@ -230,6 +231,9 @@ impl Node {
                 }
             };
             let space = Space::from_invite(docs,invite,author, endpoint_id.clone(),display_name.clone(),).await?;
+            if let Err(e) = space.sync_rooms(self, docs, blobs).await{
+                eprintln!("failed to sync rooms for space {dir_name}: {e}");
+            }
             spaces.push(space);
             }
         Ok(spaces)
