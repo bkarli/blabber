@@ -58,6 +58,11 @@ impl Node {
         }
     }
 
+    fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
+        let identity_dir = &self.identity.displayName;
+        Ok(path.join(identity_dir))
+    }
+
     /// Create the endpoint from the identity
     /// This should always generate always the same Enpoint
     pub async fn create_endpoint(&mut self) -> Result<()> {
@@ -74,7 +79,7 @@ impl Node {
     }
 
     pub async fn create_blobs(&mut self, path: &PathBuf) -> Result<()> {
-        let blobs = FsStore::load(path).await?;
+        let blobs = FsStore::load(self.add_idetity_to_path(path)?).await?;
         self.blobs = Some(blobs);
         Ok(())
     }
@@ -107,7 +112,7 @@ impl Node {
             .clone()
             .context("blobs not created yet")?;
 
-        let docs = Docs::persistent(path.to_path_buf())
+        let docs = Docs::persistent(self.add_idetity_to_path(path)?)
             .spawn(endpoint, blobs.into(), gossip)
             .await?;
 
@@ -201,6 +206,9 @@ impl Node {
         //              - Channels and Rooms
         //          - [UUID]chat
         
+        // add identity to the path
+        let root_path = self.add_idetity_to_path(&root_path)?;
+
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
@@ -209,6 +217,7 @@ impl Node {
         
         let mut spaces = Vec::new();
         let mut entries = fs::read_dir(root_path).await?;
+
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
