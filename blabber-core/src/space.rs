@@ -158,7 +158,7 @@ impl Space {
         let meta_dir = root_path.join(self.id.to_string()).join("meta");
         tokio::fs::create_dir_all(&meta_dir).await?;
         let invite = self.create_invite().await?;
-        let code = invite.serialize_invite().unwrap();
+        let code = invite.serialize_invite()?;
         tokio::fs::write(meta_dir.join("invite.txt"), code).await?;
         Ok(())
     }
