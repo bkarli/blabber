@@ -208,6 +208,10 @@ impl Node {
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         let endpoint_id = endpoint.id().to_string();
         let display_name = self.identity.displayName.clone();
+        let blobs = self
+            .blobs
+            .as_ref()
+            .context("blobs not created yet")?;
         
         let mut spaces = Vec::new();
         let mut entries = fs::read_dir(root_path).await?;
@@ -238,7 +242,24 @@ impl Node {
                     continue;
                 }
             };
-            let space = Space::from_invite(docs,invite,author, endpoint_id.clone(),display_name.clone(),).await?;
+            let space = Space::from_invite(
+                docs,
+                invite,
+                author,
+                endpoint_id.clone(),
+                display_name.clone(),
+            ).await?;
+
+
+            space
+                .sync_rooms(self, blobs)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+            "failed to sync rooms for space {dir_name}: {error}"
+        )
+
+                })?;
             spaces.push(space);
             }
 

@@ -16,6 +16,11 @@ export interface SpaceInfo{
     name: string;
 }
 
+export interface RoomInfo {
+    id: string;
+    name: string;
+}
+
 export const tauriApi = {
     async login(
         displayName: string,
@@ -74,6 +79,29 @@ export const tauriApi = {
 
     async listServers(): Promise<SpaceInfo[]> {
         return await invoke<SpaceInfo[]>("list_servers");
+    },
+    async listRooms(
+        spaceId: string,
+    ): Promise<RoomInfo[]> {
+        return await invoke<RoomInfo[]>(
+            "list_rooms",
+            {
+                spaceId,
+            },
+        );
+    },
+
+    async createRoom(
+        spaceId: string,
+        name: string,
+    ): Promise<RoomInfo> {
+        return await invoke<RoomInfo>(
+            "create_room",
+            {
+                spaceId,
+                name,
+            },
+        );
     },
 
     async startCall(peerEndpointId: string): Promise<void>{
