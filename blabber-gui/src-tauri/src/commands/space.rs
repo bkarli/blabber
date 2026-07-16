@@ -9,9 +9,13 @@ pub struct SpaceInfo {
     pub name: String,
 }
 
-
-pub fn spaces_dir(app: &AppHandle)-> Result<PathBuf, String>{
-    app.path().app_data_dir().map_err(|error| error.to_string()).map(|dir| dir.join("spaces"))
+pub fn spaces_dir(
+    app: &AppHandle,
+) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())
+        .map(|dir| dir.join("spaces"))
 }
 
 #[tauri::command]
@@ -30,10 +34,18 @@ pub async fn create_server(
     let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
  
     let space = node.create_space(name).await.map_err(|e| e.to_string())?;
- 
+
     let root = spaces_dir(&app)?;
-    space.create_directory(&root).await.map_err(|e| e.to_string())?;
- 
+
+    let user_root = node
+        .add_idetity_to_path(&root)
+        .map_err(|error| error.to_string())?;
+
+    space
+        .create_directory(&user_root)
+        .await
+        .map_err(|error| error.to_string())?;
+
     let info = SpaceInfo {
         id: space.id().to_string(),
         name: space.name().to_string(),

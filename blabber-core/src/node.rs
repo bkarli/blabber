@@ -58,7 +58,7 @@ impl Node {
         }
     }
 
-    fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
+    pub fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
         let identity_dir = &self.identity.displayName;
         Ok(path.join(identity_dir))
     }
