@@ -27,6 +27,14 @@ const defaultChats: Chat[] = [
 const spaces = ref<SpaceInfo[]>([]);
 const selectedSpaceId = ref<string | null>(null);
 
+const selectedSpace = computed(() => {
+  return (
+      spaces.value.find(
+          (space) => space.id === selectedSpaceId.value,
+      ) ?? null
+  );
+});
+
 const isLoadingSpaces = ref(false);
 const spacesError = ref("");
 
@@ -37,13 +45,9 @@ async function loadSpaces() {
   spacesError.value = "";
 
   try {
-    const loadedSpaces = await tauriApi.listServers();
-    console.log("loadSpaces called");
-    spaces.value = loadedSpaces;
+    spaces.value = await tauriApi.listServers();
 
-    if (spaces.value.length > 0) {
-      selectedSpaceId.value = spaces.value[0].id;
-    }
+    selectedSpaceId.value = null;
   } catch (error) {
     console.error("Could not load servers:", error);
     spacesError.value = String(error);
@@ -253,6 +257,31 @@ async function submitCreateServer() {
     isCreatingServer.value = false;
   }
 }
+interface RoomInfo {
+  id: string;
+  name: string;
+}
+
+const rooms = ref<RoomInfo[]>([]);
+const selectedRoomId = ref<string | null>(null);
+const showRoomModal = ref(false);
+const roomName = ref("");
+const roomError = ref("");
+const isCreatingRoom = ref(false);
+
+function openRoomModal() {
+  if (!selectedSpaceId.value) {
+    return;
+  }
+
+  roomName.value = "";
+  roomError.value = "";
+  showRoomModal.value = true;
+}
+
+function closeRoomModal() {
+  showRoomModal.value = false;
+}
 
 // TODO: nur zum Testen -> später durch echte Peer-EndpointId aus dem Chat/Space ersetzen
 const TEST_PEER_ENDPOINT_ID = "eb6601f820aa05dac332e5ddb7e4a405dba665fbc8e3abf72f1e8bac498a1728";
@@ -315,6 +344,7 @@ function selectSpace(spaceId: string) {
       <button
           class="server-button home-server"
           title="Blabber home"
+          @click ="selectedSpaceId = null"
       >
         B
       </button>
@@ -352,82 +382,130 @@ function selectSpace(spaceId: string) {
     </aside>
 
     <!-- Conversation sidebar -->
+    <!-- Conversation sidebar -->
     <aside class="chat-sidebar">
       <header class="sidebar-header">
         <div>
-          <h1>Blabber</h1>
-          <span>Direct messages</span>
+          <h1>
+            {{ selectedSpace ? selectedSpace.name : "Blabber" }}
+          </h1>
+          <span>
+            {{ selectedSpace ? "Rooms" : "Direct messages" }}
+</span>
         </div>
 
         <button
             class="new-conversation-button"
             type="button"
-            title="Add server"
-            @click="openServerModal"
+            :title="selectedSpace ? 'Create room' : 'Add server'"
+            @click="
+      selectedSpace
+        ? openRoomModal()
+        : openServerModal()
+    "
         >
           +
         </button>
       </header>
 
-      <div class="search-container">
+      <div
+        v-if ="!selectedSpace"
+        class= "search-container"
+        >
         <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Search conversations"
+        v-model="searchQuery"
+        type="text"
+        placeholder="Search conversations"
         />
       </div>
-
       <nav class="chat-list">
-        <p
-            v-if="isLoading"
-            class="backend-status"
-        >
-          Loading conversations...
-        </p>
+        <!-- Blabber Home -->
+        <template v-if="!selectedSpace">
+          <p
+              v-if="isLoading"
+              class="backend-status"
+          >
+            Loading conversations...
+          </p>
 
-        <p
-            v-else-if="loadError"
-            class="backend-status warning"
-        >
-          {{ loadError }}
-        </p>
+          <p
+              v-else-if="loadError"
+              class="backend-status warning"
+          >
+            {{ loadError }}
+          </p>
 
-        <button
-            v-for="chat in filteredChats"
-            :key="chat.id"
-            class="chat-item"
-            :class="{
-            selected: selectedChatId === chat.id,
-          }"
-            @click="openChat(chat.id)"
-        >
-          <div class="avatar">
-            {{ chat.initials }}
+          <button
+              v-for="chat in filteredChats"
+              :key="chat.id"
+              class="chat-item"
+              :class="{
+          selected: selectedChatId === chat.id,
+        }"
+              @click="openChat(chat.id)"
+          >
+            <div class="avatar">
+              {{ chat.initials }}
 
-            <span
-                class="status"
-                :class="{ online: chat.online }"
-            ></span>
-          </div>
+              <span
+                  class="status"
+                  :class="{ online: chat.online }"
+              ></span>
+            </div>
 
-          <div class="chat-information">
-            <strong>{{ chat.name }}</strong>
+            <div class="chat-information">
+              <strong>{{ chat.name }}</strong>
 
-            <span>
-              {{ chat.online ? "Online" : "Offline" }}
-            </span>
-          </div>
-        </button>
+              <span>
+          {{ chat.online ? "Online" : "Offline" }}
+        </span>
+            </div>
+          </button>
 
-        <p
-            v-if="
-            !isLoading &&
-            filteredChats.length === 0
-          "
-            class="no-results"
-        >
-          No conversations found.
-        </p>
+          <p
+              v-if="
+          !isLoading &&
+          filteredChats.length === 0
+        "
+              class="no-results"
+          >
+            No conversations found.
+          </p>
+        </template>
+
+        <!-- Ausgewählter Space -->
+        <template v-else>
+          <p class="backend-status">
+            Rooms for {{ selectedSpace.name }}
+          </p>
+
+          <p
+              v-if="rooms.length === 0"
+              class="no-results"
+          >
+            No rooms yet.
+          </p>
+
+          <button
+              v-for="room in rooms"
+              :key="room.id"
+              class="chat-item"
+              :class="{
+          selected: selectedRoomId === room.id,
+        }"
+              @click="selectedRoomId = room.id"
+          >
+            <div class="avatar">
+              #
+            </div>
+
+            <div class="chat-information">
+              <strong>{{ room.name }}</strong>
+              <span>Text room</span>
+            </div>
+          </button>
+
+        </template>
       </nav>
 
       <footer class="profile">
