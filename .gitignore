@@ -6,3 +6,4 @@ flake.lock
 .log
 .idea/
 Cargo.lock
+*.iml

@@ -109,6 +109,21 @@ pub async fn login(
 }
 
 #[tauri::command]
+pub async fn logout(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let node = state.node.lock().await.take();
+
+    if let Some(node) = node {
+        node.shutdown()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub fn list_identities(
     app: AppHandle,
 ) -> Result<Vec<String>, String> {
