@@ -17,6 +17,7 @@ use uuid::Uuid;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_gossip::{ALPN as GOSSIP_ALPN};
 use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
+use iroh_docs::api::protocol::ShareMode;
 
 use anyhow::Context;
 use tokio::fs;
@@ -177,7 +178,7 @@ impl Node {
     }
 
     /// Additionally we need to load the docs
-    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<()> {
+    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
         // go through the root_path and enumerate all the spaces present
         // in the directory
         // root_directory
@@ -188,7 +189,13 @@ impl Node {
         //              - Channels and Rooms
         //          - [UUID]chat
         
-
+        let docs = self.docs.as_ref().context("docs engine not created yet")?;
+        let author = self.author.context("author not created yet")?;
+        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
+        let endpoint_id = endpoint.id().to_string();
+        let display_name = self.identity.displayName.clone();
+        
+        let mut spaces = Vec::new();
         let mut entries = fs::read_dir(root_path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -201,21 +208,28 @@ impl Node {
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-
-            let Ok(space_id) = Uuid::parse_str(dir_name) else {
+            if Uuid::parse_str(dir_name).is_err(){
                 continue;
-            };
-
-            let meta_path = path.join("meta");
-            if meta_path.is_dir() {
-                // get the info ticket
-                // get the member ticket
-                // get the channel and room information
             }
-        }
-
-        Ok(())
+            let invite_path = path.join("meta").join("invite.txt");
+            if !invite_path.is_file(){
+                continue;
+            }
+            
+            let code = fs::read_to_string(&invite_path).await?;
+            let invite = match Invite::deserialize_invite(code){
+                Ok(i) => i,
+                Err(e) =>{
+                    eprintln!("skipping unreadable space {dir_name}");
+                    continue;
+                }
+            };
+            let space = Space::from_invite(docs,invite,author, endpoint_id.clone(),display_name.clone(),).await?;
+            spaces.push(space);
+            }
+        Ok(spaces)
     }
+    
 
     /// Generic function on watching a Document
     pub fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> JoinHandle<()>

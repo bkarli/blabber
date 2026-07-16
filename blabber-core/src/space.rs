@@ -143,7 +143,12 @@ impl Space {
     /// create the directory for the space
     /// Document for Meta aswell as the chats
     /// will be saved in that directory
-    pub fn create_directory() -> Result<()> {
+    pub async fn create_directory(&self, root_path: &std::path::Path) -> Result<()> {
+        let meta_dir = root_path.join(self.id.to_string()).join("meta");
+        tokio::fs::create_dir_all(&meta_dir).await?;
+        let invite = self.create_invite().await?;
+        let code = invite.serialize_invite().unwrap();
+        tokio::fs::write(meta_dir.join("invite.txt"), code).await?;
         Ok(())
     }
 
