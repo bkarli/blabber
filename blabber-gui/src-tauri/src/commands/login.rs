@@ -3,7 +3,7 @@ use blabber_core::node::Node;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
-use crate::space::{spaces_dir, SpaceInfo};
+use crate::space::spaces_dir;
 
 use crate::AppState;
 
@@ -52,25 +52,17 @@ async fn start_node_for_identity(
     fs::create_dir_all(&blobs_path).map_err(|error| error.to_string())?;
 
     let mut node = Node::new(identity);
-    let app_for_event = app.clone();
+
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
 
     let spaces_root = spaces_dir(app)?;
     fs::create_dir_all(&spaces_root).map_err(|error| error.to_string())?;
+
     let loaded_spaces = node
         .load_spaces(spaces_root)
         .await
         .map_err(|e| e.to_string())?;
-
-    let loaded_infos: Vec<SpaceInfo> = loaded_spaces
-        .iter()
-        .map(|space| SpaceInfo {
-            id: space.id().to_string(),
-            name: space.name().to_string(),
-        })
-        .collect();
-
-    *state.known_spaces.lock().unwrap() = loaded_infos;
+    *state.spaces.lock().await = loaded_spaces;
     *state.node.lock().await = Some(node);
     Ok(())
     }
@@ -132,6 +124,8 @@ pub async fn logout(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let node = state.node.lock().await.take();
+
+    state.spaces.lock().await.clear();
 
     if let Some(node) = node {
         node.shutdown()

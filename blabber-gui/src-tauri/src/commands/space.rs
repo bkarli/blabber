@@ -38,42 +38,38 @@ pub async fn create_server(
         id: space.id().to_string(),
         name: space.name().to_string(),
     };
- 
-    state.known_spaces.lock().unwrap().push(info.clone());
- 
+    state.spaces.lock().await.push(space);
+
+
     Ok(info)
 }
+
+
 #[tauri::command]
 pub async fn list_servers(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<SpaceInfo>, String> {
     let root = spaces_dir(&app)?;
-
     tokio::fs::create_dir_all(&root)
         .await
         .map_err(|error| error.to_string())?;
-
     let mut node_guard = state.node.lock().await;
-
     let node = node_guard
         .as_mut()
         .ok_or("Node not started yet... please log in first")?;
-
     let loaded_spaces = node
         .load_spaces(root)
         .await
         .map_err(|error| error.to_string())?;
 
     let infos: Vec<SpaceInfo> = loaded_spaces
-        .into_iter()
+        .iter()
         .map(|space| SpaceInfo {
             id: space.id().to_string(),
             name: space.name().to_string(),
         })
         .collect();
-
-    *state.known_spaces.lock().unwrap() = infos.clone();
-
+    *state.spaces.lock().await = loaded_spaces;
     Ok(infos)
 }

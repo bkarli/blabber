@@ -4,7 +4,8 @@ import { tauriApi } from "../API/tauriAPI";
 import type {
   Chat,
   User,
-  SpaceInfo
+  SpaceInfo,
+  RoomInfo,
 } from "../API/tauriAPI";
 
 const props = defineProps<{
@@ -55,6 +56,71 @@ async function loadSpaces() {
     isLoadingSpaces.value = false;
   }
 }
+const rooms = ref<RoomInfo[]>([]);
+const selectedRoomId = ref<string | null>(null);
+
+const isLoadingRooms = ref(false);
+const roomsError = ref("");
+
+const showRoomModal = ref(false);
+const roomName = ref("");
+const roomError = ref("");
+const isCreatingRoom = ref(false);
+async function loadRooms(spaceId: string) {
+  isLoadingRooms.value = true;
+  roomsError.value = "";
+
+  try {
+    rooms.value = await tauriApi.listRooms(spaceId);
+    selectedRoomId.value =
+        rooms.value.length > 0
+            ? rooms.value[0].id
+            : null;
+  } catch (error) {
+    console.error("Could not load rooms:", error);
+    roomsError.value = String(error);
+    rooms.value = [];
+    selectedRoomId.value = null;
+  } finally {
+    isLoadingRooms.value = false;
+  }
+}
+async function submitCreateRoom() {
+  if (
+      isCreatingRoom.value ||
+      !selectedSpaceId.value
+  ) {
+    return;
+  }
+
+  const name = roomName.value.trim();
+
+  if (!name) {
+    roomError.value = "Room name cannot be empty.";
+    return;
+  }
+
+  isCreatingRoom.value = true;
+  roomError.value = "";
+
+  try {
+    const room = await tauriApi.createRoom(
+        selectedSpaceId.value,
+        name,
+    );
+
+    rooms.value.push(room);
+    selectedRoomId.value = room.id;
+
+    closeRoomModal();
+  } catch (error) {
+    console.error("Could not create room:", error);
+    roomError.value = String(error);
+  } finally {
+    isCreatingRoom.value = false;
+  }
+}
+
 
 const chats = ref<Chat[]>([...defaultChats]);
 
@@ -248,6 +314,8 @@ async function submitCreateServer() {
     const space = await tauriApi.createServer(name);
     spaces.value.push(space);
     selectedSpaceId.value = space.id;
+    rooms.value = [];
+    selectedRoomId.value = null;
 
     closeServerModal();
   } catch (error) {
@@ -257,17 +325,8 @@ async function submitCreateServer() {
     isCreatingServer.value = false;
   }
 }
-interface RoomInfo {
-  id: string;
-  name: string;
-}
 
-const rooms = ref<RoomInfo[]>([]);
-const selectedRoomId = ref<string | null>(null);
-const showRoomModal = ref(false);
-const roomName = ref("");
-const roomError = ref("");
-const isCreatingRoom = ref(false);
+
 
 function openRoomModal() {
   if (!selectedSpaceId.value) {
@@ -333,8 +392,9 @@ function getSpaceInitials(name: string): string {
       .toUpperCase();
 }
 
-function selectSpace(spaceId: string) {
+async function selectSpace(spaceId: string) {
   selectedSpaceId.value = spaceId;
+  await loadRooms(spaceId);
 }
 </script>
 
@@ -478,9 +538,20 @@ function selectSpace(spaceId: string) {
           <p class="backend-status">
             Rooms for {{ selectedSpace.name }}
           </p>
-
           <p
-              v-if="rooms.length === 0"
+              v-if="isLoadingRooms"
+              class="backend-status"
+          >
+            Loading rooms...
+          </p>
+          <p
+              v-else-if="roomsError"
+              class="backend-status warning"
+          >
+            {{ roomsError }}
+          </p>
+          <p
+              v-else-if="rooms.length === 0"
               class="no-results"
           >
             No rooms yet.
@@ -771,6 +842,62 @@ function selectSpace(spaceId: string) {
             {{ isCreatingServer ? "Creating..." : "Create Server" }}
           </button>
         </template>
+      </section>
+    </div>
+  </Teleport>
+  <Teleport to="body">
+    <div
+        v-if="showRoomModal"
+        class="modal-backdrop"
+        @click.self="closeRoomModal"
+    >
+      <section class="server-modal">
+        <button
+            class="modal-close-button"
+            type="button"
+            @click="closeRoomModal"
+        >
+          ×
+        </button>
+
+        <h2>Create Room</h2>
+
+        <p class="modal-description">
+          Create a room in {{ selectedSpace?.name }}.
+        </p>
+
+        <label for="room-name">
+          Room name
+        </label>
+
+        <input
+            id="room-name"
+            v-model="roomName"
+            type="text"
+            placeholder="general"
+            :disabled="isCreatingRoom"
+            @keydown.enter.prevent="submitCreateRoom"
+        />
+
+        <p
+            v-if="roomError"
+            class="modal-error"
+        >
+          {{ roomError }}
+        </p>
+
+        <button
+            class="primary-modal-button"
+            type="button"
+            :disabled="isCreatingRoom"
+            @click="submitCreateRoom"
+        >
+          {{
+            isCreatingRoom
+                ? "Creating..."
+                : "Create Room"
+          }}
+        </button>
       </section>
     </div>
   </Teleport>
