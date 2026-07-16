@@ -210,7 +210,7 @@ impl Node {
         
         // add identity to the path
         let root_path = self.add_idetity_to_path(&root_path)?;
-
+        tokio::fs::create_dir_all(&root_path).await?;
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
