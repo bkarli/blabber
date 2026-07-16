@@ -40,6 +40,8 @@ pub struct RoomRecord {
 ///
 /// Other peers can invite other peers to the space
 ///
+///
+#[derive(Clone)]
 pub struct Space {
     id: uuid::Uuid, 
     name: String,

@@ -166,7 +166,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn create_space(&self, name: impl Into<String>) -> Result<()> {
+    pub async fn create_space(&self, name: impl Into<String>) -> Result<Space> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
@@ -174,8 +174,8 @@ impl Node {
         let endpoint_id = endpoint.id().to_string();
 
         let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
-        self.spaces.lock().await.push(space);
-        Ok(())
+        self.spaces.lock().await.push(space.clone());
+        Ok(space)
     }
 
     pub async fn join_space(&self, invite: Invite) -> Result<()> {
@@ -190,7 +190,7 @@ impl Node {
     }
 
     /// Additionally we need to load the docs
-    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<()> {
+    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
         // go through the root_path and enumerate all the spaces present
         // in the directory
         // root_directory
@@ -240,8 +240,8 @@ impl Node {
             spaces.push(space);
             }
 
-        self.spaces.lock().await.extend(spaces);
-        Ok(())
+        self.spaces.lock().await.extend(spaces.clone());
+        Ok(spaces)
 
     }
     
@@ -430,6 +430,8 @@ mod tests {
         node.run(tmp.path().to_path_buf()).await.unwrap();
 
         node.create_space("Test").await.unwrap();
+
+
 
     }
 
