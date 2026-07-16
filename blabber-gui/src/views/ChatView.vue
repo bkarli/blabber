@@ -4,6 +4,7 @@ import { tauriApi } from "../API/tauriAPI";
 import type {
   Chat,
   User,
+  SpaceInfo
 } from "../API/tauriAPI";
 
 const props = defineProps<{
@@ -23,6 +24,37 @@ const defaultChats: Chat[] = [
     online: false,
   },
 ];
+const spaces = ref<SpaceInfo[]>([]);
+const selectedSpaceId = ref<string | null>(null);
+
+const selectedSpace = computed(() => {
+  return (
+      spaces.value.find(
+          (space) => space.id === selectedSpaceId.value,
+      ) ?? null
+  );
+});
+
+const isLoadingSpaces = ref(false);
+const spacesError = ref("");
+
+async function loadSpaces() {
+  console.log("loadSpaces called");
+
+  isLoadingSpaces.value = true;
+  spacesError.value = "";
+
+  try {
+    spaces.value = await tauriApi.listServers();
+
+    selectedSpaceId.value = null;
+  } catch (error) {
+    console.error("Could not load servers:", error);
+    spacesError.value = String(error);
+  } finally {
+    isLoadingSpaces.value = false;
+  }
+}
 
 const chats = ref<Chat[]>([...defaultChats]);
 
@@ -160,8 +192,9 @@ async function sendCurrentMessage() {
   }
 }
 
-onMounted(() => {
+onMounted( () => {
   void loadChats();
+  void loadSpaces();
 });
 
 type ServerModalView = "choice" | "join" | "create";
@@ -198,6 +231,9 @@ function returnToServerChoice() {
 }
 
 async function submitCreateServer() {
+  if(isCreatingServer.value){
+    return;
+  }
   const name = serverName.value.trim();
 
   if (!name) {
@@ -210,17 +246,41 @@ async function submitCreateServer() {
 
   try {
     const space = await tauriApi.createServer(name);
-    console.log("Server created:", space.id, space.name);
+    spaces.value.push(space);
+    selectedSpaceId.value = space.id;
 
-    // TODO: neuen Server in die server-sidebar Liste aufnehmen
-    //sobald es dort eine echte (nicht hardcoded) Serverliste gibt
     closeServerModal();
   } catch (error) {
     console.error("Could not create server:", error);
-    createServerError.value = (error as Error).message;
+    createServerError.value = String(error);
   } finally {
     isCreatingServer.value = false;
   }
+}
+interface RoomInfo {
+  id: string;
+  name: string;
+}
+
+const rooms = ref<RoomInfo[]>([]);
+const selectedRoomId = ref<string | null>(null);
+const showRoomModal = ref(false);
+const roomName = ref("");
+const roomError = ref("");
+const isCreatingRoom = ref(false);
+
+function openRoomModal() {
+  if (!selectedSpaceId.value) {
+    return;
+  }
+
+  roomName.value = "";
+  roomError.value = "";
+  showRoomModal.value = true;
+}
+
+function closeRoomModal() {
+  showRoomModal.value = false;
 }
 
 // TODO: nur zum Testen -> später durch echte Peer-EndpointId aus dem Chat/Space ersetzen
@@ -251,6 +311,31 @@ async function toggleVoiceCall() {
     callError.value = (error as Error).message;
   }
 }
+
+function getSpaceInitials(name: string): string {
+  const words = name
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (words.length === 0) {
+    return "?";
+  }
+
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+
+  return words
+      .slice(0, 2)
+      .map((word) => word.charAt(0))
+      .join("")
+      .toUpperCase();
+}
+
+function selectSpace(spaceId: string) {
+  selectedSpaceId.value = spaceId;
+}
 </script>
 
 <template>
@@ -259,6 +344,7 @@ async function toggleVoiceCall() {
       <button
           class="server-button home-server"
           title="Blabber home"
+          @click ="selectedSpaceId = null"
       >
         B
       </button>
@@ -266,17 +352,16 @@ async function toggleVoiceCall() {
       <div class="server-divider"></div>
 
       <button
-          class="server-button active-server"
-          title="Programming Group"
-      >
-        PG
-      </button>
-
-      <button
+          v-for="space in spaces"
+          :key="space.id"
           class="server-button"
-          title="Cybersecurity"
+          :class="{
+      'active-server': selectedSpaceId === space.id,
+    }"
+          :title="space.name"
+          @click="selectSpace(space.id)"
       >
-        CS
+        {{ getSpaceInitials(space.name) }}
       </button>
 
       <button
@@ -297,82 +382,130 @@ async function toggleVoiceCall() {
     </aside>
 
     <!-- Conversation sidebar -->
+    <!-- Conversation sidebar -->
     <aside class="chat-sidebar">
       <header class="sidebar-header">
         <div>
-          <h1>Blabber</h1>
-          <span>Direct messages</span>
+          <h1>
+            {{ selectedSpace ? selectedSpace.name : "Blabber" }}
+          </h1>
+          <span>
+            {{ selectedSpace ? "Rooms" : "Direct messages" }}
+</span>
         </div>
 
         <button
             class="new-conversation-button"
             type="button"
-            title="Add server"
-            @click="openServerModal"
+            :title="selectedSpace ? 'Create room' : 'Add server'"
+            @click="
+      selectedSpace
+        ? openRoomModal()
+        : openServerModal()
+    "
         >
           +
         </button>
       </header>
 
-      <div class="search-container">
+      <div
+        v-if ="!selectedSpace"
+        class= "search-container"
+        >
         <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Search conversations"
+        v-model="searchQuery"
+        type="text"
+        placeholder="Search conversations"
         />
       </div>
-
       <nav class="chat-list">
-        <p
-            v-if="isLoading"
-            class="backend-status"
-        >
-          Loading conversations...
-        </p>
+        <!-- Blabber Home -->
+        <template v-if="!selectedSpace">
+          <p
+              v-if="isLoading"
+              class="backend-status"
+          >
+            Loading conversations...
+          </p>
 
-        <p
-            v-else-if="loadError"
-            class="backend-status warning"
-        >
-          {{ loadError }}
-        </p>
+          <p
+              v-else-if="loadError"
+              class="backend-status warning"
+          >
+            {{ loadError }}
+          </p>
 
-        <button
-            v-for="chat in filteredChats"
-            :key="chat.id"
-            class="chat-item"
-            :class="{
-            selected: selectedChatId === chat.id,
-          }"
-            @click="openChat(chat.id)"
-        >
-          <div class="avatar">
-            {{ chat.initials }}
+          <button
+              v-for="chat in filteredChats"
+              :key="chat.id"
+              class="chat-item"
+              :class="{
+          selected: selectedChatId === chat.id,
+        }"
+              @click="openChat(chat.id)"
+          >
+            <div class="avatar">
+              {{ chat.initials }}
 
-            <span
-                class="status"
-                :class="{ online: chat.online }"
-            ></span>
-          </div>
+              <span
+                  class="status"
+                  :class="{ online: chat.online }"
+              ></span>
+            </div>
 
-          <div class="chat-information">
-            <strong>{{ chat.name }}</strong>
+            <div class="chat-information">
+              <strong>{{ chat.name }}</strong>
 
-            <span>
-              {{ chat.online ? "Online" : "Offline" }}
-            </span>
-          </div>
-        </button>
+              <span>
+          {{ chat.online ? "Online" : "Offline" }}
+        </span>
+            </div>
+          </button>
 
-        <p
-            v-if="
-            !isLoading &&
-            filteredChats.length === 0
-          "
-            class="no-results"
-        >
-          No conversations found.
-        </p>
+          <p
+              v-if="
+          !isLoading &&
+          filteredChats.length === 0
+        "
+              class="no-results"
+          >
+            No conversations found.
+          </p>
+        </template>
+
+        <!-- Ausgewählter Space -->
+        <template v-else>
+          <p class="backend-status">
+            Rooms for {{ selectedSpace.name }}
+          </p>
+
+          <p
+              v-if="rooms.length === 0"
+              class="no-results"
+          >
+            No rooms yet.
+          </p>
+
+          <button
+              v-for="room in rooms"
+              :key="room.id"
+              class="chat-item"
+              :class="{
+          selected: selectedRoomId === room.id,
+        }"
+              @click="selectedRoomId = room.id"
+          >
+            <div class="avatar">
+              #
+            </div>
+
+            <div class="chat-information">
+              <strong>{{ room.name }}</strong>
+              <span>Text room</span>
+            </div>
+          </button>
+
+        </template>
       </nav>
 
       <footer class="profile">

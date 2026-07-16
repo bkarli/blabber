@@ -72,6 +72,10 @@ export const tauriApi = {
         );
     },
 
+    async listServers(): Promise<SpaceInfo[]> {
+        return await invoke<SpaceInfo[]>("list_servers");
+    },
+
     async startCall(peerEndpointId: string): Promise<void>{
         await invoke<void>("start_call",{peerEndpointId,
             },
