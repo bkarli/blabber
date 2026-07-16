@@ -257,6 +257,16 @@ impl Node {
 
         Ok(handle)
     }
+    pub async fn shutdown(self) -> Result<()> {
+        if let Some(router) = self.router {
+            router
+                .shutdown()
+                .await
+                .context("failed to shut down router")?;
+        }
+
+        Ok(())
+    }
 
     
     /// Run the endpoint

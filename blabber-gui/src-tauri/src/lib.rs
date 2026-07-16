@@ -5,7 +5,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 #[path = "commands/login.rs"]
 mod login;
-use login::{create_identity, list_identities, login};
+use login::{create_identity, list_identities, login,logout};
 
 #[path = "commands/voice_channel.rs"]
 mod voice_channel;
@@ -35,6 +35,7 @@ pub fn run() {
             create_identity,
             login,
             list_identities,
+            logout,
             start_call,
             hang_up,
             create_server,

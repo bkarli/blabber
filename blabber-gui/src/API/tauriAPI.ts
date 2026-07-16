@@ -59,7 +59,8 @@ export const tauriApi = {
     },
 
     async logout(): Promise<void> {
-        return;
+        await invoke<void>("logout");
+
     },
 
     async createServer(name: string): Promise<SpaceInfo> {
