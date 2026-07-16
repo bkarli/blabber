@@ -148,7 +148,17 @@ impl Node {
 
     pub async fn create_author(&mut self) -> Result<()> {
         let docs = self.docs.as_ref().context("Docs engine not created yet")?;
-        let author = docs.author_create().await?;
+        
+        // create the author only if there is None in the identity
+        let author = match self.identity.author {
+            Some(existing) => existing,
+            None => {
+                let new_author = docs.author_create().await?;
+                // set the newly created author in the identity
+                self.identity.author = Some(new_author);
+                new_author
+            }
+        };
         self.author = Some(author);
         Ok(())
     }

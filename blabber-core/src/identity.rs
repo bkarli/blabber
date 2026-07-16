@@ -1,3 +1,4 @@
+use iroh_docs::{Author, AuthorId};
 // Create store and manage Identities
 use rand::prelude::*;
 use anyhow::{anyhow, Context, Result};
@@ -6,7 +7,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use argon2::Argon2;
-use std::path::Path;
+use std::{path::Path, str::FromStr};
 use std::fs::File;
 use std::io::Write;
 use std::io::Read;
@@ -24,6 +25,7 @@ const KEY_LEN: usize = 32;
 pub struct Identity {
     pub displayName: String,
     pub secret: [u8; 32],
+    pub author: Option<AuthorId>
 }
 
 impl Identity {
@@ -35,6 +37,7 @@ impl Identity {
         Self {
             displayName: displayName.into(),
             secret: secret,
+            author: None,
         }
 
     }
@@ -64,6 +67,19 @@ impl Identity {
         plaintext.push(name_bytes.len() as u8);
         plaintext.extend_from_slice(name_bytes);
         plaintext.extend_from_slice(&self.secret);
+
+        // Add author to the file
+        match &self.author {
+            Some(author) => {
+                let author_bytes = author.to_bytes();
+                plaintext.push(1u8); // signal that an author is present
+                plaintext.extend_from_slice(&author_bytes);
+            }
+            None => {
+                plaintext.push(0u8); // signal that no author present
+            }
+
+        }
 
         let ciphertext = cipher
             .encrypt(nonce, plaintext.as_slice())
@@ -97,10 +113,29 @@ impl Identity {
         let displayName = String::from_utf8(plaintext[1..1 + name_len].to_vec())
         .context("display name is not valid UTF-8")?;
 
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&plaintext[1 + name_len..1 + name_len + 32]);
+
         
-        Ok(Self{displayName,secret})    
+        let mut offset = 1 + name_len;
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&plaintext[offset..offset + 32]);
+
+        offset += 32;
+        
+        let author = match plaintext.get(offset) {
+            Some(1) => {
+                offset += 1;
+                let mut author_bytes = [0u8; 32];
+                author_bytes.copy_from_slice(&plaintext[offset..offset + 32]);
+                Some(AuthorId::from(author_bytes))
+            }
+            _ => None,
+        };
+
+        Ok( Self{
+            displayName,
+            secret,
+            author: author
+        })    
     }
 }
 
