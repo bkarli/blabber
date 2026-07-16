@@ -34,7 +34,7 @@ pub struct Node {
     pub blobs: Option<FsStore>,
     pub docs: Option<Docs>,
     pub author: Option<AuthorId>,
-    
+
     // Node can produce App Events and GUI can subscribe to these events
     pub events: broadcast::Sender<AppEvent>
 }
@@ -148,7 +148,7 @@ impl Node {
 
     pub async fn create_author(&mut self) -> Result<()> {
         let docs = self.docs.as_ref().context("Docs engine not created yet")?;
-        
+
         // create the author only if there is None in the identity
         let author = match self.identity.author {
             Some(existing) => existing,
@@ -167,7 +167,7 @@ impl Node {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        
+
         let endpoint_id = endpoint.id().to_string();
 
         Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await
@@ -184,6 +184,7 @@ impl Node {
 
     /// Additionally we need to load the docs
     pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
+        println!("Loading spaces from: {:?}", root_path);
         // go through the root_path and enumerate all the spaces present
         // in the directory
         // root_directory
@@ -193,35 +194,41 @@ impl Node {
         //              - Members
         //              - Channels and Rooms
         //          - [UUID]chat
-        
+
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         let blobs = self.blobs.as_ref().context("blobs not created yet")?;
         let endpoint_id = endpoint.id().to_string();
         let display_name = self.identity.displayName.clone();
-        
+
         let mut spaces = Vec::new();
         let mut entries = fs::read_dir(root_path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
+            println!("Found entry: {:?}", path);
 
             if !path.is_dir() {
                 continue;
             }
 
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+                println!("Skipping: invalid directory name");
                 continue;
             };
+            println!("Directory name: {dir_name}");
             if Uuid::parse_str(dir_name).is_err(){
+                println!("Skipping: directory name is not a UUID");
                 continue;
             }
             let invite_path = path.join("meta").join("invite.txt");
+            println!("Looking for invite at: {:?}", invite_path);
             if !invite_path.is_file(){
+                println!("Skipping: invite.txt missing");
                 continue;
             }
-            
+
             let code = fs::read_to_string(&invite_path).await?;
             let invite = match Invite::deserialize_invite(code){
                 Ok(i) => i,
@@ -234,11 +241,19 @@ impl Node {
             if let Err(e) = space.sync_rooms(self, docs, blobs).await{
                 eprintln!("failed to sync rooms for space {dir_name}: {e}");
             }
+            println!(
+
+                "Successfully loaded space: {}",
+
+                space.name()
+
+            );
             spaces.push(space);
             }
+        println!("Loaded {} spaces total", spaces.len());
         Ok(spaces)
     }
-    
+
 
     /// Generic function on watching a Document
     pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
@@ -272,7 +287,7 @@ impl Node {
         Ok(())
     }
 
-    
+
     /// Run the endpoint
     ///
     /// listen for incoming gossip connections
@@ -292,7 +307,7 @@ impl Node {
         Ok(())
     }
 
-    
+
     /// test function to keep the node online
     pub async fn wait_online(&self) -> Result<()> {
         use tokio::time::{timeout, Duration};
@@ -314,7 +329,7 @@ impl Node {
     pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<crate::channel::ActiveVoiceCall> {
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
-        let key = perform_key_exchange_as_initiator(&connection).await?;        
+        let key = perform_key_exchange_as_initiator(&connection).await?;
         let channel = VoiceChannel::new(connection, key);
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
@@ -346,7 +361,7 @@ pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Conne
     let (mut send, mut recv) = connection.accept_bi().await?;
     diffie_hellman(&mut send, &mut recv).await
 }
-    
+
 
 #[cfg(test)]
 mod tests {
@@ -357,7 +372,7 @@ mod tests {
     use iroh::Endpoint;
     use anyhow::Context;
     use tempfile::tempdir;
-    
+
     #[tokio::test]
     async fn test_create_endpoint() {
         let identity = Identity::new("Alice");
@@ -414,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn test_document_subscribe() {}
 
-        
+
 
     #[tokio::test]
     async fn test_dh_key_exchange_produces_matching_keys() -> Result<()> {
@@ -451,7 +466,7 @@ mod tests {
         assert_eq!(key_a, key_b);
         Ok(())
     }
-    
+
     #[tokio::test]
     async fn test_room_creation_and_message_sync() {
         use tokio::time::{sleep, timeout, Duration};
@@ -471,7 +486,7 @@ mod tests {
         let rooms_a = space_a.rooms.lock().await;
         let room_a = rooms_a.first().unwrap();
         room_a.send_message(author_a, "hello from alice").await.unwrap();
-        drop(rooms_a); 
+        drop(rooms_a);
 
         let invite = space_a.create_invite().await.unwrap();
         let code = invite.serialize_invite().unwrap();
@@ -517,7 +532,7 @@ mod tests {
     async fn test_broadcast_emits_new_room_event_local() {
         let id = Identity::new("Alice");
         let mut node = Node::new(id);
-        
+
         // create a temporary directory
         let tmp = tempdir().unwrap();
         node.run(tmp.path().to_path_buf()).await.unwrap();
@@ -527,19 +542,19 @@ mod tests {
 
 
     #[tokio::test]
-    async fn test_broadcast_emits_new_message_event_local() { 
+    async fn test_broadcast_emits_new_message_event_local() {
 
     }
 
 
     #[tokio::test]
-    async fn test_broadcast_emits_new_room_event() { 
+    async fn test_broadcast_emits_new_room_event() {
 
     }
 
 
     #[tokio::test]
-    async fn test_broadcast_emits_new_message_event() { 
+    async fn test_broadcast_emits_new_message_event() {
 
     }
 

@@ -19,7 +19,7 @@ pub struct AppState {
 }
 #[path = "commands/space.rs"]
 mod space;
-use space::create_server;
+use space::{create_server, list_servers};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -41,6 +41,7 @@ pub fn run() {
             hang_up,
             create_server,
             my_endpoint_id,
+            list_servers
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

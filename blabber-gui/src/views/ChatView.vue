@@ -4,6 +4,7 @@ import { tauriApi } from "../API/tauriAPI";
 import type {
   Chat,
   User,
+  SpaceInfo
 } from "../API/tauriAPI";
 
 const props = defineProps<{
@@ -23,6 +24,33 @@ const defaultChats: Chat[] = [
     online: false,
   },
 ];
+const spaces = ref<SpaceInfo[]>([]);
+const selectedSpaceId = ref<string | null>(null);
+
+const isLoadingSpaces = ref(false);
+const spacesError = ref("");
+
+async function loadSpaces() {
+  console.log("loadSpaces called");
+
+  isLoadingSpaces.value = true;
+  spacesError.value = "";
+
+  try {
+    const loadedSpaces = await tauriApi.listServers();
+    console.log("loadSpaces called");
+    spaces.value = loadedSpaces;
+
+    if (spaces.value.length > 0) {
+      selectedSpaceId.value = spaces.value[0].id;
+    }
+  } catch (error) {
+    console.error("Could not load servers:", error);
+    spacesError.value = String(error);
+  } finally {
+    isLoadingSpaces.value = false;
+  }
+}
 
 const chats = ref<Chat[]>([...defaultChats]);
 
@@ -160,8 +188,9 @@ async function sendCurrentMessage() {
   }
 }
 
-onMounted(() => {
+onMounted( () => {
   void loadChats();
+  void loadSpaces();
 });
 
 type ServerModalView = "choice" | "join" | "create";
@@ -210,14 +239,15 @@ async function submitCreateServer() {
 
   try {
     const space = await tauriApi.createServer(name);
-    console.log("Server created:", space.id, space.name);
+    await tauriApi.createServer(name);
 
-    // TODO: neuen Server in die server-sidebar Liste aufnehmen
-    //sobald es dort eine echte (nicht hardcoded) Serverliste gibt
+    spaces.value.push(space);
+    selectedSpaceId.value = space.id;
+
     closeServerModal();
   } catch (error) {
     console.error("Could not create server:", error);
-    createServerError.value = (error as Error).message;
+    createServerError.value = String(error);
   } finally {
     isCreatingServer.value = false;
   }
@@ -251,6 +281,31 @@ async function toggleVoiceCall() {
     callError.value = (error as Error).message;
   }
 }
+
+function getSpaceInitials(name: string): string {
+  const words = name
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (words.length === 0) {
+    return "?";
+  }
+
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+
+  return words
+      .slice(0, 2)
+      .map((word) => word.charAt(0))
+      .join("")
+      .toUpperCase();
+}
+
+function selectSpace(spaceId: string) {
+  selectedSpaceId.value = spaceId;
+}
 </script>
 
 <template>
@@ -266,17 +321,16 @@ async function toggleVoiceCall() {
       <div class="server-divider"></div>
 
       <button
-          class="server-button active-server"
-          title="Programming Group"
-      >
-        PG
-      </button>
-
-      <button
+          v-for="space in spaces"
+          :key="space.id"
           class="server-button"
-          title="Cybersecurity"
+          :class="{
+      'active-server': selectedSpaceId === space.id,
+    }"
+          :title="space.name"
+          @click="selectSpace(space.id)"
       >
-        CS
+        {{ getSpaceInitials(space.name) }}
       </button>
 
       <button
