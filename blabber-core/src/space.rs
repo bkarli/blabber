@@ -40,6 +40,8 @@ pub struct RoomRecord {
 ///
 /// Other peers can invite other peers to the space
 ///
+///
+#[derive(Clone)]
 pub struct Space {
     id: uuid::Uuid, 
     name: String,
@@ -49,12 +51,19 @@ pub struct Space {
     pub members: Doc,
     users: Vec<String>,
     pub rooms: Arc<Mutex<Vec<Room>>>,
+    pub docs: Docs
 }
 
 impl Space {
 
     /// Create a completely new space
-    pub async fn new(docs: &Docs,author: AuthorId,endpoint_id: String, display_name: String, name: impl Into<String> ) -> Result<Self> {
+    pub async fn new(
+        docs: &Docs,
+        author: AuthorId,
+        endpoint_id: String,
+        display_name: String,
+        name: impl Into<String>
+        ) -> Result<Self> {
         // create a UUID for the space
 
         let info = docs.create().await?;
@@ -69,6 +78,7 @@ impl Space {
             members,
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
+            docs: docs.clone()
         };
         
         space
@@ -125,6 +135,7 @@ impl Space {
             members,
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
+            docs: docs.clone()
         };
 
         space
@@ -174,9 +185,9 @@ impl Space {
     }
 
     /// Create a completely new room
-    pub async fn create_room(&self, docs: &Docs, author: AuthorId, name: impl Into<String>) -> Result<Room> {
+    pub async fn create_room(&self, author: AuthorId, name: impl Into<String>) -> Result<Room> {
         let name = name.into();
-        let room = Room::new(docs, name.clone()).await?;
+        let room = Room::new(&self.docs, name.clone()).await?;
 
         let ticket = room.messages.share(ShareMode::Write, Default::default()).await?;
 
@@ -200,7 +211,7 @@ impl Space {
 
     /// initially called when joining a space just to update the in memory
     /// information on the rooms currently on that space
-    pub async fn sync_rooms(&self, node: &Node, docs: &Docs, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
+    pub async fn sync_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
         let entries = self
             .info
             .get_many(Query::single_latest_per_key().key_prefix("room/"))
@@ -221,7 +232,7 @@ impl Space {
 
             if !already_known {
                 let ticket = DocTicket::from_str(&record.ticket)?;
-                let room = Room::from_ticket(docs, record.id, record.name, ticket).await?;
+                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket).await?;
                 self.rooms.lock().await.push(room);
             }
         }
