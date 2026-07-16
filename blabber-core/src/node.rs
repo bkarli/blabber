@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use iroh_docs::api::Doc;
 use iroh_docs::engine::LiveEvent;
 use n0_future::StreamExt;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 
 use crate::events::AppEvent;
@@ -36,7 +37,8 @@ pub struct Node {
     pub author: Option<AuthorId>,
     
     // Node can produce App Events and GUI can subscribe to these events
-    pub events: broadcast::Sender<AppEvent>
+    pub events: broadcast::Sender<AppEvent>,
+    pub spaces: Arc<Mutex<Vec<Space>>>,
 }
 
 impl Node {
@@ -52,6 +54,7 @@ impl Node {
             docs: None,
             author: None,
             events,
+            spaces: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -163,27 +166,31 @@ impl Node {
         Ok(())
     }
 
-    pub async fn create_space(&self, name: impl Into<String>) -> Result<Space> {
+    pub async fn create_space(&self, name: impl Into<String>) -> Result<()> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         
         let endpoint_id = endpoint.id().to_string();
 
-        Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await
+        let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
+        self.spaces.lock().await.push(space);
+        Ok(())
     }
 
-    pub async fn join_space(&self, invite: Invite) -> Result<Space> {
+    pub async fn join_space(&self, invite: Invite) -> Result<()> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         let endpoint_id = endpoint.id().to_string();
 
-        Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await
+        let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
+        self.spaces.lock().await.push(space);
+        Ok(())
     }
 
     /// Additionally we need to load the docs
-    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
+    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<()> {
         // go through the root_path and enumerate all the spaces present
         // in the directory
         // root_directory
@@ -197,7 +204,6 @@ impl Node {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        let blobs = self.blobs.as_ref().context("blobs not created yet")?;
         let endpoint_id = endpoint.id().to_string();
         let display_name = self.identity.displayName.clone();
         
@@ -231,12 +237,12 @@ impl Node {
                 }
             };
             let space = Space::from_invite(docs,invite,author, endpoint_id.clone(),display_name.clone(),).await?;
-            if let Err(e) = space.sync_rooms(self, docs, blobs).await{
-                eprintln!("failed to sync rooms for space {dir_name}: {e}");
-            }
             spaces.push(space);
             }
-        Ok(spaces)
+
+        self.spaces.lock().await.extend(spaces);
+        Ok(())
+
     }
     
 
@@ -423,8 +429,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         node.run(tmp.path().to_path_buf()).await.unwrap();
 
-        let space = node.create_space("Test");
-
+        node.create_space("Test").await.unwrap();
 
     }
 
