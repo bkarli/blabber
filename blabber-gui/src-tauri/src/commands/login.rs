@@ -3,6 +3,7 @@ use blabber_core::node::Node;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
+use crate::space::{spaces_dir, SpaceInfo};
 
 use crate::AppState;
 
@@ -52,14 +53,27 @@ async fn start_node_for_identity(
 
     let mut node = Node::new(identity);
     let app_for_event = app.clone();
-    node.set_incoming_call_handler(move |peer_id: String| {
-        use tauri::Emitter;
-        let _ = app_for_event.emit("incoming_call", peer_id);
-    });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
+
+    let spaces_root = spaces_dir(app)?;
+    fs::create_dir_all(&spaces_root).map_err(|error| error.to_string())?;
+    let loaded_spaces = node
+        .load_spaces(spaces_root)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let loaded_infos: Vec<SpaceInfo> = loaded_spaces
+        .iter()
+        .map(|space| SpaceInfo {
+            id: space.id().to_string(),
+            name: space.name().to_string(),
+        })
+        .collect();
+
+    *state.known_spaces.lock().unwrap() = loaded_infos;
     *state.node.lock().await = Some(node);
     Ok(())
-}
+    }
 
 #[tauri::command]
 pub async fn create_identity(

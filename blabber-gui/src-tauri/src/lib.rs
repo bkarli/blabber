@@ -15,6 +15,7 @@ use voice_channel::{hang_up, start_call, my_endpoint_id};
 pub struct AppState {
     pub node: TokioMutex<Option<Node>>,
     pub active_call: Mutex<Option<ActiveVoiceCall>>,
+    pub known_spaces: Mutex<Vec<crate::space::SpaceInfo>>,
 }
 #[path = "commands/space.rs"]
 mod space;
