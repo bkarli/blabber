@@ -15,7 +15,7 @@ use voice_channel::{hang_up, start_call, my_endpoint_id};
 
 #[path = "commands/space.rs"]
 mod space;
-use space::{create_server, list_servers};
+use space::{create_server, list_servers, get_invite};
 
 
 
@@ -45,6 +45,7 @@ pub fn run() {
             create_server,
             my_endpoint_id,
             list_servers,
+            get_invite,
             create_room,
             list_rooms
         ])

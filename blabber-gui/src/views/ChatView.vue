@@ -56,6 +56,40 @@ async function loadSpaces() {
     isLoadingSpaces.value = false;
   }
 }
+const inviteCopyMessage = ref("");
+const inviteCopyError = ref("");
+
+async function copySelectedSpaceInvite() {
+  const spaceId = selectedSpaceId.value;
+
+  if (!spaceId) {
+    return;
+  }
+
+  inviteCopyMessage.value = "";
+  inviteCopyError.value = "";
+
+  try {
+    const invite =
+        await tauriApi.getInvite(spaceId);
+
+    await navigator.clipboard.writeText(invite);
+
+    inviteCopyMessage.value =
+        "Invite copied to clipboard.";
+
+    window.setTimeout(() => {
+      inviteCopyMessage.value = "";
+    }, 2000);
+  } catch (error) {
+    console.error(
+        "Could not copy invite:",
+        error,
+    );
+
+    inviteCopyError.value = String(error);
+  }
+}
 const rooms = ref<RoomInfo[]>([]);
 const selectedRoomId = ref<string | null>(null);
 
@@ -454,19 +488,44 @@ async function selectSpace(spaceId: string) {
 </span>
         </div>
 
-        <button
-            class="new-conversation-button"
-            type="button"
-            :title="selectedSpace ? 'Create room' : 'Add server'"
-            @click="
-      selectedSpace
-        ? openRoomModal()
-        : openServerModal()
-    "
-        >
-          +
-        </button>
+        <div class="sidebar-header-actions">
+          <button
+              v-if="selectedSpace"
+              class="header-action-button"
+              type="button"
+              title="Copy invite"
+              @click="copySelectedSpaceInvite"
+          >
+            ⧉
+          </button>
+
+          <button
+              class="new-conversation-button"
+              type="button"
+              :title="selectedSpace ? 'Create room' : 'Add server'"
+              @click="
+        selectedSpace
+          ? openRoomModal()
+          : openServerModal()
+      "
+          >
+            +
+          </button>
+        </div>
       </header>
+      <p
+          v-if="inviteCopyMessage"
+          class="invite-copy-message"
+      >
+        {{ inviteCopyMessage }}
+      </p>
+
+      <p
+          v-if="inviteCopyError"
+          class="invite-copy-error"
+      >
+        {{ inviteCopyError }}
+      </p>
 
       <div
         v-if ="!selectedSpace"
@@ -1018,6 +1077,48 @@ button:disabled {
   justify-content: space-between;
   padding: 0 18px;
   border-bottom: 1px solid #45423e;
+}
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-action-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  color: #c9c3b8;
+  background: #45423e;
+  font-size: 18px;
+  transition:
+      background 150ms ease,
+      transform 150ms ease;
+}
+
+.header-action-button:hover {
+  color: #fff7ef;
+  background: #f05a24;
+  transform: translateY(-1px);
+}
+
+.invite-copy-message,
+.invite-copy-error {
+  margin: 10px 14px 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.invite-copy-message {
+  color: #f7f3e8;
+  background: #45423e;
+}
+
+.invite-copy-error {
+  color: #ffb69a;
+  background: rgba(240, 90, 36, 0.16);
 }
 
 .sidebar-header h1 {

@@ -43,6 +43,27 @@ pub async fn create_server(
 
     Ok(info)
 }
+#[tauri::command]
+pub async fn get_invite(
+    state: State<'_, AppState>,
+    space_id: String,
+) -> Result<String, String> {
+    let spaces = state.spaces.lock().await;
+
+    let space = spaces
+        .iter()
+        .find(|space| space.id().to_string() == space_id)
+        .ok_or("Space not found")?;
+
+    let invite = space
+        .create_invite()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    invite
+        .serialize_invite()
+        .map_err(|error| error.to_string())
+}
 
 
 #[tauri::command]

@@ -80,6 +80,14 @@ export const tauriApi = {
     async listServers(): Promise<SpaceInfo[]> {
         return await invoke<SpaceInfo[]>("list_servers");
     },
+    async getInvite(spaceId: string): Promise<string> {
+        return await invoke<string>(
+            "get_invite",
+            {
+                spaceId,
+            },
+        );
+    },
     async listRooms(
         spaceId: string,
     ): Promise<RoomInfo[]> {
