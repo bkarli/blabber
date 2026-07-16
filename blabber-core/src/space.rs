@@ -14,9 +14,9 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Member {
-    pub endpoint_id: String,   // stringified EndpointId, for easy postcard/display
+    pub endpoint_id: String,
     pub display_name: String,
     pub joined_at: u64,
 }
@@ -225,7 +225,7 @@ impl Space {
         let mut handles = Vec::new();
         for room in rooms.iter() {
             let label = format!("{}/{}", self.name, room.name);
-            handles.push(room.watch(node, blobs.clone(), label).await?);
+            handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
         }
         Ok(handles)
     }

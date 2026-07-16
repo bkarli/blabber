@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use iroh_docs::api::Doc;
 use iroh_docs::engine::LiveEvent;
 use n0_future::StreamExt;
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
+use crate::events::AppEvent;
 use crate::space::Space;
 use crate::Identity;
 use crate::channel::{VoiceChannel, VoiceProtocol, VOICE_ALPN};
@@ -31,11 +33,15 @@ pub struct Node {
     pub blobs: Option<FsStore>,
     pub docs: Option<Docs>,
     pub author: Option<AuthorId>,
-    on_incoming_call: Option<crate::channel::IncomingCallHandler>,
+    
+    // Node can produce App Events and GUI can subscribe to these events
+    pub events: broadcast::Sender<AppEvent>
 }
 
 impl Node {
     pub fn new(identity: Identity) -> Self {
+        // create a broadcast channel
+        let (events, _) = broadcast::channel(256);
         Self {
             identity,
             endpoint: None,
@@ -44,15 +50,8 @@ impl Node {
             blobs: None,
             docs: None,
             author: None,
-            on_incoming_call: None,
+            events,
         }
-    }
-
-    pub fn set_incoming_call_handler(
-        &mut self,
-        handler: impl Fn(String) + Send + Sync + 'static,
-    ) {
-        self.on_incoming_call = Some(std::sync::Arc::new(handler));
     }
 
     /// Create the endpoint from the identity
@@ -133,11 +132,7 @@ impl Node {
             .clone()
             .context("docs not created yet")?;
 
-        let mut voice = VoiceProtocol::new();
-
-        if let Some(handler) = &self.on_incoming_call {
-            voice = voice.with_incoming_handler(handler.clone());
-        }
+        let voice = VoiceProtocol::new();
 
         let router = Router::builder(endpoint)
             .accept(GOSSIP_ALPN, gossip)
@@ -218,30 +213,25 @@ impl Node {
     }
 
     /// Generic function on watching a Document
-    pub fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> JoinHandle<()>
+    pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
     where
         F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
 
     {
         let label = label.into();
-        tokio::spawn(async move {
-            let events = match doc.subscribe().await {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("[{label}] failed to subscribe: {e}");
-                    return;
-                }
-            };
+        let events = doc.subscribe().await?;
+        let handle = tokio::spawn(async move {
             let mut events = std::pin::pin!(events);
-
             while let Some(event) = events.next().await {
                 match event {
                     Ok(event) => on_event(event).await,
                     Err(e) => eprintln!("[{label}] event error: {e}"),
                 }
             }
-        })
+        });
+
+        Ok(handle)
     }
 
     
@@ -251,9 +241,10 @@ impl Node {
     /// listen for incoming Voice connections
     pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
         self.create_endpoint().await?;
+        // run wait online only in tests
         #[cfg(test)]
         {
-            self.wait_online().await?; // only run this when testing
+            self.wait_online().await?;
         }
         self.create_gossip().await?;
         self.create_blobs(&blobs_path).await?;
@@ -277,6 +268,11 @@ impl Node {
         Ok(())
     }
 
+    // get a receiver for app-level events
+    pub fn subscribe_events(&self) -> broadcast::Receiver<AppEvent> {
+        self.events.subscribe()
+    }
+
     pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<crate::channel::ActiveVoiceCall> {
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
@@ -285,7 +281,6 @@ impl Node {
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
-
 
 }
 
@@ -478,6 +473,36 @@ mod tests {
         })
         .await;
         assert!(found.is_ok(), "Bob never discovered the room or received Alice's message");
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_room_event_local() {
+        let id = Identity::new("Alice");
+        let mut node = Node::new(id);
+        
+        // create a temporary directory
+        let tmp = tempdir().unwrap();
+        node.run(tmp.path().to_path_buf()).await.unwrap();
+
+
+    }
+
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_message_event_local() { 
+
+    }
+
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_room_event() { 
+
+    }
+
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_message_event() { 
+
     }
 
 }

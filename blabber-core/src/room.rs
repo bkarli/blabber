@@ -4,11 +4,11 @@ use anyhow::Result;
 use iroh_blobs::store::fs::FsStore;
 use iroh_docs::{AuthorId, DocTicket, api::Doc, engine::LiveEvent, protocol::Docs, store::Query};
 use n0_future::StreamExt;
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
 use uuid::Uuid;
 use serde::{Serialize,Deserialize};
 
-use crate::Node;
+use crate::{Node, events::AppEvent};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
@@ -92,34 +92,56 @@ impl Room {
 
     /// If a new message event comes in apply the message to the in memory
     /// cache
-    async fn apply_event(cache: Arc<Mutex<Vec<Message>>>,event: LiveEvent, blobs: &FsStore) {
+    async fn apply_event(
+        cache: Arc<Mutex<Vec<Message>>>,
+        event: LiveEvent,
+        blobs: &FsStore,
+        events: &broadcast::Sender<AppEvent>,
+        space_id: Uuid,
+        room_id: Uuid,
+        ) {
         if let LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } = event {
             if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
                 if let Ok(message) = postcard::from_bytes::<Message>(&bytes) {
-                    cache.lock().await.push(message);
+                    cache.lock().await.push(message.clone());
+                    let _ = events
+                        .send( AppEvent::NewMessage { 
+                            space_id, 
+                            room_id,
+                            message 
+                        });
                 }
             }
         }
     }
     
     // watch the document for that room and listen for updates
-    pub async fn watch(&self, node: &Node, blobs: FsStore, label: impl Into<String>) -> Result<JoinHandle<()>> {
+    pub async fn watch(
+        &self,
+        node: &Node,
+        blobs: FsStore,
+        label: impl Into<String>,
+        space_id: Uuid
+    ) -> Result<JoinHandle<()>> {
         let existing = self.list_messages(blobs.clone()).await?;
         *self.cache.lock().await = existing;
 
         let doc = self.messages.clone();
         let cache = self.cache.clone();
         let label = label.into();
+        let events = node.events.clone();
+        let room_id = self.id;
         
         // the watch the doc
         let handle = node.watch_doc(doc, label, move |event| {
             let cache = cache.clone();
             let blobs = blobs.clone();
+            let events = events.clone();
 
             async move {
-                Room::apply_event(cache, event, &blobs).await;
+                Room::apply_event(cache, event, &blobs, &events, space_id, room_id).await;
             }
-        });
+        }).await?;
         Ok(handle)
     }
 }
