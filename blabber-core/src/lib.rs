@@ -4,6 +4,7 @@ mod space;
 mod invite;
 mod meta;
 mod room;
+mod events;
 pub mod channel;
 
 pub use identity::Identity;

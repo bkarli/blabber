@@ -71,6 +71,16 @@ export const tauriApi = {
             },
         );
     },
+
+    async startCall(peerEndpointId: string): Promise<void>{
+        await invoke<void>("start_call",{peerEndpointId,
+            },
+        );
+    },
+
+    async hangUp(): Promise<void>{
+        await invoke<void>("hang_up");
+    },
     async sendMessage(
         chatId: number,
         text: string,

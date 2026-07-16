@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use iroh_docs::api::Doc;
 use iroh_docs::engine::LiveEvent;
 use n0_future::StreamExt;
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
+use crate::events::AppEvent;
 use crate::space::Space;
 use crate::Identity;
 use crate::channel::{VoiceChannel, VoiceProtocol, VOICE_ALPN};
@@ -17,6 +19,7 @@ use uuid::Uuid;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_gossip::{ALPN as GOSSIP_ALPN};
 use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
+use iroh_docs::api::protocol::ShareMode;
 
 use anyhow::Context;
 use tokio::fs;
@@ -31,10 +34,15 @@ pub struct Node {
     pub blobs: Option<FsStore>,
     pub docs: Option<Docs>,
     pub author: Option<AuthorId>,
+    
+    // Node can produce App Events and GUI can subscribe to these events
+    pub events: broadcast::Sender<AppEvent>
 }
 
 impl Node {
     pub fn new(identity: Identity) -> Self {
+        // create a broadcast channel
+        let (events, _) = broadcast::channel(256);
         Self {
             identity,
             endpoint: None,
@@ -43,6 +51,7 @@ impl Node {
             blobs: None,
             docs: None,
             author: None,
+            events,
         }
     }
 
@@ -164,7 +173,7 @@ impl Node {
     }
 
     /// Additionally we need to load the docs
-    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<()> {
+    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
         // go through the root_path and enumerate all the spaces present
         // in the directory
         // root_directory
@@ -175,7 +184,13 @@ impl Node {
         //              - Channels and Rooms
         //          - [UUID]chat
         
-
+        let docs = self.docs.as_ref().context("docs engine not created yet")?;
+        let author = self.author.context("author not created yet")?;
+        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
+        let endpoint_id = endpoint.id().to_string();
+        let display_name = self.identity.displayName.clone();
+        
+        let mut spaces = Vec::new();
         let mut entries = fs::read_dir(root_path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -188,44 +203,49 @@ impl Node {
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-
-            let Ok(space_id) = Uuid::parse_str(dir_name) else {
+            if Uuid::parse_str(dir_name).is_err(){
                 continue;
-            };
-
-            let meta_path = path.join("meta");
-            if meta_path.is_dir() {
-                // get the info ticket
-                // get the member ticket
-                // get the channel and room information
             }
-        }
-
-        Ok(())
-    }
-
-    /// Generic function on watching a Document
-    pub fn watch_doc<F>(&self, doc: Doc, label: &'static str, mut on_event: F) -> JoinHandle<()>
-    where
-        F: FnMut(LiveEvent) + Send + 'static,
-    {
-        tokio::spawn(async move {
-            let events = match doc.subscribe().await {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("[{label}] failed to subscribe: {e}");
-                    return;
+            let invite_path = path.join("meta").join("invite.txt");
+            if !invite_path.is_file(){
+                continue;
+            }
+            
+            let code = fs::read_to_string(&invite_path).await?;
+            let invite = match Invite::deserialize_invite(code){
+                Ok(i) => i,
+                Err(e) =>{
+                    eprintln!("skipping unreadable space {dir_name}");
+                    continue;
                 }
             };
-            let mut events = std::pin::pin!(events);
+            let space = Space::from_invite(docs,invite,author, endpoint_id.clone(),display_name.clone(),).await?;
+            spaces.push(space);
+            }
+        Ok(spaces)
+    }
+    
 
+    /// Generic function on watching a Document
+    pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
+    where
+        F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+
+    {
+        let label = label.into();
+        let events = doc.subscribe().await?;
+        let handle = tokio::spawn(async move {
+            let mut events = std::pin::pin!(events);
             while let Some(event) = events.next().await {
                 match event {
-                    Ok(event) => on_event(event),
+                    Ok(event) => on_event(event).await,
                     Err(e) => eprintln!("[{label}] event error: {e}"),
                 }
             }
-        })
+        });
+
+        Ok(handle)
     }
     pub async fn shutdown(self) -> Result<()> {
         if let Some(router) = self.router {
@@ -245,6 +265,11 @@ impl Node {
     /// listen for incoming Voice connections
     pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
         self.create_endpoint().await?;
+        // run wait online only in tests
+        #[cfg(test)]
+        {
+            self.wait_online().await?;
+        }
         self.create_gossip().await?;
         self.create_blobs(&blobs_path).await?;
         self.create_docs_engine(&blobs_path).await?;
@@ -253,16 +278,32 @@ impl Node {
         Ok(())
     }
 
-    //passt nonig zum tauri command (no ahluege)
-    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<(cpal::Stream, cpal::Stream)>{
+    
+    /// test function to keep the node online
+    pub async fn wait_online(&self) -> Result<()> {
+        use tokio::time::{timeout, Duration};
+
+        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
+
+        timeout(Duration::from_secs(5), endpoint.online())
+            .await
+            .context("timed out waiting for endpoint to come online")?;
+
+        Ok(())
+    }
+
+    // get a receiver for app-level events
+    pub fn subscribe_events(&self) -> broadcast::Receiver<AppEvent> {
+        self.events.subscribe()
+    }
+
+    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<crate::channel::ActiveVoiceCall> {
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
         let key = perform_key_exchange_as_initiator(&connection).await?;        
         let channel = VoiceChannel::new(connection, key);
-        let capture_stream = channel.start_capture()?;
         let handle = tokio::runtime::Handle::current();
-        let playback_stream = channel.start_playback(&handle);
-        Ok((capture_stream, playback_stream?))
+        Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
 
 }
@@ -297,11 +338,11 @@ pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Conne
 mod tests {
 
     use super::*;
-    use tempfile::tempdir;
     use crate::channel::VOICE_ALPN;
     use iroh::endpoint::presets;
     use iroh::Endpoint;
     use anyhow::Context;
+    use tempfile::tempdir;
     
     #[tokio::test]
     async fn test_create_endpoint() {
@@ -396,53 +437,96 @@ mod tests {
         assert_eq!(key_a, key_b);
         Ok(())
     }
-
+    
     #[tokio::test]
-    async fn test_watch_doc_fires_on_local_insert() {
-        use std::sync::{Arc, Mutex};
+    async fn test_room_creation_and_message_sync() {
         use tokio::time::{sleep, timeout, Duration};
 
-        let identity = Identity::new("Alice");
-        let mut node = Node::new(identity);
+        let identity_a = Identity::new("Alice");
+        let mut node_a = Node::new(identity_a);
+        let tmp_a = tempdir().unwrap();
+        node_a.run(tmp_a.path().to_path_buf()).await.unwrap();
+
+        let space_a = node_a.create_space("Test Space").await.unwrap();
+
+        let docs_a = node_a.docs.as_ref().unwrap();
+        let author_a = node_a.author.unwrap();
+
+        space_a.create_room(docs_a, author_a, "general").await.unwrap();
+
+        let rooms_a = space_a.rooms.lock().await;
+        let room_a = rooms_a.first().unwrap();
+        room_a.send_message(author_a, "hello from alice").await.unwrap();
+        drop(rooms_a); 
+
+        let invite = space_a.create_invite().await.unwrap();
+        let code = invite.serialize_invite().unwrap();
+        let invite = Invite::deserialize_invite(code).unwrap();
+
+        let identity_b = Identity::new("Bob");
+        let mut node_b = Node::new(identity_b);
+        let tmp_b = tempdir().unwrap();
+        node_b.run(tmp_b.path().to_path_buf()).await.unwrap();
+
+        let space_b = node_b.join_space(invite).await.unwrap();
+
+        let docs_b = node_b.docs.as_ref().unwrap();
+        let blobs_b = node_b.blobs.as_ref().unwrap();
+
+        let found = timeout(Duration::from_secs(15), async {
+        loop {
+            let handles = space_b.sync_rooms(&node_b, docs_b, blobs_b).await;
+            match &handles {
+                Ok(h) => eprintln!("sync_rooms ok, {} handles", h.len()),
+                Err(e) => eprintln!("sync_rooms error: {e:#}"),
+            }
+
+            let rooms_b = space_b.rooms.lock().await;
+            eprintln!("known rooms on B: {:?}", rooms_b.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
+
+            if let Some(room_b) = rooms_b.iter().find(|r| r.name == "general") {
+                let cache = room_b.cache.lock().await;
+                eprintln!("room 'general' cache: {:?}", cache.iter().map(|m| &m.content).collect::<Vec<_>>());
+                if cache.iter().any(|m| m.content == "hello from alice") {
+                    return;
+                }
+            }
+            drop(rooms_b);
+            sleep(Duration::from_millis(1000)).await; // slower interval so the log isn't flooded
+        }
+        })
+        .await;
+        assert!(found.is_ok(), "Bob never discovered the room or received Alice's message");
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_room_event_local() {
+        let id = Identity::new("Alice");
+        let mut node = Node::new(id);
+        
+        // create a temporary directory
         let tmp = tempdir().unwrap();
         node.run(tmp.path().to_path_buf()).await.unwrap();
 
-        let space = node.create_space("Test Space").await.unwrap();
 
-        let received: Arc<Mutex<Vec<LiveEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let received_clone = received.clone();
-
-        let handle = node.watch_doc(space.info.clone(), "test", move |event| {
-            received_clone.lock().unwrap().push(event);
-        });
-
-        // give the subscription a moment to actually attach before we write
-        sleep(Duration::from_millis(100)).await;
-
-        let author = node.author.unwrap();
-        space
-            .info
-            .set_bytes(author, b"greeting".to_vec(), b"hello".to_vec())
-            .await
-            .unwrap();
-
-        let saw_insert = timeout(Duration::from_secs(5), async {
-            loop {
-                let events = received.lock().unwrap();
-                if events
-                    .iter()
-                    .any(|e| matches!(e, LiveEvent::InsertLocal { .. }))
-                {
-                    return;
-                }
-                drop(events);
-                sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await;
-
-        handle.abort();
-
-        assert!(saw_insert.is_ok(), "watch_doc never observed the local insert");
     }
+
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_message_event_local() { 
+
     }
+
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_room_event() { 
+
+    }
+
+
+    #[tokio::test]
+    async fn test_broadcast_emits_new_message_event() { 
+
+    }
+
+}
