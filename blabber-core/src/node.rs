@@ -175,7 +175,9 @@ impl Node {
 
         let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
         self.spaces.lock().await.push(space.clone());
+        println!("CREATE SPACE ID: {}", space.id());
         Ok(space)
+
     }
 
     pub async fn join_space(&self, invite: Invite) -> Result<()> {

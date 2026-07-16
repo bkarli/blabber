@@ -227,6 +227,9 @@ function returnToServerChoice() {
 }
 
 async function submitCreateServer() {
+  if(isCreatingServer.value){
+    return;
+  }
   const name = serverName.value.trim();
 
   if (!name) {
@@ -239,8 +242,6 @@ async function submitCreateServer() {
 
   try {
     const space = await tauriApi.createServer(name);
-    await tauriApi.createServer(name);
-
     spaces.value.push(space);
     selectedSpaceId.value = space.id;
 

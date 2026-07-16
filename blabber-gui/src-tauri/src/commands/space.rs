@@ -20,6 +20,7 @@ pub async fn create_server(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<SpaceInfo, String> {
+    println!("Create_Server Command called {}", name);
     let name = name.trim();
     if name.is_empty() {
         return Err("Server name cannot be empty".to_string());
