@@ -1,7 +1,7 @@
 pub mod identity;
 pub mod node;
 pub mod space;
-mod invite;
+pub mod invite;
 mod meta;
 mod room;
 mod events;

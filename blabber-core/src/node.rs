@@ -185,15 +185,15 @@ impl Node {
 
     }
 
-    pub async fn join_space(&self, invite: Invite) -> Result<()> {
+    pub async fn join_space(&self, invite: Invite) -> Result<Space> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         let endpoint_id = endpoint.id().to_string();
 
         let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
-        self.spaces.lock().await.push(space);
-        Ok(())
+        self.spaces.lock().await.push(space.clone());
+        Ok(space)
     }
 
     /// Additionally we need to load the docs

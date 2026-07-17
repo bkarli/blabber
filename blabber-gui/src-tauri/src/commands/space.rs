@@ -2,6 +2,7 @@ use tauri::{AppHandle, Manager, State};
 use serde::Serialize;
 use std::path::PathBuf;
 use crate::AppState;
+use blabber_core::invite::Invite;
 
 #[derive(Serialize, Clone)]
 pub struct SpaceInfo {
@@ -105,4 +106,51 @@ pub async fn list_servers(
         .collect();
     *state.spaces.lock().await = loaded_spaces;
     Ok(infos)
+}
+
+#[tauri::command]
+pub async fn join_space(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ticket: String,
+) -> Result<SpaceInfo, String> {
+    let ticket = ticket.trim();
+
+    if ticket.is_empty() {
+        return Err("Invite ticket cannot be empty".to_string());
+    }
+
+    let invite = Invite::deserialize_invite(ticket.to_string())
+        .map_err(|error| error.to_string())?;
+
+    let node_guard = state.node.lock().await;
+
+    let node = node_guard
+        .as_ref()
+        .ok_or("Node not started yet... please log in first")?;
+
+    let space = node
+        .join_space(invite)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let root = spaces_dir(&app)?;
+
+    let user_root = node
+        .add_idetity_to_path(&root)
+        .map_err(|error| error.to_string())?;
+
+    space
+        .create_directory(&user_root)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let info = SpaceInfo {
+        id: space.id().to_string(),
+        name: space.name().to_string(),
+    };
+
+    state.spaces.lock().await.push(space);
+
+    Ok(info)
 }

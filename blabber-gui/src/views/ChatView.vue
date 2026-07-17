@@ -154,6 +154,46 @@ async function submitCreateRoom() {
     isCreatingRoom.value = false;
   }
 }
+async function submitJoinSpace() {
+  if (isJoiningSpace.value) {
+    return;
+  }
+
+  const ticket = serverTicket.value.trim();
+
+  if (!ticket) {
+    joinSpaceError.value =
+        "Server ticket cannot be empty.";
+    return;
+  }
+
+  isJoiningSpace.value = true;
+  joinSpaceError.value = "";
+
+  try {
+    const space = await tauriApi.joinSpace(ticket);
+
+    const alreadyExists = spaces.value.some(
+        (existingSpace) =>
+            existingSpace.id === space.id,
+    );
+
+    if (!alreadyExists) {
+      spaces.value.push(space);
+    }
+
+    selectedSpaceId.value = space.id;
+
+    await loadRooms(space.id);
+
+    closeServerModal();
+  } catch (error) {
+    console.error("Could not join space:", error);
+    joinSpaceError.value = String(error);
+  } finally {
+    isJoiningSpace.value = false;
+  }
+}
 
 
 const chats = ref<Chat[]>([...defaultChats]);
@@ -306,11 +346,14 @@ const serverName = ref("");
 const isCreatingServer = ref(false);
 const createServerError = ref("");
 
+const isJoiningSpace = ref(false);
+const joinSpaceError = ref("");
 function openServerModal() {
   serverModalView.value = "choice";
   serverTicket.value = "";
   serverName.value = "";
   createServerError.value = "";
+  joinSpaceError.value="";
   showServerModal.value = true;
 }
 
@@ -319,10 +362,14 @@ function closeServerModal() {
 }
 
 function showJoinServer() {
+  serverTicket.value = "";
+  joinSpaceError.value = "";
   serverModalView.value = "join";
 }
 
 function showCreateServer() {
+  serverName.value ="";
+  createServerError.value ="";
   serverModalView.value = "create";
 }
 
@@ -830,6 +877,7 @@ async function selectSpace(spaceId: string) {
           <button
               class="modal-back-button"
               type="button"
+              :disabled="isJoiningSpace"
               @click="returnToServerChoice"
           >
             ← Back
@@ -850,13 +898,28 @@ async function selectSpace(spaceId: string) {
               v-model="serverTicket"
               type="text"
               placeholder="Enter server ticket"
+              :disabled="isJoiningSpace"
+              @keydown.enter.prevent="submitJoinSpace"
           />
+
+          <p
+              v-if="joinSpaceError"
+              class="modal-error"
+          >
+            {{ joinSpaceError }}
+          </p>
 
           <button
               class="primary-modal-button"
               type="button"
+              :disabled="isJoiningSpace"
+              @click="submitJoinSpace"
           >
-            Join Server
+            {{
+              isJoiningSpace
+                  ? "Joining..."
+                  : "Join Server"
+            }}
           </button>
         </template>
 

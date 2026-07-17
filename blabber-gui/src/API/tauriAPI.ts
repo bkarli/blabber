@@ -88,6 +88,11 @@ export const tauriApi = {
             },
         );
     },
+    async joinSpace(ticket: string): Promise<SpaceInfo> {
+        return await invoke<SpaceInfo>("join_space", {
+            ticket,
+        });
+    },
     async listRooms(
         spaceId: string,
     ): Promise<RoomInfo[]> {
