@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useRouter } from 'vue-router';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Hash, Plus, Settings } from 'lucide-vue-next';
+import { Share2, Check } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
 import IdentitySettingsDrawer from '@/components/settings/IdentitySettingsDrawer.vue';
@@ -22,6 +22,18 @@ const settingsOpen = ref(false);
 const space = computed(() => store.spaces.find((s) => s.id === props.spaceId));
 const rooms = computed(() => store.roomsFor(props.spaceId));
 
+const copied = ref(false);
+
+async function handleShare() {
+  try {
+    const ticket = await store.getInvite(props.spaceId);
+    await navigator.clipboard.writeText(ticket);
+    copied.value = true;
+    setTimeout(() => { copied.value = false; }, 1500);
+  } catch (e) {
+    console.error('failed to copy invite', e);
+  }
+}
 function openRoom(roomId: string) {
   router.push({ name: 'room', params: { spaceId: props.spaceId, roomId } });
 }
@@ -43,8 +55,14 @@ watch(
   <div class="flex h-full w-60 flex-col border-r border-border bg-sidebar">
     <div class="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
       <span class="truncate font-semibold">{{ space?.name ?? 'Space' }}</span>
-      <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-foreground">
-        <Settings class="h-4 w-4" />
+      <Button
+        variant="ghost"
+        size="icon"
+        class="h-7 w-7 text-muted-foreground hover:text-foreground"
+        @click="handleShare"
+      >
+        <Check v-if="copied" class="h-4 w-4 text-primary" />
+        <Share2 v-else class="h-4 w-4" />
       </Button>
     </div>
 
