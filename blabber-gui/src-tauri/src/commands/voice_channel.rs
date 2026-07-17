@@ -18,6 +18,8 @@ pub async fn start_call(state: State<'_, AppState>, peer_endpoint_id: String)->R
 pub fn hang_up(state: State <'_, AppState>)->Result<(), String>{
     if let Some(call) = state.active_call.lock().unwrap().take(){
         call.hang_up();}
+    if let Some(handle) = state.incoming_call_handle.lock().unwrap().take(){
+        handle.hang_up();}
     Ok(())
 }
 

@@ -40,6 +40,7 @@ pub struct Node {
     pub events: broadcast::Sender<AppEvent>,
     pub spaces: Arc<Mutex<Vec<Space>>>,
     on_incoming_call: Option<crate::channel::IncomingCallHandler>,
+    on_call_started: Option<crate::channel::CallStartedHandler>,
 }
 
 impl Node {
@@ -57,13 +58,22 @@ impl Node {
             events,
             spaces: Arc::new(Mutex::new(Vec::new())),
             on_incoming_call: None,
+            on_call_started: None,
         }
     }
+
     pub fn set_incoming_call_handler(
         &mut self,
         handler: impl Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync + 'static,
     ) {
         self.on_incoming_call = Some(std::sync::Arc::new(handler));
+    }
+
+    pub fn set_call_started_handler(
+        &mut self,
+        handler: impl Fn(crate::channel::CallHandle) + Send + Sync + 'static,
+    ) {
+        self.on_call_started = Some(std::sync::Arc::new(handler));
     }
 
     pub fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
@@ -152,6 +162,9 @@ impl Node {
         let mut voice = VoiceProtocol::new();
         if let Some(handler) = &self.on_incoming_call {
             voice = voice.with_incoming_handler(handler.clone());
+        }
+        if let Some(handler) = &self.on_call_started {
+            voice = voice.with_call_started_handler(handler.clone());
         }
 
         let router = Router::builder(endpoint)
@@ -394,7 +407,6 @@ pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Conne
     let (mut send, mut recv) = connection.accept_bi().await?;
     diffie_hellman(&mut send, &mut recv).await
 }
-    
 
 #[cfg(test)]
 mod tests {

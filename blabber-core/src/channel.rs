@@ -190,9 +190,23 @@ impl Drop for ActiveVoiceCall {
 
 pub type IncomingCallHandler = std::sync::Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
 
+#[derive(Clone)]
+pub struct CallHandle {
+    notify: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl CallHandle {
+    pub fn hang_up(&self) {
+        self.notify.notify_one();
+    }
+}
+
+pub type CallStartedHandler = std::sync::Arc<dyn Fn(CallHandle) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct VoiceProtocol {
     on_incoming: Option<IncomingCallHandler>,
+    on_call_started: Option<CallStartedHandler>,
 }
 
 impl std::fmt::Debug for VoiceProtocol {
@@ -205,11 +219,19 @@ impl std::fmt::Debug for VoiceProtocol {
 
 impl VoiceProtocol {
     pub fn new() -> Self {
-        Self { on_incoming: None }
+        Self {
+            on_incoming: None,
+            on_call_started: None,
+        }
     }
 
     pub fn with_incoming_handler(mut self, handler: IncomingCallHandler) -> Self {
         self.on_incoming = Some(handler);
+        self
+    }
+
+    pub fn with_call_started_handler(mut self, handler: CallStartedHandler) -> Self {
+        self.on_call_started = Some(handler);
         self
     }
 }
@@ -237,7 +259,19 @@ impl ProtocolHandler for VoiceProtocol {
         let handle = tokio::runtime::Handle::current();
         let call = ActiveVoiceCall::start(channel, handle);
 
-        connection.closed().await;
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        if let Some(cb) = &self.on_call_started {
+            cb(CallHandle {
+                notify: notify.clone(),
+            });
+        }
+
+        tokio::select! {
+            _ = connection.closed() => {}
+            _ = notify.notified() => {
+                connection.close(0u32.into(), b"hung up");
+            }
+        }
         call.hang_up();
 
         Ok(())
