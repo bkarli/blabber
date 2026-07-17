@@ -1,0 +1,128 @@
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  /* keep these two unchanged, they're not colors */
+  --font-heading: var(--font-sans);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+--radius: 0.625rem;
+--background: 220 23.08% 94.90%; /* base */
+--foreground: 234 16.02% 35.49%; /* text */
+--card: 220 23.08% 94.90%; /* base */
+--card-foreground: 234 16.02% 35.49%; /* text */
+--popover: 220 23.08% 94.90%; /* base */
+--popover-foreground: 234 16.02% 35.49%; /* text */
+--primary: 183 73.86% 34.51%; /* accent - Teal */
+--primary-foreground: 220 23.08% 94.90%; /* base */
+--secondary: 223 15.91% 82.75%; /* surface0 */
+--secondary-foreground: 234 16.02% 35.49%; /* text */
+--muted: 223 15.91% 82.75%; /* surface0 */
+--muted-foreground: 233 12.80% 41.37%; /* subtext1 */
+--accent: 223 15.91% 82.75%; /* surface0 */
+--accent-foreground: 234 16.02% 35.49%; /* text */
+--destructive: 347 86.67% 44.12%; /* red */
+--border: 225 13.56% 76.86%; /* surface1 */
+--input: 225 13.56% 76.86%; /* surface1 */
+--ring: 234 16.02% 35.49%; /* text */
+--chart-1: 345 57.65% 74.12%; /* red */
+--chart-2: 185 37.25% 70.59%; /* teal */
+--chart-3: 219 81.96% 78.43%; /* blue */
+--chart-4: 35 61.18% 76.86%; /* yellow */
+--chart-5: 113 32.94% 73.33%; /* green */
+--sidebar: 218 25.10% 93.73%; /* mantle */
+--sidebar-foreground: 234 16.02% 35.49%; /* text */
+--sidebar-primary: 183 73.86% 34.51%; /* accent - Teal */
+--sidebar-primary-foreground: 220 23.08% 94.90%; /* base */
+--sidebar-accent: 220 23.08% 94.90%; /* surface0 */
+--sidebar-accent-foreground: 234 16.02% 35.49%; /* text */
+--sidebar-border: 225 13.56% 76.86%; /* surface1 */
+--sidebar-ring: 225 13.56% 76.86%; /* surface1 */
+}
+
+.dark {
+
+--radius: 0.625rem;
+--background: 232 23.40% 18.43%; /* base */
+--foreground: 227 68.25% 87.65%; /* text */
+--card: 232 23.40% 18.43%; /* base */
+--card-foreground: 227 68.25% 87.65%; /* text */
+--popover: 232 23.40% 18.43%; /* base */
+--popover-foreground: 227 68.25% 87.65%; /* text */
+--primary: 171 46.84% 69.02%; /* accent - Teal */
+--primary-foreground: 232 23.40% 18.43%; /* base */
+--secondary: 230 18.80% 26.08%; /* surface0 */
+--secondary-foreground: 227 68.25% 87.65%; /* text */
+--muted: 230 18.80% 26.08%; /* surface0 */
+--muted-foreground: 228 39.22% 80.00%; /* subtext1 */
+--accent: 230 18.80% 26.08%; /* surface0 */
+--accent-foreground: 227 68.25% 87.65%; /* text */
+--destructive: 351 73.91% 72.94%; /* red */
+--border: 231 15.61% 33.92%; /* surface1 */
+--input: 231 15.61% 33.92%; /* surface1 */
+--ring: 227 68.25% 87.65%; /* text */
+--chart-1: 333 20.78% 38.04%; /* red */
+--chart-2: 193 19.61% 38.04%; /* teal */
+--chart-3: 224 26.67% 41.18%; /* blue */
+--chart-4: 30 8.24% 42.35%; /* yellow */
+--chart-5: 139 10.98% 38.82%; /* green */
+--sidebar: 234 22.75% 17.25%; /* mantle */
+--sidebar-foreground: 227 68.25% 87.65%; /* text */
+--sidebar-primary: 171 46.84% 69.02%; /* accent - Teal */
+--sidebar-primary-foreground: 232 23.40% 18.43%; /* base */
+--sidebar-accent: 232 23.40% 18.43%; /* surface0 */
+--sidebar-accent-foreground: 227 68.25% 87.65%; /* text */
+--sidebar-border: 231 15.61% 33.92%; /* surface1 */
+--sidebar-ring: 231 15.61% 33.92%; /* surface1 */
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
