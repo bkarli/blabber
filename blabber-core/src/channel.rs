@@ -1,40 +1,24 @@
 use anyhow::{anyhow, Context, Result};
-use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::StreamConfig;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
 
 pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
-const NONCE_LEN: usize = 12;
 const MAX_DATAGRAM_SIZE: usize = 1200;
-const PACKET_OVERHEAD: usize = 16 + 8;
-const MAX_PLAINTEXT_BYTES: usize = MAX_DATAGRAM_SIZE - PACKET_OVERHEAD;
-const SAMPLES_PER_PACKET: usize = MAX_PLAINTEXT_BYTES / 4;
-
+const SAMPLES_PER_PACKET: usize = MAX_DATAGRAM_SIZE / 4;
 
 pub struct VoiceChannel {
     connection: Connection,
-    cipher: Arc<ChaCha20Poly1305>,
-    send_counter: Arc<AtomicU64>,
 }
 
 impl VoiceChannel {
-    pub fn new(connection: Connection, key: [u8; 32]) -> Self {
-        let cipher = ChaCha20Poly1305::new((&key).into());
-        Self {connection, cipher: Arc::new(cipher), send_counter: Arc::new(AtomicU64::new(0)),}
+    pub fn new(connection: Connection) -> Self {
+        Self { connection }
     }
 
-    fn nonce_from_counter(counter: u64) -> [u8; NONCE_LEN] {
-        let mut nonce = [0u8; NONCE_LEN];
-        nonce[..8].copy_from_slice(&counter.to_be_bytes());
-        nonce
-    }
-
-    ///Captures microphone input, encrypts it & sends it to the remote peer (as QUIC datagrams over the iroh connection)
+    ///Captures microphone input & sends it to the remote peer (as QUIC datagrams over the iroh connection)
     pub fn start_capture(&self) -> Result<cpal::Stream> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or_else(|| anyhow!("no input device available"))?;
@@ -42,16 +26,14 @@ impl VoiceChannel {
         let stream_config: StreamConfig = supported_config.into();
 
         let connection = self.connection.clone();
-        let cipher = Arc::clone(&self.cipher);
-        let counter = Arc::clone(&self.send_counter);
-        let stream = device.build_input_stream(&stream_config, move |data: &[f32], _: &cpal::InputCallbackInfo| {send_audio_chunk(&connection, &cipher, &counter, data);},
+        let stream = device.build_input_stream(&stream_config, move |data: &[f32], _: &cpal::InputCallbackInfo| {send_audio_chunk(&connection, data);},
                                                move |err| { eprintln!("audio capture error: {err}");},
                                                None,)?;
         stream.play().context("failed to start capture stream")?;
         Ok(stream)
     }
 
-    ///Receives datagrams over the iroh connection, decrypts them, and plays audio over speakers. 
+    ///Receives datagrams over the iroh connection and plays audio over speakers.
     pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
@@ -60,12 +42,11 @@ impl VoiceChannel {
 
         let (tx, rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = channel();
         let connection = self.connection.clone();
-        let cipher = Arc::clone(&self.cipher);
         handle.spawn(async move {
             loop {
                 match connection.read_datagram().await {
                     Ok(bytes) => {
-                        if let Some(samples) = decrypt_packet(&cipher, &bytes) {
+                        if let Some(samples) = bytes_to_samples(&bytes) {
                             let _ = tx.send(samples);
                         }
                     }
@@ -118,13 +99,14 @@ impl ActiveVoiceCall {
             thread: Some(thread),
         }
     }
-    pub fn hang_up(mut self) {
+   pub fn hang_up(mut self) {
         let _ = self.stop_tx.send(());
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
     }
 }
+
 impl Drop for ActiveVoiceCall {
     fn drop(&mut self) {
         let _ = self.stop_tx.send(());
@@ -133,15 +115,11 @@ impl Drop for ActiveVoiceCall {
         }
     }
 }
-
-/// Handles incoming iroh connections for the voice protocol
-pub type IncomingCallHandler = Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
-
+pub type IncomingCallHandler = std::sync::Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct VoiceProtocol {
     on_incoming: Option<IncomingCallHandler>,
 }
-
 impl std::fmt::Debug for VoiceProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoiceProtocol")
@@ -149,7 +127,6 @@ impl std::fmt::Debug for VoiceProtocol {
             .finish()
     }
 }
-
 impl VoiceProtocol {
     pub fn new() -> Self {
         Self { on_incoming: None }
@@ -178,55 +155,42 @@ impl ProtocolHandler for VoiceProtocol {
         if !accepted {
             return Ok(());
         }
-        let key = crate::node::perform_key_exchange_as_acceptor(&connection)
-            .await
-            .map_err(std::io::Error::other)?;
 
-        let channel = VoiceChannel::new(connection.clone(), key);
+        let channel = VoiceChannel::new(connection.clone());
         let handle = tokio::runtime::Handle::current();
         let call = ActiveVoiceCall::start(channel, handle);
 
         connection.closed().await;
         call.hang_up();
+
         Ok(())
     }
 }
 
-
-
-fn send_audio_chunk(connection: &Connection,cipher: &ChaCha20Poly1305,counter: &AtomicU64,data: &[f32],) {
+fn send_audio_chunk(connection: &Connection, data: &[f32]) {
     for sub_chunk in data.chunks(SAMPLES_PER_PACKET) {
-        let n = counter.fetch_add(1, Ordering::SeqCst);
-        let nonce_bytes = VoiceChannel::nonce_from_counter(n);
-        let nonce = Nonce::from_slice(&nonce_bytes);
         let raw: Vec<u8> = sub_chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
 
-        match cipher.encrypt(nonce, raw.as_slice()) {
-            Ok(ciphertext) => {
-                let mut packet = Vec::with_capacity(8 + ciphertext.len());
-                packet.extend_from_slice(&n.to_be_bytes());
-                packet.extend_from_slice(&ciphertext);
-                if packet.len() > MAX_DATAGRAM_SIZE {
-                    eprintln!("dropping oversized audio packet ({} bytes)", packet.len());
-                    continue;}
-                if let Err(e) = connection.send_datagram(packet.into()) {
-                    eprintln!("failed to send audio datagram: {e}");}
-            }
-            Err(e) => eprintln!("encryption failed: {e}"),
-}}}
+        if raw.len() > MAX_DATAGRAM_SIZE {
+            eprintln!("dropping oversized audio packet ({} bytes)", raw.len());
+            continue;
+        }
+        if let Err(e) = connection.send_datagram(raw.into()) {
+            eprintln!("failed to send audio datagram: {e}");
+        }
+    }
+}
 
-fn decrypt_packet(cipher: &ChaCha20Poly1305, packet: &[u8]) -> Option<Vec<f32>> {
-    if packet.len() < 8 { return None;}
-    let (counter_bytes, ciphertext) = packet.split_at(8);
-    let counter = u64::from_be_bytes(counter_bytes.try_into().ok()?);
-    let nonce_bytes = VoiceChannel::nonce_from_counter(counter);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    let plaintext = cipher.decrypt(nonce, ciphertext).ok()?;
-    if plaintext.len() % 4 != 0 {
-        return None;}
-
-    Some(plaintext.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(),)
+fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -239,7 +203,6 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_test() -> Result<()> {
-        let key = [42u8; 32];
         let endpoint_a = Endpoint::builder(presets::N0)
             .alpns(vec![VOICE_ALPN.to_vec()])
             .bind()
@@ -267,8 +230,8 @@ mod tests {
 
         let connection_b = accept_task.await.context("accept task failed")??;
 
-        let channel_a = VoiceChannel::new(connection_a, key);
-        let channel_b = VoiceChannel::new(connection_b, key);
+        let channel_a = VoiceChannel::new(connection_a);
+        let channel_b = VoiceChannel::new(connection_b);
 
         let _capture = channel_a.start_capture()?;
         let handle = tokio::runtime::Handle::current();

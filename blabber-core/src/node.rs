@@ -360,11 +360,10 @@ impl Node {
         self.events.subscribe()
     }
 
-    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>)->Result<crate::channel::ActiveVoiceCall> {
+    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>) -> Result<crate::channel::ActiveVoiceCall> {
         let endpoint = self.endpoint.clone().context("Node not created yet")?;
         let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
-        let key = perform_key_exchange_as_initiator(&connection).await?;        
-        let channel = VoiceChannel::new(connection, key);
+        let channel = VoiceChannel::new(connection);
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
