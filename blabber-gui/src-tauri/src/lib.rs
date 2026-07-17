@@ -4,6 +4,7 @@ use blabber_core::space::Space;
 
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::oneshot;
 
 #[path = "commands/login.rs"]
 mod login;
@@ -11,8 +12,7 @@ use login::{create_identity, list_identities, login,logout};
 
 #[path = "commands/voice_channel.rs"]
 mod voice_channel;
-use voice_channel::{hang_up, start_call, my_endpoint_id};
-
+use voice_channel::{hang_up, start_call, my_endpoint_id, answer_call};
 #[path = "commands/space.rs"]
 mod space;
 use space::{create_server, list_servers, get_invite, join_space};
@@ -29,6 +29,7 @@ pub struct AppState {
     pub node: TokioMutex<Option<Node>>,
     pub active_call: Mutex<Option<ActiveVoiceCall>>,
     pub spaces: TokioMutex<Vec<Space>>,
+    pub pending_call: Mutex<Option<oneshot::Sender<bool>>>,
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -48,7 +49,8 @@ pub fn run() {
             join_space,
             get_invite,
             create_room,
-            list_rooms
+            list_rooms,
+            answer_call,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
