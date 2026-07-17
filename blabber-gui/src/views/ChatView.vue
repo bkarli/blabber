@@ -93,6 +93,14 @@ async function copySelectedSpaceInvite() {
 const rooms = ref<RoomInfo[]>([]);
 const selectedRoomId = ref<string | null>(null);
 
+const selectedRoom = computed(() => {
+  return (
+      rooms.value.find(
+          (room) => room.id === selectedRoomId.value,
+      ) ?? null
+  );
+});
+
 const isLoadingRooms = ref(false);
 const roomsError = ref("");
 
@@ -153,6 +161,11 @@ async function submitCreateRoom() {
   } finally {
     isCreatingRoom.value = false;
   }
+}
+function openRoom(roomId: string) {
+  selectedRoomId.value = roomId;
+  messageText.value = "";
+  messageError.value = "";
 }
 async function submitJoinSpace() {
   if (isJoiningSpace.value) {
@@ -670,7 +683,7 @@ async function selectSpace(spaceId: string) {
               :class="{
           selected: selectedRoomId === room.id,
         }"
-              @click="selectedRoomId = room.id"
+              @click="openRoom(room.id)"
           >
             <div class="avatar">
               #
@@ -706,9 +719,85 @@ async function selectSpace(spaceId: string) {
       </footer>
     </aside>
 
-    <!-- Main chat area -->
     <main class="chat-area">
-      <template v-if="selectedChat">
+      <!-- Room chat -->
+      <template v-if="selectedSpace && selectedRoom">
+        <header class="chat-header">
+          <div class="chat-user">
+            <div class="header-avatar">
+              #
+            </div>
+
+            <div>
+              <h2>{{ selectedRoom.name }}</h2>
+              <span>{{ selectedSpace.name }}</span>
+            </div>
+          </div>
+
+          <div class="chat-actions">
+            <button title="Room information">
+              ⓘ
+            </button>
+          </div>
+        </header>
+
+        <section class="room-chat-content">
+          <div class="room-message-list">
+
+            <div class="room-welcome">
+              <h2>Welcome to #{{ selectedRoom.name }}</h2>
+
+              <p>
+                This is the beginning of the
+                {{ selectedRoom.name }} room.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <footer class="message-bar">
+          <button
+              class="attachment-button"
+              type="button"
+              title="Add attachment"
+          >
+            +
+          </button>
+
+          <input
+              v-model="messageText"
+              type="text"
+              :placeholder="`Message #${selectedRoom.name}`"
+          />
+
+          <button
+              class="send-button"
+              type="button"
+              :disabled="!messageText.trim()"
+          >
+            Send
+          </button>
+        </footer>
+      </template>
+
+      <!-- Space selected, but no room selected -->
+      <section
+          v-else-if="selectedSpace"
+          class="no-chat-selected"
+      >
+        <div class="empty-icon">
+          #
+        </div>
+
+        <h2>Select a room</h2>
+
+        <p>
+          Choose a room from the list to open it.
+        </p>
+      </section>
+
+      <!-- Direct message chat -->
+      <template v-else-if="selectedChat">
         <header class="chat-header">
           <div class="chat-user">
             <div class="header-avatar">
@@ -719,12 +808,12 @@ async function selectSpace(spaceId: string) {
               <h2>{{ selectedChat.name }}</h2>
 
               <span>
-                {{
+            {{
                   selectedChat.online
                       ? "Online"
                       : "Offline"
                 }}
-              </span>
+          </span>
             </div>
           </div>
 
@@ -802,9 +891,9 @@ async function selectSpace(spaceId: string) {
               class="send-button"
               type="button"
               :disabled="
-              !messageText.trim() ||
-              isSendingMessage
-            "
+            !messageText.trim() ||
+            isSendingMessage
+          "
               @click="sendCurrentMessage"
           >
             {{
@@ -1550,7 +1639,43 @@ button:disabled {
 .send-button:disabled {
   opacity: 0.5;
 }
-/* Server modal */
+/* Room chat */
+
+.room-chat-content {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.room-message-list {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 24px 28px;
+}
+
+.room-welcome {
+  margin-top: auto;
+  padding-bottom: 8px;
+}
+
+.room-welcome h2 {
+  margin: 0 0 8px;
+  color: #f7f3e8;
+  font-size: 28px;
+}
+
+.room-welcome p {
+  margin: 0;
+  color: #c9c3b8;
+  font-size: 15px;
+}
+
+.room-message-bar {
+  flex-shrink: 0;
+}
 
 .modal-backdrop {
   position: fixed;
