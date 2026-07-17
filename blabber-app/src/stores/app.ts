@@ -69,6 +69,7 @@ export const useAppStore = defineStore('app', {
 
     handleNewMessage({ room_id, message }: { space_id: string; room_id: string; message: Message }) {
       const list = (this.messagesByRoom[room_id] ??= []);
+      console.log(message.content);
       const alreadyExists = list.some(
         (m) => m.author === message.author && m.sent_at === message.sent_at
       );

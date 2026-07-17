@@ -86,7 +86,7 @@ async fn start_node_for_identity(
     //     *app_state.incoming_call_handle.lock().unwrap() = Some(call_handle);
     // });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
-
+    crate::event_bridge::spawn_event_bridge(app.clone(), &node);
     let spaces_root = spaces_dir(app)?;
     fs::create_dir_all(&spaces_root).map_err(|error| error.to_string())?;
 
