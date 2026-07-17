@@ -6,8 +6,17 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
-const MAX_DATAGRAM_SIZE: usize = 1200;
-const SAMPLES_PER_PACKET: usize = MAX_DATAGRAM_SIZE / 4;
+const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
+
+const SAFETY_MARGIN: usize = 32;
+
+fn samples_per_packet(connection: &Connection) -> usize {
+    let max_datagram = connection
+        .max_datagram_size()
+        .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE);
+    let safe_bytes = max_datagram.saturating_sub(SAFETY_MARGIN).max(4);
+    (safe_bytes / 4).max(1)
+}
 
 pub struct VoiceChannel {
     connection: Connection,
@@ -26,7 +35,8 @@ impl VoiceChannel {
         let stream_config: StreamConfig = supported_config.into();
 
         let connection = self.connection.clone();
-        let stream = device.build_input_stream(&stream_config, move |data: &[f32], _: &cpal::InputCallbackInfo| {send_audio_chunk(&connection, data);},
+        let max_samples = samples_per_packet(&connection);
+        let stream = device.build_input_stream(&stream_config, move |data: &[f32], _: &cpal::InputCallbackInfo| {send_audio_chunk(&connection, data, max_samples);},
                                                move |err| { eprintln!("audio capture error: {err}");},
                                                None,)?;
         stream.play().context("failed to start capture stream")?;
@@ -90,10 +100,10 @@ impl ActiveVoiceCall {
 
         let thread = std::thread::spawn(move || -> Result<()> {
             let _capture = channel.start_capture().inspect_err(|e| {
-                eprintln!("voice: failed to start capture: {e:#}");
+                eprintln!("[voice] failed to start capture: {e:#}");
             })?;
             let _playback = channel.start_playback(&handle).inspect_err(|e| {
-                eprintln!("voice: failed to start playback: {e:#}");
+                eprintln!("[voice] failed to start playback: {e:#}");
             })?;
             let _ = stop_rx.recv();
             Ok(())
@@ -177,14 +187,10 @@ impl ProtocolHandler for VoiceProtocol {
     }
 }
 
-fn send_audio_chunk(connection: &Connection, data: &[f32]) {
-    for sub_chunk in data.chunks(SAMPLES_PER_PACKET) {
+fn send_audio_chunk(connection: &Connection, data: &[f32], max_samples: usize) {
+    for sub_chunk in data.chunks(max_samples) {
         let raw: Vec<u8> = sub_chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
 
-        if raw.len() > MAX_DATAGRAM_SIZE {
-            eprintln!("dropping oversized audio packet ({} bytes)", raw.len());
-            continue;
-        }
         if let Err(e) = connection.send_datagram(raw.into()) {
             eprintln!("failed to send audio datagram: {e}");
         }
