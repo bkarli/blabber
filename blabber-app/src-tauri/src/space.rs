@@ -115,33 +115,24 @@ pub async fn join_space(
     ticket: String,
 ) -> Result<SpaceInfo, String> {
     let ticket = ticket.trim();
-
     if ticket.is_empty() {
         return Err("Invite ticket cannot be empty".to_string());
     }
-
-    let invite = Invite::deserialize_invite(ticket.to_string())
-        .map_err(|error| error.to_string())?;
+    let invite = Invite::deserialize_invite(ticket.to_string()).map_err(|error| error.to_string())?;
 
     let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
 
-    let node = node_guard
-        .as_ref()
-        .ok_or("Node not started yet... please log in first")?;
-
-    let space = node
-        .join_space(invite)
-        .await
-        .map_err(|error| error.to_string())?;
+    let space = node.join_space(invite).await.map_err(|error| error.to_string())?;
 
     let root = spaces_dir(&app)?;
+    let user_root = node.add_idetity_to_path(&root).map_err(|error| error.to_string())?;
+    space.create_directory(&user_root).await.map_err(|error| error.to_string())?;
 
-    let user_root = node
-        .add_idetity_to_path(&root)
-        .map_err(|error| error.to_string())?;
-
+    // discover any rooms already published in the space's info doc
+    let blobs = node.blobs.clone().ok_or("Blobs not created yet")?;
     space
-        .create_directory(&user_root)
+        .sync_rooms(node, &blobs)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -149,8 +140,6 @@ pub async fn join_space(
         id: space.id().to_string(),
         name: space.name().to_string(),
     };
-
     state.spaces.lock().await.push(space);
-
     Ok(info)
 }
