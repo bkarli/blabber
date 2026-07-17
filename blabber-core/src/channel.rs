@@ -83,13 +83,18 @@ pub struct ActiveVoiceCall {
     stop_tx: std::sync::mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<Result<()>>>,
 }
+
 impl ActiveVoiceCall {
     pub fn start(channel: VoiceChannel, handle: tokio::runtime::Handle) -> Self {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
         let thread = std::thread::spawn(move || -> Result<()> {
-            let _capture = channel.start_capture()?;
-            let _playback = channel.start_playback(&handle)?;
+            let _capture = channel.start_capture().inspect_err(|e| {
+                eprintln!("voice: failed to start capture: {e:#}");
+            })?;
+            let _playback = channel.start_playback(&handle).inspect_err(|e| {
+                eprintln!("voice: failed to start playback: {e:#}");
+            })?;
             let _ = stop_rx.recv();
             Ok(())
         });
@@ -99,7 +104,7 @@ impl ActiveVoiceCall {
             thread: Some(thread),
         }
     }
-   pub fn hang_up(mut self) {
+    pub fn hang_up(mut self) {
         let _ = self.stop_tx.send(());
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -115,11 +120,15 @@ impl Drop for ActiveVoiceCall {
         }
     }
 }
+
+/// Handles incoming iroh connections for the voice protocol
 pub type IncomingCallHandler = std::sync::Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct VoiceProtocol {
     on_incoming: Option<IncomingCallHandler>,
 }
+
 impl std::fmt::Debug for VoiceProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoiceProtocol")
@@ -127,6 +136,7 @@ impl std::fmt::Debug for VoiceProtocol {
             .finish()
     }
 }
+
 impl VoiceProtocol {
     pub fn new() -> Self {
         Self { on_incoming: None }
