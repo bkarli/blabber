@@ -28,3 +28,11 @@ pub async fn my_endpoint_id(state: State<'_, AppState>) -> Result<String, String
     let endpoint = node.endpoint.as_ref().ok_or("Endpoint not created")?;
     Ok(endpoint.id().to_string())
 }
+
+#[tauri::command]
+pub fn answer_call(state: State<'_, AppState>, accept: bool) -> Result<(), String> {
+    if let Some(tx) = state.pending_call.lock().unwrap().take() {
+        let _ = tx.send(accept);
+    }
+    Ok(())
+}

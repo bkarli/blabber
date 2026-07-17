@@ -123,6 +123,10 @@ export const tauriApi = {
         );
     },
 
+    async answerCall(accept:boolean):Promise<void>{
+        await invoke<void>("answer_call", {accept});
+    },
+
     async hangUp(): Promise<void>{
         await invoke<void>("hang_up");
     },
