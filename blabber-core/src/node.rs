@@ -149,7 +149,10 @@ impl Node {
             .clone()
             .context("docs not created yet")?;
 
-        let voice = VoiceProtocol::new();
+        let mut voice = VoiceProtocol::new();
+        if let Some(handler) = &self.on_incoming_call {
+            voice = voice.with_incoming_handler(handler.clone());
+        }
 
         let router = Router::builder(endpoint)
             .accept(GOSSIP_ALPN, gossip)
