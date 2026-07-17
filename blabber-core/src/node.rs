@@ -384,34 +384,34 @@ impl Node {
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
-    pub async fn join_call_room(
+    pub async fn join_mesh(
         &self,
-        room: &crate::call_rooms::CallRoom,
-    ) -> Result<crate::channel::MeshActiveCall> {
+        room_id: Uuid,
+        my_id: String,
+        peers: Vec<(String, iroh::EndpointAddr)>,
+    ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
-        let my_id = endpoint.id().to_string();
         let mesh_channel = crate::channel::MeshVoiceChannel::new();
         let handle = tokio::runtime::Handle::current();
         self.active_call_rooms
             .lock()
             .unwrap()
-            .insert(room.id, mesh_channel.clone());
-        let known_participants = room.participants.lock().await.clone();
-        for peer_id_str in known_participants {
+            .insert(room_id, mesh_channel.clone());
+        for (peer_id_str, peer_addr) in peers {
             if peer_id_str == my_id {
                 continue;
             }
-            let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() else {
-                continue;
-            };
-            let Ok(connection) = endpoint.connect(peer_id, crate::channel::CALL_ROOM_ALPN).await else {
-                eprintln!("failed to connect to {peer_id_str} for call room {}", room.id);
-                continue;
+            let connection = match endpoint.connect(peer_addr, crate::channel::CALL_ROOM_ALPN).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("failed to connect to {peer_id_str} for call room {room_id}: {e:#}");
+                    continue;
+                }
             };
             let Ok((mut send, mut recv)) = connection.open_bi().await else {
                 continue;
             };
-            if send.write_all(room.id.as_bytes()).await.is_err() {
+            if send.write_all(room_id.as_bytes()).await.is_err() {
                 continue;
             }
             let _ = send.finish();
@@ -420,9 +420,25 @@ impl Node {
                 mesh_channel.add_peer(peer_id_str, connection);
             }
         }
-        room.participants.lock().await.push(my_id);
+        let channel_for_inspection = mesh_channel.clone();
         let call = crate::channel::MeshActiveCall::start(mesh_channel, handle);
-        Ok(call)
+        Ok((call, channel_for_inspection))
+    }
+    pub async fn join_call_room(
+        &self,
+        room: &crate::call_rooms::CallRoom,
+    ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
+        let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
+        let my_id = endpoint.id().to_string();
+        let known_participants = room.participants.lock().await.clone();
+        let mut peers = Vec::new();
+        for peer_id_str in known_participants {
+            if let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() {
+                peers.push((peer_id_str, peer_id.into()));
+            }}
+        let result = self.join_mesh(room.id, my_id.clone(), peers).await?;
+        room.participants.lock().await.push(my_id);
+        Ok(result)
     }
 }
 

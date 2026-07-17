@@ -362,6 +362,10 @@ impl MeshVoiceChannel {
         self.peer_buffers.lock().unwrap().remove(peer_id);
     }
 
+    pub fn connection_count(&self)->usize{
+        self.connections.lock().unwrap().len()
+    }
+
     pub fn start_capture(&self) -> Result<cpal::Stream> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or_else(|| anyhow!("no input device available"))?;
