@@ -57,12 +57,13 @@ export const useAppStore = defineStore('app', {
 
       await listen<AppEvent>('app-event', (event) => {
         const payload = event.payload;
-        if ('NewMessage' in payload) {
-          this.handleNewMessage(payload.NewMessage);
-        } else if ('NewMember' in payload) {
-          this.handleNewMember(payload.NewMember);
-        } else if ('NewRoom' in payload) {
-          this.handleNewRoom(payload.NewRoom);
+
+        if (payload.type === 'NewMessage') {
+          this.handleNewMessage(payload);
+        } else if (payload.type === 'NewMember') {
+          this.handleNewMember(payload);
+        } else if (payload.type === 'NewRoom') {
+          this.handleNewRoom(payload);
         }
       });
     },
