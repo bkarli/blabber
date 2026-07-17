@@ -7,8 +7,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
-
 const SAFETY_MARGIN: usize = 32;
+const WIRE_SAMPLE_RATE: u32 = 48000;
 
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
@@ -16,6 +16,52 @@ fn samples_per_packet(connection: &Connection) -> usize {
         .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE);
     let safe_bytes = max_datagram.saturating_sub(SAFETY_MARGIN).max(4);
     (safe_bytes / 4).max(1)
+}
+
+fn downmix_to_mono(data: &[f32], channels: u16) -> Vec<f32> {
+    if channels <= 1 {
+        return data.to_vec();
+    }
+    let channels = channels as usize;
+    data.chunks(channels)
+        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+        .collect()
+}
+
+fn upmix_from_mono(data: &[f32], channels: u16) -> Vec<f32> {
+    if channels <= 1 {
+        return data.to_vec();
+    }
+    let channels = channels as usize;
+    let mut out = Vec::with_capacity(data.len() * channels);
+    for &sample in data {
+        for _ in 0..channels {
+            out.push(sample);
+        }
+    }
+    out
+}
+
+fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || input.is_empty() {
+        return input.to_vec();
+    }
+
+    let ratio = to_rate as f64 / from_rate as f64;
+    let out_len = ((input.len() as f64) * ratio).round() as usize;
+    let mut output = Vec::with_capacity(out_len);
+
+    for i in 0..out_len {
+        let src_pos = i as f64 / ratio;
+        let idx = src_pos.floor() as usize;
+        let frac = (src_pos - idx as f64) as f32;
+
+        let s0 = input[idx.min(input.len() - 1)];
+        let s1 = input[(idx + 1).min(input.len() - 1)];
+        output.push(s0 + (s1 - s0) * frac);
+    }
+
+    output
 }
 
 pub struct VoiceChannel {
@@ -27,27 +73,35 @@ impl VoiceChannel {
         Self { connection }
     }
 
-    ///Captures microphone input & sends it to the remote peer (as QUIC datagrams over the iroh connection)
     pub fn start_capture(&self) -> Result<cpal::Stream> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or_else(|| anyhow!("no input device available"))?;
         let supported_config = device.default_input_config().context("no supported input config")?;
+        let native_rate = supported_config.sample_rate().0;
+        let channels = supported_config.channels();
         let stream_config: StreamConfig = supported_config.into();
 
         let connection = self.connection.clone();
         let max_samples = samples_per_packet(&connection);
-        let stream = device.build_input_stream(&stream_config, move |data: &[f32], _: &cpal::InputCallbackInfo| {send_audio_chunk(&connection, data, max_samples);},
-                                               move |err| { eprintln!("audio capture error: {err}");},
-                                               None,)?;
+        let stream = device.build_input_stream(
+            &stream_config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let mono = downmix_to_mono(data, channels);
+                let resampled = resample_linear(&mono, native_rate, WIRE_SAMPLE_RATE);
+                send_audio_chunk(&connection, &resampled, max_samples);
+            },
+            move |err| { eprintln!("audio capture error: {err}");},
+            None,)?;
         stream.play().context("failed to start capture stream")?;
         Ok(stream)
     }
 
-    ///Receives datagrams over the iroh connection and plays audio over speakers.
     pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
         let config = device.default_output_config().context("no default output config")?;
+        let native_rate = config.sample_rate().0;
+        let channels = config.channels();
         let stream_config: StreamConfig = config.into();
 
         let (tx, rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = channel();
@@ -57,7 +111,9 @@ impl VoiceChannel {
                 match connection.read_datagram().await {
                     Ok(bytes) => {
                         if let Some(samples) = bytes_to_samples(&bytes) {
-                            let _ = tx.send(samples);
+                            let resampled = resample_linear(&samples, WIRE_SAMPLE_RATE, native_rate);
+                            let upmixed = upmix_from_mono(&resampled, channels);
+                            let _ = tx.send(upmixed);
                         }
                     }
                     Err(e) => {
@@ -114,6 +170,7 @@ impl ActiveVoiceCall {
             thread: Some(thread),
         }
     }
+
     pub fn hang_up(mut self) {
         let _ = self.stop_tx.send(());
         if let Some(t) = self.thread.take() {
@@ -131,7 +188,6 @@ impl Drop for ActiveVoiceCall {
     }
 }
 
-/// Handles incoming iroh connections for the voice protocol
 pub type IncomingCallHandler = std::sync::Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
 
 #[derive(Clone, Default)]
@@ -151,6 +207,7 @@ impl VoiceProtocol {
     pub fn new() -> Self {
         Self { on_incoming: None }
     }
+
     pub fn with_incoming_handler(mut self, handler: IncomingCallHandler) -> Self {
         self.on_incoming = Some(handler);
         self
