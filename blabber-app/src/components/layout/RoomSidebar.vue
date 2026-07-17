@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useRouter } from 'vue-router';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Share2, Check } from 'lucide-vue-next';
+import { Share2, Check, Plus, Hash, Settings } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
 import IdentitySettingsDrawer from '@/components/settings/IdentitySettingsDrawer.vue';
