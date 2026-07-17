@@ -41,6 +41,7 @@ pub struct Node {
     pub spaces: Arc<Mutex<Vec<Space>>>,
     on_incoming_call: Option<crate::channel::IncomingCallHandler>,
     on_call_started: Option<crate::channel::CallStartedHandler>,
+    pub active_call_rooms: crate::channel::ActiveCallRooms,
 }
 
 impl Node {
@@ -59,6 +60,7 @@ impl Node {
             spaces: Arc::new(Mutex::new(Vec::new())),
             on_incoming_call: None,
             on_call_started: None,
+            active_call_rooms: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -166,12 +168,14 @@ impl Node {
         if let Some(handler) = &self.on_call_started {
             voice = voice.with_call_started_handler(handler.clone());
         }
+        let call_room_protocol = crate::channel::CallRoomProtocol::new(self.active_call_rooms.clone());
 
         let router = Router::builder(endpoint)
             .accept(GOSSIP_ALPN, gossip)
             .accept(BLOBS_ALPN, BlobsProtocol::new(&blobs, None))
             .accept(DOCS_ALPN, docs)
             .accept(VOICE_ALPN, voice)
+            .accept(crate::channel::CALL_ROOM_ALPN, call_room_protocol)
             .spawn();
 
         self.router = Some(router);
@@ -380,7 +384,46 @@ impl Node {
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
-
+    pub async fn join_call_room(
+        &self,
+        room: &crate::call_rooms::CallRoom,
+    ) -> Result<crate::channel::MeshActiveCall> {
+        let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
+        let my_id = endpoint.id().to_string();
+        let mesh_channel = crate::channel::MeshVoiceChannel::new();
+        let handle = tokio::runtime::Handle::current();
+        self.active_call_rooms
+            .lock()
+            .unwrap()
+            .insert(room.id, mesh_channel.clone());
+        let known_participants = room.participants.lock().await.clone();
+        for peer_id_str in known_participants {
+            if peer_id_str == my_id {
+                continue;
+            }
+            let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() else {
+                continue;
+            };
+            let Ok(connection) = endpoint.connect(peer_id, crate::channel::CALL_ROOM_ALPN).await else {
+                eprintln!("failed to connect to {peer_id_str} for call room {}", room.id);
+                continue;
+            };
+            let Ok((mut send, mut recv)) = connection.open_bi().await else {
+                continue;
+            };
+            if send.write_all(room.id.as_bytes()).await.is_err() {
+                continue;
+            }
+            let _ = send.finish();
+            let mut ack = [0u8; 1];
+            if recv.read_exact(&mut ack).await.is_ok() && ack[0] == 1 {
+                mesh_channel.add_peer(peer_id_str, connection);
+            }
+        }
+        room.participants.lock().await.push(my_id);
+        let call = crate::channel::MeshActiveCall::start(mesh_channel, handle);
+        Ok(call)
+    }
 }
 
 async fn diffie_hellman(send: &mut iroh::endpoint::SendStream,recv: &mut iroh::endpoint::RecvStream) -> Result<[u8; 32]> {
