@@ -17,7 +17,7 @@ const roomId = computed(() => route.params.roomId as string | undefined);
     <SpaceSidebar />
     <RoomSidebar v-if="spaceId" :space-id="spaceId" :active-room-id="roomId" />
 
-    <main class="flex flex-1 flex-col bg-background">
+    <main class="flex min-h-0 flex-1 flex-col bg-background">
       <template v-if="spaceId && roomId">
         <MessageList :space-id="spaceId" :room-id="roomId" />
         <MessageInput :space-id="spaceId" :room-id="roomId" />

@@ -52,7 +52,7 @@ function initials(authorId: string) {
 </script>
 
 <template>
-  <ScrollArea data-message-scroll class="flex-1 px-4">
+  <ScrollArea data-message-scroll class="min-h-0 flex-1 px-4">
     <div class="flex flex-col gap-4 py-4">
       <Message v-for="(group, i) in grouped" :key="`${group.author}-${group.sentAt}-${i}`">
         <MessageAvatar>
