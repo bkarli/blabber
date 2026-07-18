@@ -9,5 +9,7 @@ pub mod channel;
 
 
 pub use events::AppEvent;
+pub mod call_rooms;
+
 pub use identity::Identity;
 pub use node::Node;

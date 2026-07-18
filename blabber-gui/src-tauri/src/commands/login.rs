@@ -60,6 +60,11 @@ async fn start_node_for_identity(
         *app_state.pending_call.lock().unwrap() = Some(decision_tx);
         let _ = app_for_event.emit("incoming_call", peer_id);
     });
+    let app_for_call_started = app.clone();
+    node.set_call_started_handler(move |call_handle| {
+        let app_state = app_for_call_started.state::<AppState>();
+        *app_state.incoming_call_handle.lock().unwrap() = Some(call_handle);
+    });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
 
     let spaces_root = spaces_dir(app)?;

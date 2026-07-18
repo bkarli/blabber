@@ -3,12 +3,19 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::StreamConfig;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex as StdMutex};
+use uuid::Uuid;
 
 pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
+pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
+
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
 const SAFETY_MARGIN: usize = 32;
 const WIRE_SAMPLE_RATE: u32 = 48000;
+const MIX_CHUNK_MS: u64 = 10;
+const MIX_CHUNK_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * (MIX_CHUNK_MS as usize);
 
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
@@ -188,11 +195,25 @@ impl Drop for ActiveVoiceCall {
     }
 }
 
-pub type IncomingCallHandler = std::sync::Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
+pub type IncomingCallHandler = Arc<dyn Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct CallHandle {
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl CallHandle {
+    pub fn hang_up(&self) {
+        self.notify.notify_one();
+    }
+}
+
+pub type CallStartedHandler = Arc<dyn Fn(CallHandle) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct VoiceProtocol {
     on_incoming: Option<IncomingCallHandler>,
+    on_call_started: Option<CallStartedHandler>,
 }
 
 impl std::fmt::Debug for VoiceProtocol {
@@ -205,11 +226,19 @@ impl std::fmt::Debug for VoiceProtocol {
 
 impl VoiceProtocol {
     pub fn new() -> Self {
-        Self { on_incoming: None }
+        Self {
+            on_incoming: None,
+            on_call_started: None,
+        }
     }
 
     pub fn with_incoming_handler(mut self, handler: IncomingCallHandler) -> Self {
         self.on_incoming = Some(handler);
+        self
+    }
+
+    pub fn with_call_started_handler(mut self, handler: CallStartedHandler) -> Self {
+        self.on_call_started = Some(handler);
         self
     }
 }
@@ -237,7 +266,19 @@ impl ProtocolHandler for VoiceProtocol {
         let handle = tokio::runtime::Handle::current();
         let call = ActiveVoiceCall::start(channel, handle);
 
-        connection.closed().await;
+        let notify = Arc::new(tokio::sync::Notify::new());
+        if let Some(cb) = &self.on_call_started {
+            cb(CallHandle {
+                notify: notify.clone(),
+            });
+        }
+
+        tokio::select! {
+            _ = connection.closed() => {}
+            _ = notify.notified() => {
+                connection.close(0u32.into(), b"hung up");
+            }
+        }
         call.hang_up();
 
         Ok(())
@@ -265,52 +306,251 @@ fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
             .collect(),
     )
 }
+#[derive(Clone)]
+pub struct MeshVoiceChannel {
+    connections: Arc<StdMutex<HashMap<String, Connection>>>,
+    peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
+    handle: Arc<StdMutex<Option<tokio::runtime::Handle>>>,
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use iroh::endpoint::presets;
-    use iroh::Endpoint;
-    use std::time::Duration;
-    use tokio::time::sleep;
+impl MeshVoiceChannel {
+    pub fn new() -> Self {
+        Self {
+            connections: Arc::new(StdMutex::new(HashMap::new())),
+            peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
+            handle: Arc::new(StdMutex::new(None)),
+        }
+    }
 
-    #[tokio::test]
-    async fn loopback_test() -> Result<()> {
-        let endpoint_a = Endpoint::builder(presets::N0)
-            .alpns(vec![VOICE_ALPN.to_vec()])
-            .bind()
-            .await?;
-        let endpoint_b = Endpoint::builder(presets::N0)
-            .alpns(vec![VOICE_ALPN.to_vec()])
-            .bind()
-            .await?;
-        let addr_b = endpoint_b.addr();
+    pub fn add_peer(&self, peer_id: String, connection: Connection) {
+        self.peer_buffers
+            .lock()
+            .unwrap()
+            .insert(peer_id.clone(), VecDeque::new());
+        self.connections
+            .lock()
+            .unwrap()
+            .insert(peer_id.clone(), connection.clone());
 
-        let endpoint_b_for_accept = endpoint_b.clone();
-        let accept_task = tokio::spawn(async move {
-            let incoming = endpoint_b_for_accept
-                .accept()
-                .await
-                .context("no incoming connection")?;
-            let connection = incoming.await.context("failed to accept connection")?;
-            Ok::<_, anyhow::Error>(connection)
+        let handle = self.handle.lock().unwrap().clone();
+        if let Some(handle) = handle {
+            let peer_buffers = self.peer_buffers.clone();
+            let peer_id_for_task = peer_id.clone();
+            handle.spawn(async move {
+                loop {
+                    match connection.read_datagram().await {
+                        Ok(bytes) => {
+                            if let Some(samples) = bytes_to_samples(&bytes) {
+                                let mut buffers = peer_buffers.lock().unwrap();
+                                if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
+                                    buf.extend(samples);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("iroh datagram recv error from {peer_id_for_task}: {e}");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn remove_peer(&self, peer_id: &str) {
+        self.connections.lock().unwrap().remove(peer_id);
+        self.peer_buffers.lock().unwrap().remove(peer_id);
+    }
+
+    pub fn connection_count(&self)->usize{
+        self.connections.lock().unwrap().len()
+    }
+
+    pub fn start_capture(&self) -> Result<cpal::Stream> {
+        let host = cpal::default_host();
+        let device = host.default_input_device().ok_or_else(|| anyhow!("no input device available"))?;
+        let supported_config = device.default_input_config().context("no supported input config")?;
+        let native_rate = supported_config.sample_rate().0;
+        let channels = supported_config.channels();
+        let stream_config: StreamConfig = supported_config.into();
+
+        let connections = self.connections.clone();
+        let stream = device.build_input_stream(
+            &stream_config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let mono = downmix_to_mono(data, channels);
+                let resampled = resample_linear(&mono, native_rate, WIRE_SAMPLE_RATE);
+
+                let conns = connections.lock().unwrap();
+                for connection in conns.values() {
+                    let max_samples = samples_per_packet(connection);
+                    send_audio_chunk(connection, &resampled, max_samples);
+                }
+            },
+            move |err| { eprintln!("audio capture error: {err}"); },
+            None,
+        )?;
+        stream.play().context("failed to start capture stream")?;
+        Ok(stream)
+    }
+    pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
+        *self.handle.lock().unwrap() = Some(handle.clone());
+
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
+        let config = device.default_output_config().context("no default output config")?;
+        let native_rate = config.sample_rate().0;
+        let channels = config.channels();
+        let stream_config: StreamConfig = config.into();
+
+        let (mixed_tx, mixed_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+        let peer_buffers = self.peer_buffers.clone();
+
+        handle.spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(MIX_CHUNK_MS));
+            loop {
+                interval.tick().await;
+                let mut mixed = vec![0.0f32; MIX_CHUNK_SAMPLES];
+                let mut active = 0u32;
+                {
+                    let mut buffers = peer_buffers.lock().unwrap();
+                    for buf in buffers.values_mut() {
+                        if buf.is_empty() {
+                            continue;
+                        }
+                        active += 1;
+                        for slot in mixed.iter_mut() {
+                            if let Some(sample) = buf.pop_front() {
+                                *slot += sample;
+                            }
+                        }
+                    }
+                }
+                if active > 0 {
+                    for s in mixed.iter_mut() {
+                        *s /= active as f32;
+                    }
+                    let _ = mixed_tx.send(mixed);
+                }
+            }
         });
 
-        let connection_a = endpoint_a
-            .connect(addr_b, VOICE_ALPN)
+        let mut pending: Vec<f32> = Vec::new();
+        let err_fn = |err| eprintln!("audio playback error: {err}");
+
+        let stream = device.build_output_stream(
+            &stream_config,
+            move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                while pending.len() < output.len() {
+                    match mixed_rx.try_recv() {
+                        Ok(mono_chunk) => {
+                            let resampled = resample_linear(&mono_chunk, WIRE_SAMPLE_RATE, native_rate);
+                            let upmixed = upmix_from_mono(&resampled, channels);
+                            pending.extend(upmixed);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let n = output.len().min(pending.len());
+                output[..n].copy_from_slice(&pending[..n]);
+                for s in &mut output[n..] {
+                    *s = 0.0;
+                }
+                pending.drain(..n);
+            },
+            err_fn,
+            None,
+        )?;
+        stream.play().context("failed to start playback stream")?;
+        Ok(stream)
+    }
+}
+
+pub struct MeshActiveCall {
+    stop_tx: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<Result<()>>>,
+}
+
+impl MeshActiveCall {
+    pub fn start(channel: MeshVoiceChannel, handle: tokio::runtime::Handle) -> Self {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+
+        let thread = std::thread::spawn(move || -> Result<()> {
+            let _capture = channel.start_capture()?;
+            let _playback = channel.start_playback(&handle)?;
+            let _ = stop_rx.recv();
+            Ok(())
+        });
+
+        Self {
+            stop_tx,
+            thread: Some(thread),
+        }
+    }
+    pub fn hang_up(mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+impl Drop for MeshActiveCall {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+pub type ActiveCallRooms = Arc<StdMutex<HashMap<Uuid, MeshVoiceChannel>>>;
+#[derive(Clone)]
+pub struct CallRoomProtocol {
+    active_rooms: ActiveCallRooms,
+}
+impl CallRoomProtocol {
+    pub fn new(active_rooms: ActiveCallRooms) -> Self {
+        Self { active_rooms }
+    }
+}
+impl std::fmt::Debug for CallRoomProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallRoomProtocol").finish()
+    }
+}
+impl ProtocolHandler for CallRoomProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let remote_id = connection.remote_id().to_string();
+
+        let (mut send, mut recv) = connection
+            .accept_bi()
             .await
-            .context("A failed to connect to B")?;
+            .map_err(std::io::Error::other)?;
 
-        let connection_b = accept_task.await.context("accept task failed")??;
+        let mut room_id_bytes = [0u8; 16];
+        recv.read_exact(&mut room_id_bytes)
+            .await
+            .map_err(std::io::Error::other)?;
+        let room_id = Uuid::from_bytes(room_id_bytes);
 
-        let channel_a = VoiceChannel::new(connection_a);
-        let channel_b = VoiceChannel::new(connection_b);
+        let channel_opt = {
+            let rooms = self.active_rooms.lock().unwrap();
+            rooms.get(&room_id).cloned()
+        };
 
-        let _capture = channel_a.start_capture()?;
-        let handle = tokio::runtime::Handle::current();
-        let _playback = channel_b.start_playback(&handle)?;
-        println!("Speak into the mic (10 seconds)");
-        sleep(Duration::from_secs(10)).await;
+        match channel_opt {
+            Some(mesh_channel) => {
+                send.write_all(&[1u8]).await.map_err(std::io::Error::other)?;
+                send.finish().map_err(std::io::Error::other)?;
+                mesh_channel.add_peer(remote_id, connection);
+            }
+            None => {
+                send.write_all(&[0u8]).await.map_err(std::io::Error::other)?;
+                send.finish().map_err(std::io::Error::other)?;
+            }
+        }
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {}
