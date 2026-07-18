@@ -455,18 +455,34 @@ impl Node {
         space_id: Uuid,
         room: &crate::call_rooms::CallRoom,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
-        self.room_spaces.lock().unwrap().insert(room.id, space_id);
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
         let my_id = endpoint.id().to_string();
-        let known_participants = room.participants.lock().await.clone();
+        let author = self.author.context("author not created yet")?;
+        let blobs = self.blobs.clone().context("blobs not created yet")?;
+
+        // discover who's already in the call by reading the synced call log,
+        // before writing our own join entry
+        let known_participants: Vec<String> = room
+            .list_call_log(blobs)
+            .await?
+            .into_iter()
+            .flat_map(|entry| entry.participants)
+            .filter(|id| id != &my_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
         let mut peers = Vec::new();
         for peer_id_str in known_participants {
             if let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() {
                 peers.push((peer_id_str, peer_id.into()));
             }
         }
+
         let result = self.join_mesh(room.id, my_id.clone(), peers).await?;
-        room.participants.lock().await.push(my_id.clone());
+
+        // record our own join in the synced log, so peers who join after us can discover us
+        room.log_call_started(author, vec![my_id.clone()]).await?;
 
         let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
             space_id,
