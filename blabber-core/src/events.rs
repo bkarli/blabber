@@ -25,4 +25,14 @@ pub enum AppEvent {
         room_id: Uuid,
         entry: CallLogEntry,
     },
+    NewCallParticipant {
+        space_id: Uuid,
+        room_id: Uuid,
+        endpoint_id: String,
+    },
+    CallParticipantLeft {
+        space_id: Uuid,
+        room_id: Uuid,
+        endpoint_id: String,
+    },
 }

@@ -442,8 +442,10 @@ impl Node {
         let call = crate::channel::MeshActiveCall::start(mesh_channel, handle);
         Ok((call, channel_for_inspection))
     }
+
     pub async fn join_call_room(
         &self,
+        space_id: Uuid,
         room: &crate::call_rooms::CallRoom,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
@@ -453,9 +455,17 @@ impl Node {
         for peer_id_str in known_participants {
             if let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() {
                 peers.push((peer_id_str, peer_id.into()));
-            }}
+            }
+        }
         let result = self.join_mesh(room.id, my_id.clone(), peers).await?;
-        room.participants.lock().await.push(my_id);
+        room.participants.lock().await.push(my_id.clone());
+
+        let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
+            space_id,
+            room_id: room.id,
+            endpoint_id: my_id,
+        });
+
         Ok(result)
     }
 }

@@ -33,7 +33,9 @@ export interface ChannelInfo {
 export type AppEvent =
   | { NewMessage: { space_id: string; room_id: string; message: Message } }
   | { NewMember: { space_id: string; member: Member } }
-  | { NewRoom: { space_id: string; room_id: string; room_name: string } };
+  | { NewRoom: { space_id: string; room_id: string; room_name: string } }
+ | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
+  | { type: 'CallParticipantLeft'; space_id: string; room_id: string; endpoint_id: string };
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -44,6 +46,7 @@ export const useAppStore = defineStore('app', {
     membersBySpace: {} as Record<string, Member[]>,
     messagesByRoom: {} as Record<string, Message[]>,
     activeCallRoomId: null as string | null,
+    callParticipants: [] as string[],
     initialized: false,
   }),
 
@@ -80,8 +83,27 @@ export const useAppStore = defineStore('app', {
           this.handleNewMember(payload);
         } else if (payload.type === 'NewRoom') {
           this.handleNewRoom(payload);
+        } else if (payload.type === 'NewCallParticipant') {
+          this.handleNewCallParticipant(payload);
+        } else if (payload.type === 'CallParticipantLeft') {
+          this.handleCallParticipantLeft(payload);
         }
       });
+
+    },
+
+    handleNewCallParticipant({ room_id, endpoint_id }: { space_id: string; room_id: string; endpoint_id: string }) {
+      if (room_id === this.activeCallRoomId) {
+        if (!this.callParticipants.includes(endpoint_id)) {
+          this.callParticipants.push(endpoint_id);
+        }
+      }
+    },
+
+    handleCallParticipantLeft({ room_id, endpoint_id }: { space_id: string; room_id: string; endpoint_id: string }) {
+      if (room_id === this.activeCallRoomId) {
+        this.callParticipants = this.callParticipants.filter((id) => id !== endpoint_id);
+      }
     },
 
     handleNewMessage({ room_id, message }: { space_id: string; room_id: string; message: Message }) {
@@ -181,11 +203,13 @@ export const useAppStore = defineStore('app', {
     async joinCallRoom(roomId: string) {
       await invoke<void>('join_call_room', { roomId });
       this.activeCallRoomId = roomId;
+      this.callParticipants = await invoke<string[]>('list_call_participants', { roomId });
     },
 
     async leaveCallRoom() {
       await invoke<void>('leave_call_room');
       this.activeCallRoomId = null;
+      this.callParticipants = [];
     },
 
     async loadCallParticipants(roomId: string) {

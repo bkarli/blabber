@@ -1,7 +1,7 @@
-use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use anyhow::Result;
 use iroh_blobs::store::fs::FsStore;
-use iroh_docs::{AuthorId, DocTicket, api::Doc, engine::LiveEvent, protocol::Docs, store::Query};
+use iroh_docs::{AuthorId, DocTicket, Entry, api::Doc, engine::LiveEvent, protocol::Docs, store::Query};
 use n0_future::StreamExt;
 use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
 use uuid::Uuid;
@@ -23,6 +23,7 @@ pub struct CallRoom {
     pub participants: Arc<Mutex<Vec<String>>>,
     pub call_log: Doc,
     pub cache: Arc<Mutex<Vec<CallLogEntry>>>,
+    pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
 }
 
 impl CallRoom{
@@ -34,7 +35,8 @@ impl CallRoom{
             name: name.into(),
             call_log,
             cache: Arc::new(Mutex::new(Vec::new())),
-            participants: Arc::new(Mutex::new(Vec::new()))
+            participants: Arc::new(Mutex::new(Vec::new())),
+            pending: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -46,7 +48,8 @@ impl CallRoom{
             name: name.into(),
             call_log,
             cache: Arc::new(Mutex::new(Vec::new())),
-            participants: Arc::new(Mutex::new(Vec::new()))
+            participants: Arc::new(Mutex::new(Vec::new())),
+            pending: Arc::new(Mutex::new(HashMap::new())),
         })
 
     }
@@ -77,25 +80,48 @@ impl CallRoom{
         }
         Ok(log)
     }
+    async fn try_apply_entry(
+        cache: &Arc<Mutex<Vec<CallLogEntry>>>,
+        entry: &Entry,
+        blobs: &FsStore,
+        events: &broadcast::Sender<AppEvent>,
+        space_id: Uuid,
+        room_id: Uuid,
+    ) -> bool {
+        if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
+            if let Ok(call_entry) = postcard::from_bytes::<CallLogEntry>(&bytes) {
+                cache.lock().await.push(call_entry.clone());
+                println!("Applying event");
+                let _ = events.send(AppEvent::NewCallLogEntry { space_id, room_id, entry: call_entry });
+                return true;
+            }
+        }
+        false
+    }
+
     async fn apply_event(
         cache: Arc<Mutex<Vec<CallLogEntry>>>,
+        pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
         event: LiveEvent,
         blobs: &FsStore,
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
     ) {
-        if let LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } = event {
-            if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
-                if let Ok(call_entry) = postcard::from_bytes::<CallLogEntry>(&bytes) {
-                    cache.lock().await.push(call_entry.clone());
-                    let _ = events.send(AppEvent::NewCallLogEntry {
-                        space_id,
-                        room_id,
-                        entry: call_entry,
-                    });
+        match event {
+            LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } => {
+                let applied = Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id).await;
+                if !applied {
+                    pending.lock().await.insert(entry.content_hash(), entry);
                 }
             }
+            LiveEvent::ContentReady { hash } => {
+                let stashed = pending.lock().await.remove(&hash);
+                if let Some(entry) = stashed {
+                    Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id).await;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -111,17 +137,18 @@ impl CallRoom{
 
         let doc = self.call_log.clone();
         let cache = self.cache.clone();
+        let pending = self.pending.clone();
         let label = label.into();
         let events = node.events.clone();
         let room_id = self.id;
 
         let handle = node.watch_doc(doc, label, move |event| {
             let cache = cache.clone();
+            let pending = pending.clone();
             let blobs = blobs.clone();
             let events = events.clone();
-
             async move {
-                Self::apply_event(cache, event, &blobs, &events, space_id, room_id).await;
+                Self::apply_event(cache, pending, event, &blobs, &events, space_id, room_id).await;
             }
         }).await?;
         Ok(handle)

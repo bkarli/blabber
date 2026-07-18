@@ -84,19 +84,21 @@ pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Resu
     let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet")?;
-    let room: CallRoom = {
+
+    let (space_id, room): (Uuid, CallRoom) = {
         let spaces = state.spaces.lock().await;
-        let mut found: Option<CallRoom> = None;
+        let mut found = None;
         for space in spaces.iter() {
             let call_rooms = space.call_rooms.lock().await;
             if let Some(r) = call_rooms.iter().find(|r| r.id == room_uuid) {
-                found = Some(r.clone());
+                found = Some((space.id(), r.clone()));
                 break;
             }
         }
         found.ok_or("call room not found")?
     };
-    let (call, _channel) = node.join_call_room(&room).await.map_err(|e| e.to_string())?;
+
+    let (call, _channel) = node.join_call_room(space_id, &room).await.map_err(|e| e.to_string())?;
     *state.active_call_room.lock().unwrap() = Some((room_uuid, call));
     Ok(())
 }
@@ -116,12 +118,18 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
                     if let Some(room) = call_rooms.iter().find(|r| r.id == room_uuid) {
                         let mut participants = room.participants.lock().await;
                         participants.retain(|id| id != &my_id);
+
+                        let _ = node.events.send(blabber_core::events::AppEvent::CallParticipantLeft {
+                            space_id: space.id(),
+                            room_id: room_uuid,
+                            endpoint_id: my_id.clone(),
+                        });
                         break;
                     }
                 }
             }
         }
     }
-
     Ok(())
 }
+

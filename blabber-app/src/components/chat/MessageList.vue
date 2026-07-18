@@ -70,14 +70,14 @@ function initials(authorId: string) {
             <span class="text-xs text-muted-foreground">{{ formatTime(group.sentAt) }}</span>
           </div>
           <BubbleGroup>
-<Bubble
-  v-for="(content, j) in group.contents"
-  :key="j"
-  :variant="group.isOwn ? 'default' : 'muted'"
-  class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
->
-  <BubbleContent>{{ content }}</BubbleContent>
-</Bubble>
+    <Bubble
+      v-for="(content, j) in group.contents"
+      :key="j"
+      :variant="group.isOwn ? 'default' : 'muted'"
+      class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
+    >
+    <BubbleContent>{{ content }}</BubbleContent>
+  </Bubble>
           </BubbleGroup>
         </MessageContent>
       </Message>
