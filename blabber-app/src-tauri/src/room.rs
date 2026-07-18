@@ -147,3 +147,12 @@ pub async fn list_messages(
         .map(|m| MessageInfo { author: m.author, content: m.content, sent_at: m.sent_at })
         .collect())
 }
+
+#[tauri::command]
+pub async fn get_my_author_id(state: State<'_, AppState>) -> Result<String, String> {
+    let guard = state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not started yet")?;
+    let author = node.author.ok_or("Author not created yet")?;
+
+    Ok(author.to_string())
+}

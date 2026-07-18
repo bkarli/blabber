@@ -3,7 +3,7 @@ import { computed, watch, onMounted, nextTick } from 'vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Bubble, BubbleContent, BubbleGroup } from '@/components/ui/bubble';
-import { Message, MessageAvatar, MessageContent, MessageFooter } from '@/components/ui/message';
+import { Message, MessageAvatar, MessageContent } from '@/components/ui/message';
 import { useAppStore } from '@/stores/app';
 
 const props = defineProps<{ spaceId: string; roomId: string }>();
@@ -11,16 +11,15 @@ const store = useAppStore();
 
 const messages = computed(() => store.messagesFor(props.roomId));
 
-// group consecutive messages from the same author so they render as one
-// BubbleGroup instead of a separate avatar/row per message
 const grouped = computed(() => {
-  const groups: { author: string; sentAt: number; contents: string[] }[] = [];
+  const groups: { author: string; sentAt: number; contents: string[]; isOwn: boolean }[] = [];
   for (const msg of messages.value) {
+    const isOwn = msg.author === store.myAuthorId;
     const last = groups[groups.length - 1];
     if (last && last.author === msg.author) {
       last.contents.push(msg.content);
     } else {
-      groups.push({ author: msg.author, sentAt: msg.sent_at, contents: [msg.content] });
+      groups.push({ author: msg.author, sentAt: msg.sent_at, contents: [msg.content], isOwn });
     }
   }
   return groups;
@@ -54,21 +53,31 @@ function initials(authorId: string) {
 <template>
   <ScrollArea data-message-scroll class="min-h-0 flex-1 px-4">
     <div class="flex flex-col gap-4 py-4">
-      <Message v-for="(group, i) in grouped" :key="`${group.author}-${group.sentAt}-${i}`">
+      <Message
+        v-for="(group, i) in grouped"
+        :key="`${group.author}-${group.sentAt}-${i}`"
+        :align="group.isOwn ? 'end' : 'start'"
+        class="max-w-full"
+      >
         <MessageAvatar>
           <Avatar>
             <AvatarFallback>{{ initials(group.author) }}</AvatarFallback>
           </Avatar>
         </MessageAvatar>
-        <MessageContent>
+        <MessageContent class="flex-1 min-w-0">
           <div class="mb-1 flex items-baseline gap-2">
-            <span class="text-sm font-semibold">{{ group.author.slice(0, 8) }}</span>
+            <span class="text-sm font-semibold">{{ group.isOwn ? 'You' : group.author.slice(0, 8) }}</span>
             <span class="text-xs text-muted-foreground">{{ formatTime(group.sentAt) }}</span>
           </div>
           <BubbleGroup>
-            <Bubble v-for="(content, j) in group.contents" :key="j" variant="muted">
-              <BubbleContent>{{ content }}</BubbleContent>
-            </Bubble>
+<Bubble
+  v-for="(content, j) in group.contents"
+  :key="j"
+  :variant="group.isOwn ? 'default' : 'muted'"
+  class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
+>
+  <BubbleContent>{{ content }}</BubbleContent>
+</Bubble>
           </BubbleGroup>
         </MessageContent>
       </Message>

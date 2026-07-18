@@ -12,7 +12,7 @@ mod event_bridge;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
 use space::{create_server, list_servers, get_invite, join_space};
-use room::{create_room, list_rooms, send_message, list_messages};
+use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id};
 
 #[derive(Default)]
 pub struct AppState {
@@ -40,6 +40,7 @@ pub fn run() {
             list_rooms,
             send_message,
             list_messages,
+            get_my_author_id,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

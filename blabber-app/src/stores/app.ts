@@ -32,6 +32,7 @@ export type AppEvent =
 export const useAppStore = defineStore('app', {
   state: () => ({
     spaces: [] as SpaceInfo[],
+    myAuthorId: null as string | null,
     roomsBySpace: {} as Record<string, RoomInfo[]>,
     membersBySpace: {} as Record<string, Member[]>,
     messagesByRoom: {} as Record<string, Message[]>,
@@ -48,6 +49,12 @@ export const useAppStore = defineStore('app', {
     async init() {
       if (this.initialized) return;
       this.initialized = true;
+
+      try {
+        this.myAuthorId = await invoke<string>('get_my_author_id');
+      } catch (e) {
+        console.error('failed to load own author id', e);
+      }
 
       try {
         this.spaces = await invoke<SpaceInfo[]>('list_servers');
