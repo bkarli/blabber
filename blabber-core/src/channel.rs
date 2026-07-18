@@ -314,11 +314,11 @@ pub struct MeshVoiceChannel {
 }
 
 impl MeshVoiceChannel {
-    pub fn new() -> Self {
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
         Self {
             connections: Arc::new(StdMutex::new(HashMap::new())),
             peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
-            handle: Arc::new(StdMutex::new(None)),
+            handle: Arc::new(StdMutex::new(Some(handle))),
         }
     }
 
@@ -394,8 +394,6 @@ impl MeshVoiceChannel {
         Ok(stream)
     }
     pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
-        *self.handle.lock().unwrap() = Some(handle.clone());
-
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
         let config = device.default_output_config().context("no default output config")?;
