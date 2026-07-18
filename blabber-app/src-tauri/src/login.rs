@@ -74,17 +74,13 @@ async fn start_node_for_identity(
     let mut node = Node::new(identity);
 
     let app_for_event = app.clone();
-    // node.set_incoming_call_handler(move |peer_id: String, decision_tx| {
-    //     use tauri::Emitter;
-    //     let app_state = app_for_event.state::<AppState>();
-    //     *app_state.pending_call.lock().unwrap() = Some(decision_tx);
-    //     let _ = app_for_event.emit("incoming_call", peer_id);
-    // });
-    // let app_for_call_started = app.clone();
-    // node.set_call_started_handler(move |call_handle| {
-    //     let app_state = app_for_call_started.state::<AppState>();
-    //     *app_state.incoming_call_handle.lock().unwrap() = Some(call_handle);
-    // });
+    node.set_incoming_call_handler(move |peer_id: String, decision_tx| {
+        use tauri::Emitter;
+
+        let app_state = app_for_event.state::<AppState>();
+        *app_state.pending_call.lock().unwrap() = Some(decision_tx);
+        let _ = app_for_event.emit("incoming_call", peer_id); 
+    });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
     crate::event_bridge::spawn_event_bridge(app.clone(), &node);
     let spaces_root = spaces_dir(app)?;
