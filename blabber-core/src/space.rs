@@ -13,6 +13,7 @@ use iroh_docs::protocol::Docs;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::call_rooms::CallRoom;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Member {
@@ -23,6 +24,13 @@ pub struct Member {
 
 #[derive(Serialize, Deserialize)]
 pub struct RoomRecord {
+    id: Uuid,
+    name: String,
+    ticket: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct CallRoomRecord {
     id: Uuid,
     name: String,
     ticket: String,
@@ -51,7 +59,8 @@ pub struct Space {
     pub members: Doc,
     users: Vec<String>,
     pub rooms: Arc<Mutex<Vec<Room>>>,
-    pub docs: Docs
+    pub docs: Docs,
+    pub call_rooms: Arc<Mutex<Vec<CallRoom>>>,
 }
 
 impl Space {
@@ -78,7 +87,8 @@ impl Space {
             members,
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
-            docs: docs.clone()
+            docs: docs.clone(),
+            call_rooms: Arc::new(Mutex::new(Vec::new())),
         };
         
         space
@@ -135,7 +145,8 @@ impl Space {
             members,
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
-            docs: docs.clone()
+            docs: docs.clone(),
+            call_rooms: Arc::new(Mutex::new(Vec::new())),
         };
 
         space
@@ -214,6 +225,22 @@ impl Space {
 
     }
 
+    /// Create a new voice call room
+    pub async fn create_call_room(&self, author: AuthorId, name: impl Into<String>) -> Result<CallRoom> {
+        let name = name.into();
+        let room = CallRoom::new(&self.docs, name.clone()).await?;
+        let ticket = room.call_log.share(ShareMode::Write, Default::default()).await?;
+        let record = CallRoomRecord {
+            id: room.id,
+            name: name.clone(),
+            ticket: ticket.to_string(),};
+        let key = format!("callroom/{}", room.id);
+        let value = postcard::to_allocvec(&record)?;
+        self.info.set_bytes(author, key.into_bytes(), value).await?;
+        self.call_rooms.lock().await.push(room.clone());
+        Ok(room)
+    }
+
     /// initially called when joining a space just to update the in memory
     /// information on the rooms currently on that space
     pub async fn sync_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
@@ -245,6 +272,35 @@ impl Space {
         let rooms = self.rooms.lock().await;
         let mut handles = Vec::new();
         for room in rooms.iter() {
+            let label = format!("{}/{}", self.name, room.name);
+            handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
+        }
+        Ok(handles)
+    }
+
+    /// initially called when joining a space just to update the in memory info on the call rooms currently on that space
+    pub async fn sync_call_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
+        let entries = self
+            .info
+            .get_many(Query::single_latest_per_key().key_prefix("callroom/"))
+            .await?;
+        let mut entries = std::pin::pin!(entries);
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
+            let record: CallRoomRecord = postcard::from_bytes(&bytes)?;
+            let already_known = {
+                let call_rooms = self.call_rooms.lock().await;
+                call_rooms.iter().any(|r| r.id == record.id)
+            };
+            if !already_known {
+                let ticket = DocTicket::from_str(&record.ticket)?;
+                let room = CallRoom::from_ticket(&self.docs, record.id, record.name, ticket).await?;
+                self.call_rooms.lock().await.push(room);
+            }}
+        let call_rooms = self.call_rooms.lock().await;
+        let mut handles = Vec::new();
+        for room in call_rooms.iter() {
             let label = format!("{}/{}", self.name, room.name);
             handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
         }
