@@ -3,6 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::StreamConfig;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
+use tokio::sync::broadcast;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -502,14 +503,21 @@ impl Drop for MeshActiveCall {
         }
     }
 }
+pub type RoomSpaceMap = Arc<StdMutex<HashMap<Uuid, Uuid>>>;
 pub type ActiveCallRooms = Arc<StdMutex<HashMap<Uuid, MeshVoiceChannel>>>;
 #[derive(Clone)]
 pub struct CallRoomProtocol {
     active_rooms: ActiveCallRooms,
+    room_spaces: RoomSpaceMap,
+    events: broadcast::Sender<crate::events::AppEvent>,
 }
 impl CallRoomProtocol {
-    pub fn new(active_rooms: ActiveCallRooms) -> Self {
-        Self { active_rooms }
+    pub fn new(
+        active_rooms: ActiveCallRooms,
+        room_spaces: RoomSpaceMap,
+        events: broadcast::Sender<crate::events::AppEvent>,
+    ) -> Self {
+        Self { active_rooms, room_spaces, events }
     }
 }
 impl std::fmt::Debug for CallRoomProtocol {
@@ -521,15 +529,10 @@ impl ProtocolHandler for CallRoomProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote_id = connection.remote_id().to_string();
 
-        let (mut send, mut recv) = connection
-            .accept_bi()
-            .await
-            .map_err(std::io::Error::other)?;
+        let (mut send, mut recv) = connection.accept_bi().await.map_err(std::io::Error::other)?;
 
         let mut room_id_bytes = [0u8; 16];
-        recv.read_exact(&mut room_id_bytes)
-            .await
-            .map_err(std::io::Error::other)?;
+        recv.read_exact(&mut room_id_bytes).await.map_err(std::io::Error::other)?;
         let room_id = Uuid::from_bytes(room_id_bytes);
 
         let channel_opt = {
@@ -541,7 +544,20 @@ impl ProtocolHandler for CallRoomProtocol {
             Some(mesh_channel) => {
                 send.write_all(&[1u8]).await.map_err(std::io::Error::other)?;
                 send.finish().map_err(std::io::Error::other)?;
-                mesh_channel.add_peer(remote_id, connection);
+                mesh_channel.add_peer(remote_id.clone(), connection);
+
+                let space_id = {
+                    let map = self.room_spaces.lock().unwrap();
+                    map.get(&room_id).copied()
+                };
+
+                if let Some(space_id) = space_id {
+                    let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
+                        space_id,
+                        room_id,
+                        endpoint_id: remote_id,
+                    });
+                }
             }
             None => {
                 send.write_all(&[0u8]).await.map_err(std::io::Error::other)?;
@@ -551,6 +567,5 @@ impl ProtocolHandler for CallRoomProtocol {
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod tests {}

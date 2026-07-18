@@ -42,6 +42,7 @@ pub struct Node {
     on_incoming_call: Option<crate::channel::IncomingCallHandler>,
     on_call_started: Option<crate::channel::CallStartedHandler>,
     pub active_call_rooms: crate::channel::ActiveCallRooms,
+    pub room_spaces: crate::channel::RoomSpaceMap,
 }
 
 impl Node {
@@ -61,6 +62,7 @@ impl Node {
             on_incoming_call: None,
             on_call_started: None,
             active_call_rooms: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            room_spaces: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -168,7 +170,12 @@ impl Node {
         if let Some(handler) = &self.on_call_started {
             voice = voice.with_call_started_handler(handler.clone());
         }
-        let call_room_protocol = crate::channel::CallRoomProtocol::new(self.active_call_rooms.clone());
+
+        let call_room_protocol = crate::channel::CallRoomProtocol::new(
+            self.active_call_rooms.clone(),
+            self.room_spaces.clone(),
+            self.events.clone(),
+        );
 
         let router = Router::builder(endpoint)
             .accept(GOSSIP_ALPN, gossip)
@@ -448,6 +455,7 @@ impl Node {
         space_id: Uuid,
         room: &crate::call_rooms::CallRoom,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
+        self.room_spaces.lock().unwrap().insert(room.id, space_id);
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
         let my_id = endpoint.id().to_string();
         let known_participants = room.participants.lock().await.clone();
