@@ -63,6 +63,8 @@ async fn start_node_for_identity(
     app: &AppHandle,
     state: &State<'_, AppState>,
     identity: Identity,
+    password: &str,
+    identity_path: &std::path::Path,
 ) -> Result<(), String> {
     let blobs_path = app
         .path()
@@ -70,6 +72,9 @@ async fn start_node_for_identity(
         .map_err(|error| error.to_string())?
         .join("blobs");
     fs::create_dir_all(&blobs_path).map_err(|error| error.to_string())?;
+
+    let displayName = identity.displayName.clone();
+    let secret = identity.secret;
 
     let mut node = Node::new(identity);
 
@@ -82,6 +87,18 @@ async fn start_node_for_identity(
         let _ = app_for_event.emit("incoming_call", peer_id); 
     });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
+
+    if let Some(author) = node.author {
+        let updated_identity = Identity {
+            displayName: displayName,
+            secret,
+            author: Some(author),
+        };
+        updated_identity
+            .store(password, identity_path)
+            .map_err(|error| error.to_string())?;
+    }
+
     crate::event_bridge::spawn_event_bridge(app.clone(), &node);
     let spaces_root = spaces_dir(app)?;
     fs::create_dir_all(&spaces_root).map_err(|error| error.to_string())?;
@@ -116,12 +133,12 @@ pub async fn create_identity(
 
     let identity = Identity::new(display_name);
     identity
-        .store(password, path)
+        .store(&password, &path)
         .map_err(|error| error.to_string())?;
 
     let display_name_for_return = identity.displayName.clone();
 
-    start_node_for_identity(&app, &state, identity).await?;
+    start_node_for_identity(&app, &state, identity, &password, &path).await?;
 
     Ok(display_name_for_return)
 }
@@ -137,12 +154,12 @@ pub async fn login(
     if !path.exists() {
         return Err("Identity does not exist".to_string());
     }
-    let identity = Identity::load_from_disk(path, password)
+    let identity = Identity::load_from_disk(&path, &password)
         .map_err(|error| error.to_string())?;
 
     let display_name_for_return = identity.displayName.clone();
 
-    start_node_for_identity(&app, &state, identity).await?;
+    start_node_for_identity(&app, &state, identity, &password, &path).await?;
 
     Ok(display_name_for_return)
 }
