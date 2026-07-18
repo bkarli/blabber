@@ -62,9 +62,18 @@ pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
-    if let Some((_, call)) = state.active_call_room.lock().unwrap().take() {
+pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
+    let taken = state.active_call_room.lock().unwrap().take();
+    if let Some((room_uuid, call)) = taken {
         call.hang_up();
-    }
+        let node_guard = state.node.lock().await;
+        if let Some(node) = node_guard.as_ref() {
+            if let Some(endpoint) = node.endpoint.as_ref() {
+                let my_id = endpoint.id().to_string();
+                let rooms = state.call_rooms.lock().await;
+                if let Some(room) = rooms.iter().find(|r| r.id == room_uuid) {
+                    let mut participants = room.participants.lock().await;
+                    participants.retain(|id| id != &my_id);
+                }}}}
     Ok(())
 }
