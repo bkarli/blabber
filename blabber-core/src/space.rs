@@ -176,13 +176,11 @@ impl Space {
         // go through the entries and parse as member
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            /*
-            let key =std::str::from_utf8(&entry.key)?;
-            let claim_auth =key.strip_prefix("member/").unwrap_or_default();
-            if claim_auth != entry.author.to_string() {
+            let key = std::str::from_utf8(entry.key())?;
+            let claim_auth = key.strip_prefix("member/").unwrap_or_default();
+            if claim_auth != entry.author().to_string() {
                 continue;
             }
-            */
             let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
             let member: Member = postcard::from_bytes(&bytes)?;
             members.push(member);
