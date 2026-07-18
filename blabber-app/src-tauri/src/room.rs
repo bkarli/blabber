@@ -66,7 +66,7 @@ pub async fn create_room(
         .ok_or("Space not found")?;
 
     let room = space
-        .create_room(author, name)
+        .create_room(&node, author, name)
         .await
         .map_err(|error| error.to_string())?;
     println!(

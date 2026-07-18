@@ -1,7 +1,8 @@
 use std::{str::FromStr, sync::Arc};
+use anyhow::Context;
 
 
-use crate::{Node, invite::Invite};
+use crate::{Node, events, invite::Invite};
 use anyhow::{Ok, Result};
 use iroh_blobs::store::fs::FsStore;
 use iroh_docs::{AuthorId, DocTicket, api::protocol::ShareMode, engine::LiveEvent, store::Query};
@@ -201,7 +202,7 @@ impl Space {
     }
 
     /// Create a completely new room
-    pub async fn create_room(&self, author: AuthorId, name: impl Into<String>) -> Result<Room> {
+    pub async fn create_room(&self,node: &Node ,author: AuthorId, name: impl Into<String>) -> Result<Room> {
         let name = name.into();
         let room = Room::new(&self.docs, name.clone()).await?;
 
@@ -220,6 +221,19 @@ impl Space {
         self.info.set_bytes(author, key.into_bytes(), value).await?;
 
         self.rooms.lock().await.push(room.clone());
+
+        let blobs = node.blobs.clone().context("blobs not created yet")?;
+
+        let label = format!("{}/{}", self.name, room.name);
+        room.watch(node, blobs, label, self.id).await?;
+
+        let _ = node.events.send(events::AppEvent::NewRoom {
+            space_id: self.id,
+            room_id: room.id,
+            room_name: room.name.clone(), 
+        });
+
+
 
         Ok(room)
 
