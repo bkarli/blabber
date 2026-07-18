@@ -384,6 +384,19 @@ impl Node {
         let handle = tokio::runtime::Handle::current();
         Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
     }
+
+    //is optional but i'll leave it here for now
+    /*
+    pub async fn call_member(&self, space_id:Uuid, member_endpoint_id: &str)->Result<crate::channel::ActiveVoiceCall>{
+        let spaces = self.spaces.lock().await;
+        let space = spaces.iter().find(|space| space.id() == space_id).context("space not found")?;
+        let blobs = self.blobs.as_ref().context("blobs not created yet")?;
+        let members = space.list_members(blobs).await?;
+        let member = members.iter().find(|member| member.endpoint_id() == member_endpoint_id).context("member endpoint not found")?;
+        let peer_id: iroh::EndpointAddr = member.endpoint_id().parse().context("invalid endpoint id stored for member")?;
+        self.call(peer_id).await
+    }*/
+
     pub async fn join_mesh(
         &self,
         room_id: Uuid,

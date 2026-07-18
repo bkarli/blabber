@@ -11,7 +11,7 @@ mod voice_channel;
 mod event_bridge;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
-use space::{create_server, list_servers, get_invite, join_space};
+use space::{create_server, list_servers, get_invite, join_space,list_members};
 use room::{create_room, list_rooms, send_message, list_messages};
 
 #[derive(Default)]
@@ -40,6 +40,7 @@ pub fn run() {
             list_rooms,
             send_message,
             list_messages,
+            list_members,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
