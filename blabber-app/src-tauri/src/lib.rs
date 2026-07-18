@@ -1,24 +1,29 @@
+use blabber_core::channel::MeshActiveCall;
 use blabber_core::node::Node;
 use blabber_core::space::Space;
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 mod login;
 mod space;
 mod room;
 mod voice_channel;
+mod call_room;
 mod event_bridge;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
 use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id};
 use space::{create_server, list_servers, get_invite, join_space,list_members};
+use call_room::{create_call_room, list_call_rooms, join_call_room, leave_call_room};
 
 #[derive(Default)]
 pub struct AppState {
     pub node: TokioMutex<Option<Node>>,
     pub spaces: TokioMutex<Vec<Space>>,
     pub pending_call: Mutex<Option<oneshot::Sender<bool>>>,
+    pub active_call_room: Mutex<Option<(Uuid, MeshActiveCall)>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +47,10 @@ pub fn run() {
             list_messages,
             get_my_author_id,
             list_members,
+            create_call_room,
+            list_call_rooms,
+            join_call_room,
+            leave_call_room,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
