@@ -3,6 +3,8 @@ use serde::Serialize;
 use std::path::PathBuf;
 use crate::AppState;
 use blabber_core::invite::Invite;
+use blabber_core::space::Member;
+use uuid::Uuid;
 
 #[derive(Serialize, Clone)]
 pub struct SpaceInfo {
@@ -142,4 +144,15 @@ pub async fn join_space(
     };
     state.spaces.lock().await.push(space);
     Ok(info)
+}
+
+#[tauri::command]
+pub async fn list_members(state: State<'_, AppState>, space_id: String) -> Result<Vec<Member>, String> {
+    let space_uuid = space_id.parse::<Uuid>().map_err(|error| error.to_string())?;
+    let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
+    let blobs = node.blobs.as_ref().ok_or("Blobs not ready")?;
+    let spaces = state.spaces.lock().await;
+    let space = spaces.iter().find(|space| space.id() == space_uuid).ok_or("space not found")?;
+    space.list_members(blobs).await.map_err(|error| error.to_string())
 }
