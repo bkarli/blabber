@@ -93,7 +93,11 @@ impl CallRoom{
                         space_id,
                         room_id,
                         entry: call_entry,
-                    });}}}}
+                    });
+                }
+            }
+        }
+    }
 
     pub async fn watch(
         &self,
@@ -120,4 +124,6 @@ impl CallRoom{
                 Self::apply_event(cache, event, &blobs, &events, space_id, room_id).await;
             }
         }).await?;
-        Ok(handle)}}
+        Ok(handle)
+    }
+}

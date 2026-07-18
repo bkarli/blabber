@@ -138,6 +138,11 @@ pub async fn join_space(
         .await
         .map_err(|error| error.to_string())?;
 
+    space
+        .sync_call_rooms(node, &blobs)
+        .await
+        .map_err(|err| err.to_string())?;
+
     let info = SpaceInfo {
         id: space.id().to_string(),
         name: space.name().to_string(),
