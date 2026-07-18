@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
   "blabber-core",
-  "blabber-gui/src-tauri"
+  "blabber-app/src-tauri"
 ]
 
 

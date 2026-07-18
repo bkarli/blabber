@@ -4,9 +4,11 @@ pub mod space;
 pub mod invite;
 mod meta;
 mod room;
-mod events;
+pub mod events;
 pub mod channel;
 
+
+pub use events::AppEvent;
 pub mod call_rooms;
 
 pub use identity::Identity;

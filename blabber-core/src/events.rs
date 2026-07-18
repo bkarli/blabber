@@ -4,6 +4,7 @@ use crate::{room::Message, space::Member, call_rooms::CallLogEntry};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
 pub enum AppEvent {
     NewMessage {
         space_id: Uuid,
