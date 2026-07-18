@@ -106,7 +106,6 @@ impl Room {
     ) -> bool {
         if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
             if let Ok(message) = postcard::from_bytes::<Message>(&bytes) {
-                println!("Can decode message");
                 cache.lock().await.push(message.clone());
                 let a = events.send(AppEvent::NewMessage { space_id, room_id, message });
                 println!("{:?}", a);
@@ -128,7 +127,6 @@ impl Room {
         match event {
             LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } => {
                 let applied = Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id).await;
-                println!("Event");
                 if !applied {
                     println!("not appliable");
                     pending.lock().await.insert(entry.content_hash(), entry);
@@ -136,8 +134,6 @@ impl Room {
             }
             LiveEvent::ContentReady { hash } => {
                 let stashed = pending.lock().await.remove(&hash);
-
-                println!("Hash ready");
                 if let Some(entry) = stashed {
                     Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id).await;
                     println!("Hash ready")

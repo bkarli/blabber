@@ -292,13 +292,18 @@ impl Node {
                 .sync_rooms(self, blobs)
                 .await
                 .map_err(|error| {
-                    anyhow::anyhow!(
-            "failed to sync rooms for space {dir_name}: {error}"
-        )
-
+                    anyhow::anyhow!("failed to sync rooms for space {dir_name}: {error}")
                 })?;
+
+            space
+                .sync_call_rooms(self, blobs)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
+                })?;
+
             spaces.push(space);
-            }
+        }
 
         self.spaces.lock().await.extend(spaces.clone());
         Ok(spaces)
@@ -548,17 +553,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_emits_new_room_event_local() {
-        let id = Identity::new("Alice");
-        let mut node = Node::new(id);
-        
-        // create a temporary directory
-        let tmp = tempdir().unwrap();
-        node.run(tmp.path().to_path_buf()).await.unwrap();
-
-        node.create_space("Test").await.unwrap();
-
-
-
     }
 
 

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Share2, Check, Plus, Hash, Settings } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
+import CreateChannelDialog from '@/components/room/CreateChannelDialog.vue';
 import IdentitySettingsDrawer from '@/components/settings/IdentitySettingsDrawer.vue';
 
 // props must be declared BEFORE anything below references it
@@ -17,10 +18,12 @@ const store = useAppStore();
 const auth = useAuthStore();
 
 const createRoomOpen = ref(false);
+const createChannelOpen = ref(false);
 const settingsOpen = ref(false);
 
 const space = computed(() => store.spaces.find((s) => s.id === props.spaceId));
 const rooms = computed(() => store.roomsFor(props.spaceId));
+const channels = computed(() => store.channelsFor(props.spaceId));
 
 const copied = ref(false);
 
@@ -38,15 +41,21 @@ function openRoom(roomId: string) {
   router.push({ name: 'room', params: { spaceId: props.spaceId, roomId } });
 }
 
+
+async function joinChannel(channelId: string) {
+  router.push({ name: 'call', params: { spaceId: props.spaceId, roomId: channelId } });
+}
 // this block must come after `props` is declared above
 onMounted(() => {
   store.loadRooms(props.spaceId);
+  store.loadChannels(props.spaceId);
 });
 
 watch(
   () => props.spaceId,
   (newSpaceId) => {
     store.loadRooms(newSpaceId);
+    store.loadChannels(newSpaceId);
   }
 );
 </script>
@@ -93,6 +102,33 @@ watch(
           No rooms yet.
         </p>
       </div>
+
+      <div class="flex items-center justify-between px-2 pb-2">
+        <span class="text-xs font-semibold tracking-wide uppercase text-muted-foreground">Channels</span>
+        <button
+          class="text-muted-foreground transition-colors hover:text-foreground"
+          @click="createChannelOpen = true"
+        >
+          <Plus class="h-4 w-4" />
+        </button>
+      </div>
+
+      <div class="flex flex-col gap-0.5">
+        <button
+          v-for="channel in channels"
+          :key="channel.id"
+          class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          @click="joinChannel(channel.id)"
+        >
+          <Hash class="h-4 w-4 shrink-0" />
+          <span class="truncate">{{ channel.name }}</span>
+        </button>
+
+        <p v-if="rooms.length === 0" class="px-2 py-1.5 text-sm text-muted-foreground">
+          No channels yet.
+        </p>
+      </div>
+
     </ScrollArea>
 
     <div class="flex h-16 shrink-0 items-center gap-3 border-t border-border px-3">
@@ -109,6 +145,7 @@ watch(
     </div>
 
     <CreateRoomDialog v-model:open="createRoomOpen" :space-id="spaceId" />
+    <CreateChannelDialog v-model:open="createChannelOpen" :space-id="spaceId" />
     <IdentitySettingsDrawer v-model:open="settingsOpen" />
   </div>
 </template>

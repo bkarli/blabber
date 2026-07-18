@@ -15,7 +15,6 @@ pub async fn create_call_room(
     state: State<'_, AppState>,
     space_id: String,
     name: String,
-    participants: Vec<String>,
 ) -> Result<CallRoomInfo, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -34,7 +33,6 @@ pub async fn create_call_room(
         .create_call_room(author, name)
         .await
         .map_err(|e| e.to_string())?;
-    *room.participants.lock().await = participants;
     Ok(CallRoomInfo {
         id: room.id.to_string(),
         name: room.name.clone(),
@@ -60,6 +58,25 @@ pub async fn list_call_rooms(
             name: r.name.clone(),
         })
         .collect())
+}
+
+#[tauri::command]
+pub async fn list_call_participants(
+    state: State<'_, AppState>,
+    room_id: String,
+) -> Result<Vec<String>, String> {
+    let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
+
+    let spaces = state.spaces.lock().await;
+    for space in spaces.iter() {
+        let call_rooms = space.call_rooms.lock().await;
+        if let Some(room) = call_rooms.iter().find(|r| r.id == room_uuid) {
+            let participants = room.participants.lock().await;
+            return Ok(participants.clone());
+        }
+    }
+
+    Err("call room not found".to_string())
 }
 
 #[tauri::command]

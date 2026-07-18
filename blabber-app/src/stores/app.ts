@@ -24,6 +24,12 @@ export interface RoomInfo {
   name: string;
 }
 
+
+export interface ChannelInfo {
+  id: string;
+  name: string;
+}
+
 export type AppEvent =
   | { NewMessage: { space_id: string; room_id: string; message: Message } }
   | { NewMember: { space_id: string; member: Member } }
@@ -34,13 +40,16 @@ export const useAppStore = defineStore('app', {
     spaces: [] as SpaceInfo[],
     myAuthorId: null as string | null,
     roomsBySpace: {} as Record<string, RoomInfo[]>,
+    channelsBySpace: {} as Record<string, ChannelInfo[]>,
     membersBySpace: {} as Record<string, Member[]>,
     messagesByRoom: {} as Record<string, Message[]>,
+    activeCallRoomId: null as string | null,
     initialized: false,
   }),
 
   getters: {
     roomsFor: (state) => (spaceId: string) => state.roomsBySpace[spaceId] ?? [],
+    channelsFor: (state) => (spaceId: string) => state.channelsBySpace[spaceId] ?? [],
     membersFor: (state) => (spaceId: string) => state.membersBySpace[spaceId] ?? [],
     messagesFor: (state) => (roomId: string) => state.messagesByRoom[roomId] ?? [],
   },
@@ -128,6 +137,16 @@ export const useAppStore = defineStore('app', {
       this.roomsBySpace[spaceId] = rooms;
     },
 
+    async loadChannels(spaceId: string) {
+      try {
+        const channels = await invoke<ChannelInfo[]>('list_call_rooms', {spaceId});
+        
+        this.channelsBySpace[spaceId] = channels;
+      } catch (e) {
+        console.log("failed to load channels", e);
+      }
+    },
+
     async createRoom(spaceId: string, name: string) {
       const room = await invoke<RoomInfo>('create_room', { spaceId, name });
       const list = (this.roomsBySpace[spaceId] ??= []);
@@ -135,6 +154,16 @@ export const useAppStore = defineStore('app', {
         list.push(room);
       }
       return room;
+    },
+
+
+    async createChannel(spaceId: string, name: string) {
+      const channel = await invoke<RoomInfo>('create_call_room', { spaceId, name });
+      const list = (this.channelsBySpace[spaceId] ??= []);
+      if (!list.some((r) => r.id === channel.id)) {
+        list.push(channel);
+      }
+      return channel;
     },
 
     async getInvite(spaceId: string) {
@@ -147,6 +176,20 @@ export const useAppStore = defineStore('app', {
 
     async sendMessage(spaceId: string, roomId: string, content: string) {
       await invoke<void>('send_message', { spaceId, roomId, content });
+    },
+
+    async joinCallRoom(roomId: string) {
+      await invoke<void>('join_call_room', { roomId });
+      this.activeCallRoomId = roomId;
+    },
+
+    async leaveCallRoom() {
+      await invoke<void>('leave_call_room');
+      this.activeCallRoomId = null;
+    },
+
+    async loadCallParticipants(roomId: string) {
+      return invoke<string[]>('list_call_participants', { roomId });
     },
   },
 });
