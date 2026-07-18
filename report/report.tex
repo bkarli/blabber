@@ -24,6 +24,13 @@
 %% Left side of header
 \lhead{\course\\\semester}
 %% Right side of header
+%% PROPOSAL: \authorname is never defined anywhere in this file (only
+%% \course and \semester get \newcommand'd above). This will either
+%% throw an "Undefined control sequence" error or silently print
+%% nothing, depending on your LaTeX setup. Fix with e.g.:
+%%   \newcommand{\authorname}{Benedikt Karli, Robin Gökcen, Boran Gökcen, Till Küng}
+%% placed next to the other \newcommand lines below, or just replace
+%% \authorname here with \@author / the literal names.
 \rhead{\authorname\\Page \thepage\ of \pageref{LastPage}}
 %% Height of header
 \usepackage[headheight=36pt]{geometry}
@@ -39,14 +46,59 @@
 \begin{document}
 
 \maketitle
+
+%% PROPOSAL: add an abstract before the Introduction. Academic reports
+%% are expected to open with a short (5-8 sentence) self-contained
+%% summary a reader can use to decide whether to read further. Draft:
+%%
+%% \begin{abstract}
+%% Blabber is a peer-to-peer chat and voice-call application built on
+%% the Iroh networking stack, developed as the project for the
+%% Distributed Programming and Internet Architecture course in the
+%% spring semester of 2026. Instead of relying on a central server,
+%% every user runs a local Iroh node and exchanges data directly with
+%% peers through replicated, conflict-free documents. This report
+%% describes the motivation behind building a self-hosted alternative
+%% to commercial chat platforms, the resulting functional and security
+%% requirements, and the resulting system architecture spanning a Vue
+%% frontend, a Rust/Tauri backend and the Iroh networking layer. We
+%% detail how spaces, rooms and invites are represented as replicated
+%% documents, how identities are encrypted at rest, and how one-to-one
+%% and group voice calls are established. We conclude by evaluating how
+%% many of the original requirements were met and discuss the
+%% limitations of the current implementation.
+%% \end{abstract}
+
 \section{Introduction}
 This is the project report added to our hand in for the Distributed Programming and Internet Architecture project in the spring semester of 2026. Here we will provide technical insight, an overview and background to our implementation of the peer-to-peer chat \textbf{Blabber}.
 \subsection{Blabber Background}
 We as friends have regularly used Discord and other messenger apps for communication. \\
+%% PROPOSAL (typo): "goverment" -> "government".
+%% PROPOSAL (typo): "Government Id's" -> "government IDs" (no
+%% apostrophe for a plural, and "ID" not "Id").
+%% PROPOSAL (unsourced claim): "at least seventy thousand users" is a
+%% specific, checkable number with no citation. Either cite a source
+%% for it, or soften to something that doesn't need a citation, e.g.
+%% "a large number of users' identification documents were leaked".
+%% PROPOSAL (citation): "the Iroh protocol, which was introduced during
+%% the lecture" only means something to a grader who was in this
+%% specific course. Consider citing the Iroh project itself (its
+%% website/GitHub/whitepaper) instead of relying on course context, so
+%% the report reads as self-contained to an external reader.
 With our growing awareness for privacy related threats throughout our studies, we have become more and more concerned about our reliance on companies, which have direct or indirect ties and exposure to goverment and corporate surveillance programs. Because Discord moved to Identity verification using Government Id's and afterwards documents of at least seventy thousand users were leaked, we decided we wanted to move to our own chat application for this project. Because we wanted to rely less on centralized infrastructure, the Iroh protocol, which was introduced during the lecture and with which some of us had already worked before, was decided to be the right fit for our project.\\
 In the following chapters we document our implementation journey and actual use-cases for our achieved results.
 \section{Problem statement}
 Because we planned our chat application with idea of using it ourselves in mind, we had to find out what actually makes a chat comfortable and practical to use. These are what we decided our requirements for the chat application. \\
+%% PROPOSAL (typo): item (b) has a duplicated word, "and and" -> "and".
+%% PROPOSAL (parallelism): items (a)-(d) use an imperative pattern
+%% ("Create...", "Keep track...", "Send...", "Receive..."), but (e) and
+%% (f) break it ("Being able to start...", "Navigate... while
+%% intuitively achieving their goals"). Academic style expects parallel
+%% structure inside an enumerated list. Suggested rewrite:
+%%   e) Start a call with another user.
+%%   f) Navigate the interface intuitively.
+%% (the "achieving their goals" clause in (f) is redundant with
+%% "intuitively" and can simply be dropped)
 Users should be able to:
 \begin{enumerate} [a)]
     \item Create group chats for everyone to use with specific chat rooms.
@@ -66,6 +118,16 @@ Users should be able to:
 \end{enumerate}
 
 \section{System architecture}
+%% PROPOSAL (structure): this paragraph already uses "Iroh Docs",
+%% "Iroh Gossip" and "Iroh Blobs" by name before the reader has been
+%% told what any of them do -- the definitions only arrive in the next
+%% subsection. Either move "Iroh as our background technology" (right
+%% below) to BEFORE this overview paragraph, or pull it out into its
+%% own "Related work / Background technology" section preceding
+%% "System architecture" entirely (matches the usual related-work-
+%% before-architecture convention for this kind of report).
+%% PROPOSAL (citation): first mention of Iroh in the whole report with
+%% no reference -- add a citation to the Iroh project here.
 Blabber is implemented as a peer-to-peer desktop application. Instead of relying on a central server, every user runs their own instance of the application and communicates directly with other peers. The application consists of three main parts: the graphical user interface, the backend and the networking layer.\\
 The graphical user interface is implemented in Vue. It displays spaces, rooms, messages and voice calls and forwards user actions to the backend through Tauri commands.\\
 The backend is implemented in Rust using the Tauri framework. It manages the local application state, encrypted identities and communication with the networking layer.\\
@@ -148,6 +210,51 @@ peer can discover the existing rooms from the information document and import
 their individual message documents using the stored room tickets.
 \subsection{Frontend architecture}
 
+%% PROPOSAL (outdated content): this whole subsection still describes
+%% the OLD frontend (blabber-gui), which was replaced by "blabber-app"
+%% in the feature/new-gui merge. blabber-gui is no longer even a
+%% workspace member. Concretely:
+%%  - "divided into different views, including the login page, the
+%%    main chat view and the settings page" -- current blabber-app has
+%%    only two top-level views (LoginView.vue, MainView.vue); settings
+%%    is a drawer (IdentitySettingsDrawer.vue) opened from within the
+%%    main view, not a separate page.
+%%  - "The root component (App.vue) controls which view is currently
+%%    displayed. It switches between the login, chat and settings
+%%    views..." -- current App.vue is just `<router-view />`; routing
+%%    is now handled by vue-router, not manual view-switching / shared
+%%    reactive state in App.vue.
+%% Suggested replacement text:
+%%
+%% The frontend is implemented using Vue 3 and TypeScript. It is
+%% responsible for displaying the user interface and handling user
+%% interactions. Navigation between the login screen and the main
+%% application is handled by vue-router; the root component
+%% (\texttt{App.vue}) only renders the router outlet. Once logged in,
+%% users interact with a single main view composed of a space sidebar,
+%% a room sidebar and the active room's message list, with settings,
+%% and space/room creation implemented as dialogs and a drawer layered
+%% on top of that view rather than as separate pages.
+%% \\
+%% \\
+%% The frontend is connected to the Rust backend through the Tauri
+%% framework. Instead of communicating directly with the networking
+%% layer, the frontend calls Tauri commands to perform operations such
+%% as creating spaces, joining spaces and sending messages. Backend
+%% events (e.g. newly synchronized messages) are pushed back to the
+%% frontend through a small event bridge that re-emits Blabber's
+%% internal application events as Tauri events. This separates the user
+%% interface from the application logic and keeps the networking
+%% implementation inside the backend.
+%%
+%% PROPOSAL (accuracy caveat, ties to PART 0 of the notes file): as of
+%% the current frontend, voice-call and call-room Tauri commands are
+%% NOT wired up (the corresponding command file exists but is entirely
+%% commented out, and there is no call-room command file at all) --
+%% so "starting voice calls" should be removed from this paragraph
+%% unless those commands are re-added before submission. See the
+%% caveat repeated at "Supported chat operations" and "Achieved
+%% results" below.
 The frontend is implemented using Vue 3 and TypeScript. It is responsible for
 displaying the user interface and handling user interactions. The application
 is divided into different views, including the login page, the main chat view
@@ -226,6 +333,39 @@ On startup we parse all the saved invites and then import the corresponding Iroh
 Then \texttt{Space::sync\_rooms} is called to restore every room that space
 contains. This means Blabber itself stores no metadata like membership information or chat data outside of the replicated Iroh documents. The only persistant artifact is the invite code
 required to derive access to the documents.
+%% PROPOSAL (typo): "persistant" -> "persistent".
+
+%% PROPOSAL (missing section): there is currently no section
+%% describing group voice calls at all, even though this is a whole
+%% feature of blabber-core (call_rooms.rs, Node::join_call_room,
+%% MeshVoiceChannel) and is arguably more interesting architecturally
+%% than the 1:1 voice case already covered under Security
+%% considerations. Suggested new section here, before CRDTs (or as a
+%% subsection of "System architecture" next to "Voice communication"):
+%%
+%% \section{Group voice calls}
+%% In addition to one-to-one calls, Blabber supports group voice calls
+%% through a full-mesh topology: every participant establishes a direct
+%% connection to every other known participant of the call room,
+%% rather than routing audio through a relay or a selective forwarding
+%% unit (SFU). A call room tracks the list of known participant
+%% endpoint IDs and stores a call history in a replicated Iroh
+%% document, following the same pattern used for chat rooms.
+%% When a user joins a call room, the local node connects to every
+%% participant it already knows about via a dedicated protocol, sends a
+%% 16-byte call room identifier, and waits for a one-byte
+%% acknowledgement before registering the connection with a mesh voice
+%% channel. Because every peer receives one audio stream per other
+%% participant, the mesh voice channel maintains one jitter buffer per
+%% peer and mixes them on a fixed interval by averaging the buffered
+%% samples across all peers that currently have data available.
+%% This full-mesh design avoids any server-side component but scales
+%% the number of connections quadratically with the number of
+%% participants -- discussed further under Limitations.
+%% CAVEAT: as with the 1:1 voice section, double-check whether group
+%% calls are actually reachable from the current frontend before
+%% presenting this as an achieved, end-to-end feature (see PART 0 in
+%% the notes file).
 
 \section{Conflict-free replicated data structures}
 
@@ -242,6 +382,15 @@ only the information required for the spaces they have joined.
 
 \subsection{Encrypted identities}
 
+%% PROPOSAL (citation): first (and only) mention of Argon2 and
+%% ChaCha20-Poly1305 in the report -- add references (e.g. RFC 9106 for
+%% Argon2, RFC 8439 for ChaCha20-Poly1305).
+%% PROPOSAL (limitation, not covered here): the decrypted secret is
+%% held in memory as a plain [u8; 32] and is never zeroized on drop
+%% (there is a TODO for this in identity.rs, and a "zeroize" dependency
+%% has been added to Cargo.toml but is not actually used anywhere
+%% yet). Worth a sentence here or in Limitations: an attacker with
+%% memory access to a running instance could recover the secret.
 Each user identity is encrypted before being stored on disk. During identity
 creation, the user's password is used to derive an encryption key using
 Argon2. This key encrypts the identity with ChaCha20-Poly1305 before it is
@@ -262,6 +411,25 @@ intermediate server is needed to relay or permanently store chat data.
 
 \subsection{Voice communication}
 
+%% PROPOSAL (accuracy): "a shared secret that can be used for secure
+%% communication" implies the DH secret actually secures the call.
+%% Verified against the current code: the shared secret is computed
+%% (perform_key_exchange_as_initiator/acceptor in node.rs) but is not
+%% consumed anywhere afterwards -- audio datagrams are sent unencrypted
+%% at the application layer, relying entirely on Iroh's own QUIC/TLS
+%% transport encryption. If that's intentional (i.e. the DH exchange is
+%% currently vestigial / a stepping stone for future use), say so
+%% explicitly instead of implying the derived secret is what secures
+%% the call. Suggested rewrite:
+%%   "Voice calls use a dedicated Iroh protocol that establishes a
+%%   direct connection between two peers. Before transmitting audio,
+%%   the peers perform a Diffie--Hellman key exchange to derive a
+%%   shared secret; in the current implementation this secret is not
+%%   yet used to encrypt the audio payload, so confidentiality of the
+%%   call currently relies on the transport-level encryption already
+%%   provided by Iroh's underlying QUIC connection. Using the derived
+%%   secret to add application-level encryption is listed as future
+%%   work."
 Voice calls use a dedicated Iroh protocol that establishes a direct connection
 between two peers. Before transmitting audio, the peers perform a
 Diffie--Hellman key exchange to derive a shared secret that can be used for
@@ -282,6 +450,43 @@ Users can perform the following operations:
     \item Receive newly synchronized messages automatically.
     \item Start and end peer-to-peer voice calls.
 \end{itemize}
+%% PROPOSAL (accuracy, decide before submission): "Start and end
+%% peer-to-peer voice calls" is true of blabber-core, but currently the
+%% shipped frontend (blabber-app) does not expose any voice or
+%% call-room commands -- the command file is present but entirely
+%% commented out. Either (a) re-wire those commands before the report
+%% is due so this bullet is literally true of the handed-in app, or
+%% (b) rephrase, e.g. "Start and end peer-to-peer voice calls (backend
+%% implemented; not yet wired into the current GUI)". Keep this
+%% consistent with the same claim in "Achieved results" just below.
+
+%% PROPOSAL (missing table): add a requirements-to-implementation
+%% mapping table here, tying back to the (a)-(f) functional and (a)-(d)
+%% security requirements from "Problem statement". Graders in a
+%% requirements-driven course typically look for this explicitly.
+%% Skeleton:
+%%
+%% \begin{tabular}{p{0.45\linewidth}p{0.45\linewidth}}
+%% Requirement & Status / where implemented \\
+%% \hline
+%% (a) Group chats with specific rooms & Met -- Space + Room documents \\
+%% (b) Shared chat history for all participants & Met -- replicated Iroh docs (CRDT) \\
+%% (c) Message users not connected through rooms & ? -- check against
+%%     current implementation, may not be met \\
+%% (d) Receive missed messages on reconnect & Met -- sync\_rooms on
+%%     startup / Iroh replication \\
+%% (e) Start a call with another user & Backend: met. Frontend: not
+%%     currently wired (see caveat above) \\
+%% (f) Intuitive UI navigation & Subjective -- discuss briefly \\
+%% Security (a) No stored user data except at endpoints & Met \\
+%% Security (b) No information disclosure in transit & Met -- Iroh
+%%     QUIC/TLS \\
+%% Security (c) Encrypt critical data at rest & Met -- Argon2 +
+%%     ChaCha20-Poly1305 identity encryption \\
+%% Security (d) Prevent impersonation & Partially -- cryptographic
+%%     endpoint identity, but check whether "nonce and username" from
+%%     the requirement text is actually implemented \\
+%% \end{tabular}
 
 \section{Achieved results}
 %Screenshots vom GUI
@@ -290,8 +495,56 @@ Our project achieved the primary objectives defined at the beginning of the seme
 Users are able to create spaces, join existing spaces, communicate through multiple chat rooms and establish peer-to-peer voice calls. Shared chat data is synchronized between participants without relying on a central server and identities are encrypted on local devices.
 \\
 Overall, our application shows that a decentralized messaging application can provide functionality similar to conventional chat platforms while the user has control over their data.
+%% PROPOSAL (accuracy): same caveat as above -- "establish peer-to-peer
+%% voice calls" needs to match what the submitted app can actually do.
+%% PROPOSAL (cleanup): "%Screenshots vom GUI" is a leftover German
+%% scratch comment. Either add the screenshots here (this looks like
+%% where they were meant to go) or delete the comment.
+
 \section{Conclusion}
-%Mehr persönlich?
+%% PROPOSAL: this section is currently empty (just a stray comment and
+%% a \newpage). A report without a conclusion reads as unfinished
+%% regardless of the quality of earlier sections. Suggested content
+%% (adapt/shorten in your own words):
+%%
+%% Blabber demonstrates that a peer-to-peer chat and voice-call
+%% application can be built without any central server, using Iroh's
+%% replicated documents for shared state and QUIC-based direct
+%% connections for both synchronization and audio transport. Of the
+%% six functional requirements defined in Section~2, N were fully met,
+%% M partially (name them); of the four security/privacy requirements,
+%% N were fully met (name any gaps, e.g. the in-memory secret not being
+%% zeroized, or the DH-derived secret not yet being used to encrypt
+%% voice payloads). The main architectural limitation is the full-mesh
+%% topology used for group calls, which does not scale past a small
+%% number of participants; future work could explore a lightweight
+%% relay/SFU approach, application-level encryption for voice using the
+%% already-derived DH secret, and zeroizing secret key material in
+%% memory. Overall, the project met its goal of giving its users a
+%% self-hosted, privacy-respecting alternative to commercial chat
+%% platforms for their own use.
+%%
+%% "%Mehr persönlich?" (leftover note-to-self, German for "more
+%% personal?") -- resolve by writing the conclusion above, then delete
+%% this comment.
 \newpage
+
+%% PROPOSAL (bibliography): none of the citation proposals above (Iroh,
+%% Argon2, ChaCha20-Poly1305, CRDTs/Shapiro et al.) will render without
+%% an actual bibliography. Simplest option for a report this size is a
+%% manual thebibliography block right before \end{document}, e.g.:
+%%
+%% \begin{thebibliography}{9}
+%% \bibitem{iroh} n0 Computer, Inc. \emph{Iroh}. https://iroh.computer
+%% \bibitem{argon2} A. Biryukov, D. Dinu, D. Khovratovich. \emph{Argon2:
+%%   the memory-hard function for password hashing}. RFC 9106, 2021.
+%% \bibitem{chacha20poly1305} Y. Nir, A. Langley. \emph{ChaCha20 and
+%%   Poly1305 for IETF Protocols}. RFC 8439, 2018.
+%% \bibitem{crdt} M. Shapiro, N. Preguica, C. Baquero, M. Zawirski.
+%%   \emph{Conflict-free Replicated Data Types}. SSS 2011.
+%% \end{thebibliography}
+%%
+%% then cite with \cite{iroh}, \cite{argon2}, etc. at the spots marked
+%% above.
 
 \end{document}
