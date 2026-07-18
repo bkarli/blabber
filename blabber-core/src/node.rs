@@ -426,24 +426,7 @@ impl Node {
             if peer_id_str == my_id {
                 continue;
             }
-            let connection = match endpoint.connect(peer_addr, crate::channel::CALL_ROOM_ALPN).await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("failed to connect to {peer_id_str} for call room {room_id}: {e:#}");
-                    continue;
-                }
-            };
-            let Ok((mut send, mut recv)) = connection.open_bi().await else {
-                continue;
-            };
-            if send.write_all(room_id.as_bytes()).await.is_err() {
-                continue;
-            }
-            let _ = send.finish();
-            let mut ack = [0u8; 1];
-            if recv.read_exact(&mut ack).await.is_ok() && ack[0] == 1 {
-                mesh_channel.add_peer(peer_id_str, connection);
-            }
+            dial_call_peer(&endpoint, &mesh_channel, room_id, peer_id_str, peer_addr).await;
         }
         let channel_for_inspection = mesh_channel.clone();
         let call = crate::channel::MeshActiveCall::start(mesh_channel, handle);
@@ -459,9 +442,7 @@ impl Node {
         let my_id = endpoint.id().to_string();
         let author = self.author.context("author not created yet")?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
-
-        // discover who's already in the call by reading the synced call log,
-        // before writing our own join entry
+        self.room_spaces.lock().unwrap().insert(room.id, space_id);
         let known_participants: Vec<String> = room
             .list_call_log(blobs)
             .await?
@@ -479,18 +460,78 @@ impl Node {
             }
         }
 
-        let result = self.join_mesh(room.id, my_id.clone(), peers).await?;
-
-        // record our own join in the synced log, so peers who join after us can discover us
+        let (mut call, mesh_channel) = self.join_mesh(room.id, my_id.clone(), peers).await?;
         room.log_call_started(author, vec![my_id.clone()]).await?;
 
         let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
             space_id,
             room_id: room.id,
-            endpoint_id: my_id,
+            endpoint_id: my_id.clone(),
         });
+        let watcher = {
+            let mut events_rx = self.events.subscribe();
+            let mesh_channel = mesh_channel.clone();
+            let endpoint = endpoint.clone();
+            let room_id = room.id;
+            let my_id = my_id.clone();
+            tokio::spawn(async move {
+                loop {
+                    let event = match events_rx.recv().await {
+                        Ok(event) => event,
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    };
+                    let crate::events::AppEvent::NewCallLogEntry { room_id: event_room_id, entry, .. } = event else {
+                        continue;
+                    };
+                    if event_room_id != room_id {
+                        continue;
+                    }
+                    for peer_id_str in entry.participants {
+                        if peer_id_str == my_id || mesh_channel.has_peer(&peer_id_str) {
+                            continue;
+                        }
+                        let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() else {
+                            continue;
+                        };
+                        dial_call_peer(&endpoint, &mesh_channel, room_id, peer_id_str, peer_id.into()).await;
+                    }
+                }
+            })
+        };
+        call.attach_watcher(watcher);
 
-        Ok(result)
+        Ok((call, mesh_channel))
+    }
+}
+
+async fn dial_call_peer(
+    endpoint: &Endpoint,
+    mesh_channel: &crate::channel::MeshVoiceChannel,
+    room_id: Uuid,
+    peer_id_str: String,
+    peer_addr: iroh::EndpointAddr,
+) {
+    if mesh_channel.has_peer(&peer_id_str) {
+        return;
+    }
+    let connection = match endpoint.connect(peer_addr, crate::channel::CALL_ROOM_ALPN).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to connect to {peer_id_str} for call room {room_id}: {e:#}");
+            return;
+        }
+    };
+    let Ok((mut send, mut recv)) = connection.open_bi().await else {
+        return;
+    };
+    if send.write_all(room_id.as_bytes()).await.is_err() {
+        return;
+    }
+    let _ = send.finish();
+    let mut ack = [0u8; 1];
+    if recv.read_exact(&mut ack).await.is_ok() && ack[0] == 1 {
+        mesh_channel.add_peer(peer_id_str, connection);
     }
 }
 

@@ -363,6 +363,10 @@ impl MeshVoiceChannel {
         self.peer_buffers.lock().unwrap().remove(peer_id);
     }
 
+    pub fn has_peer(&self, peer_id: &str) -> bool {
+        self.connections.lock().unwrap().contains_key(peer_id)
+    }
+
     pub fn connection_count(&self)->usize{
         self.connections.lock().unwrap().len()
     }
@@ -470,6 +474,7 @@ impl MeshVoiceChannel {
 pub struct MeshActiveCall {
     stop_tx: std::sync::mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<Result<()>>>,
+    watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl MeshActiveCall {
@@ -486,12 +491,20 @@ impl MeshActiveCall {
         Self {
             stop_tx,
             thread: Some(thread),
+            watcher: None,
         }
     }
+    pub fn attach_watcher(&mut self, watcher: tokio::task::JoinHandle<()>) {
+        self.watcher = Some(watcher);
+    }
+
     pub fn hang_up(mut self) {
         let _ = self.stop_tx.send(());
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+        }
+        if let Some(w) = self.watcher.take() {
+            w.abort();
         }
     }
 }
@@ -500,6 +513,9 @@ impl Drop for MeshActiveCall {
         let _ = self.stop_tx.send(());
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+        }
+        if let Some(w) = self.watcher.take() {
+            w.abort();
         }
     }
 }
