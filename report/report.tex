@@ -1,0 +1,297 @@
+%% General definitions
+%% General definitions
+\documentclass{article} %% Determines the general format.
+\usepackage{a4wide} %% paper size: A4.
+\usepackage{hyperref}
+\usepackage[utf8]{inputenc} %% This file is written in UTF-8.
+%% Some editors on Windows cannot save files in UTF-8.
+%% If there is a problem with special characters not showing up
+%% correctly, try switching "utf8" to "latin1" (ISO 8859-1).
+\usepackage[T1]{fontenc} %% Format of the resulting PDF file.
+\usepackage{fancyhdr} %% Package to create a header on each page.
+\usepackage{lastpage} %% Used for "Page X of Y" in the header.
+                      %% For this to work, you have to call pdflatex twice.
+\usepackage{enumerate} %% Used to change the style of enumerations (see below).
+
+\usepackage{amssymb} %% Definitions for math symbols.
+\usepackage{amsmath} %% Definitions for math symbols.
+
+\usepackage{tikz}  %% Pagacke to create graphics (graphs, automata, etc.)
+\usetikzlibrary{automata} %% Tikz library to draw automata
+\usetikzlibrary{arrows}   %% Tikz library for nicer arrow heads
+\usepackage{float}
+
+%% Left side of header
+\lhead{\course\\\semester}
+%% Right side of header
+\rhead{\authorname\\Page \thepage\ of \pageref{LastPage}}
+%% Height of header
+\usepackage[headheight=36pt]{geometry}
+%% Page style that uses the header
+\pagestyle{fancy}
+
+\newcommand{\semester}{Spring Semester 2026}
+\newcommand{\course}{DPI project report}
+\title{Blabber project report}
+\author{Benedikt Karli, Robin Gökcen, Boran Gökcen, Till Küng }
+\date{July 19th 2026}
+
+\begin{document}
+
+\maketitle
+\section{Introduction}
+This is the project report added to our hand in for the Distributed Programming and Internet Architecture project in the spring semester of 2026. Here we will provide technical insight, an overview and background to our implementation of the peer-to-peer chat \textbf{Blabber}.
+\subsection{Blabber Background}
+We as friends have regularly used Discord and other messenger apps for communication. \\
+With our growing awareness for privacy related threats throughout our studies, we have become more and more concerned about our reliance on companies, which have direct or indirect ties and exposure to goverment and corporate surveillance programs. Because Discord moved to Identity verification using Government Id's and afterwards documents of at least seventy thousand users were leaked, we decided we wanted to move to our own chat application for this project. Because we wanted to rely less on centralized infrastructure, the Iroh protocol, which was introduced during the lecture and with which some of us had already worked before, was decided to be the right fit for our project.\\
+In the following chapters we document our implementation journey and actual use-cases for our achieved results.
+\section{Problem statement}
+Because we planned our chat application with idea of using it ourselves in mind, we had to find out what actually makes a chat comfortable and practical to use. These are what we decided our requirements for the chat application. \\
+Users should be able to:
+\begin{enumerate} [a)]
+    \item Create group chats for everyone to use with specific chat rooms.
+    \item Keep track of messages and and be assured that all participants have the same chat history.
+    \item Send messages to users who are not connected through the rooms.
+    \item Receive missed messages when we reconnect.
+    \item Being able to start a call with another user.
+    \item Navigate the user interface while intuitively achieving their goals.
+
+\end{enumerate}
+ We not only wanted to be able to chat but also create a reasonably safe environment for our chatting history and communication. Therefore we formulated the following privacy and security requirements:
+\begin{enumerate} [a)]
+    \item Never store user information or related data, except on endpoints of communication.
+    \item Prevent information disclosure through data in transit.
+    \item Encrypt critical data stored on end devices. Critical data does not include chat history.
+    \item Prevent user impersonation by authentication through password, nonce and username.
+\end{enumerate}
+
+\section{System architecture}
+Blabber is implemented as a peer-to-peer desktop application. Instead of relying on a central server, every user runs their own instance of the application and communicates directly with other peers. The application consists of three main parts: the graphical user interface, the backend and the networking layer.\\
+The graphical user interface is implemented in Vue. It displays spaces, rooms, messages and voice calls and forwards user actions to the backend through Tauri commands.\\
+The backend is implemented in Rust using the Tauri framework. It manages the local application state, encrypted identities and communication with the networking layer.\\
+The networking layer is implemented using Iroh, which provides peer discovery, replicated documents and direct communication between peers. Blabber uses Iroh Docs to synchronize shared data, Iroh Gossip for document synchronization, Iroh Blobs for persistent storage and a custom protocol for voice communication.
+\subsection{Iroh as our background technology}
+Iroh provides the following building blocks we composed to achieve our final implementation.
+\\ \\
+\textbf{Iroh Endpoint} provides the peer discovery and
+    establishes the QUIC connections between two users identified by a
+    public key: \texttt{EndpointId}, which removes the need for a third party communication handler.
+\\ \\
+\textbf{Iroh Docs} provides replicated, multi-writer
+    key-value documents. That means every document is identified by a name
+    and can be shared with others by a \texttt{DocTicket},
+    which gives the receiver either read or write access to it.
+\\ \\
+\textbf{Iroh Gossip} propagates the updates of the documents between
+    peers that are subscribed to the same document, without requiring
+    everyone to be directly connected to each other.
+\\ \\
+\textbf{Iroh Blobs} stores the actual content that is referenced by
+    document entries. A document entry only stores the hash of the entry, and
+    the associated bytes are fetched separately by the blob store.
+\\ \\
+Blabber's backend combines these four
+components inside a single \texttt{Node}, and
+adds two custom protocols of its own: one for
+peer-to-peer audio transport and a second  one for group-call signaling.
+
+\subsection{Backend architecture}
+
+As mentioned, the backend is structured around a \textbf{Node} component. The node
+coordinates the main application services and provides the connection between
+the frontend and the decentralized networking layer. Requests from the Vue
+frontend are received through Tauri commands and then forwarded to the
+corresponding backend component.
+\\
+\\
+During startup, the node creates an Iroh endpoint from the secret, which is stored in the
+user's identity. Since the same secret is reused after every login, the user
+receives the same cryptographic endpoint identity. The node then initializes
+Iroh Gossip, the persistent blob store, the document engine and the protocol
+router. The router accepts the protocols required for document synchronization,
+blob transfer, gossip communication and voice calls.
+\\
+\\
+The node keeps track of all
+loaded spaces. Each \textbf{Space} is represented by an information document
+and a member document. The information document stores room records, while the
+member document stores the users who have joined the space. Both documents are
+implemented using Iroh Docs and their serialized values are stored through
+Iroh Blobs.
+\\
+\\
+Every room is represented by its own replicated Iroh document. When a room is
+created, the backend creates a new document and generates a write ticket for it.
+A room record is then
+stored in the space's information document. It contains the room identifier,name and document ticket. Other peers can read this record,
+import the room document and add the room to their local application state.
+\\
+\\
+Messages are serialized using Postcard and written into the document belonging
+to the selected room. The document entry contains a reference to the serialized
+message data stored in Iroh Blobs. When a room is loaded, the backend queries
+the existing entries, retrieves their contents from the blob store and creates
+a local in-memory cache of the message history.
+\\
+\\
+Rooms subscribe to live document events provided by Iroh Docs. When a local or
+remote message entry is inserted, the backend retrieves and deserializes the
+message, updates the room cache and creates an application event. These events
+are sent through a Tokio broadcast channel and can be forwarded to the
+frontend, allowing the visible chat to update without continuous polling.
+\\
+\\
+Spaces are shared through serialized invites. An invite contains the identifier
+and name of the space together with a read ticket for the information document
+and a write ticket for the member document. After importing these documents, a
+peer can discover the existing rooms from the information document and import
+their individual message documents using the stored room tickets.
+\subsection{Frontend architecture}
+
+The frontend is implemented using Vue 3 and TypeScript. It is responsible for
+displaying the user interface and handling user interactions. The application
+is divided into different views, including the login page, the main chat view
+and the settings page.
+\\
+\\
+The frontend is connected to the Rust backend through the Tauri framework.
+Instead of communicating directly with the networking layer, the frontend calls
+Tauri commands to perform operations such as creating spaces, joining spaces,
+sending messages and starting voice calls. This separates the user interface
+from the application logic and keeps the networking implementation inside the
+backend.
+\\
+\\
+The root component (\texttt{App.vue}) controls which view is currently displayed.
+It switches between the login, chat and settings views and stores shared state,
+such as the logged-in user.
+\\
+\\
+
+\subsection{Core components}
+
+The implementation is based on several core components.
+\\
+\\
+\textbf{Identity:}
+Each user owns an encrypted identity that is stored locally. The identity contains the user's display name, secret key and author identifier. After a successful login, the identity is decrypted and used to create the local networking node.
+\\
+\\
+\textbf{Node:}
+The node represents the local peer in the network. It creates and manages the Iroh endpoint, document engine, blob store, gossip service and router. It also keeps track of all spaces currently loaded by the user and acts as the connection between the frontend and the networking layer.
+\\
+\\
+\textbf{Space:}
+A space is comparable to a Discord server. It contains the shared information about a group, including its members and available rooms. This information is stored in replicated Iroh documents, allowing every participant to synchronize the same state.
+\\
+\\
+\textbf{Room:}
+Each space contains one or more rooms. Every room has its own replicated document in which chat messages are stored. Since each room has its own document, rooms can be synchronized independently.
+\\
+\\
+\textbf{Invite:}
+Users can join existing spaces through invite codes. An invite contains the information required to import the corresponding Iroh documents and connect to the space. Invites are stored locally so that spaces can be restored after restarting the application.
+\\
+\\
+\textbf{Voice communication:}
+Voice calls use a separate Iroh protocol. Audio is captured using CPAL, sent over Iroh datagrams and played back on the receiving peer. This allows voice communication without requiring a dedicated voice server.
+
+\section{Synchronization workflow}
+
+The synchronization starts when a user performs an action in the frontend, such as joining a space,
+creating a room or sending a message. The request is forwarded to the Rust backend, where it is
+handled by the local node.
+\\
+Blabber stores shared data in replicated Iroh documents. Each space is represented by a member
+document, which stores the members of the space, and an information document, which stores the rooms. Every room has its own document containing the chat messages.
+\\
+To join a space, a user imports an invite. The invite contains the access
+tickets required to import the space's information and member documents
+through Iroh. After importing the information document, the backend reads
+the available room records. Each record contains the ticket required to
+import the corresponding room document, which stores the messages for that room.
+\\
+Whenever an imported document changes, Iroh synchronizes the update with the other peers that
+have access to it. The node subscribes to the loaded room documents and listens for local and
+remote message insertions. When a new message is detected, it is added to the local room cache
+and sent as an application event. The frontend receives this event and displays the message in
+the correct space and room.
+
+\subsection{Persistence and application restart}
+
+To make spaces that a user has joined available again after the application is
+closed and started again, Blabber persists the invite code used to join them.
+When a space is created or joined. \\
+On startup we parse all the saved invites and then import the corresponding Iroh documents.
+Then \texttt{Space::sync\_rooms} is called to restore every room that space
+contains. This means Blabber itself stores no metadata like membership information or chat data outside of the replicated Iroh documents. The only persistant artifact is the invite code
+required to derive access to the documents.
+
+\section{Conflict-free replicated data structures}
+
+Blabber uses the replicated document system provided by Iroh, which is based on conflict-free replicated data structures (CRDTs). A CRDT allows multiple peers to modify the same replicated data independently while ensuring that all replicas eventually converge to the same state without requiring a central server.
+\\
+In Blabber, spaces, members and chat messages are stored in replicated Iroh documents. Every peer maintains a local replica of the documents it has access to and can update them locally. These changes are synchronized automatically with the other peers through Iroh.
+\\
+Because Iroh handles replication and conflict resolution internally, the application does not need to implement its own synchronization or merge algorithms. This simplifies the implementation and it ensures that all peers eventually have the same state.
+
+\section{Security considerations}
+The most important goal of Blabber is privacy. There is no central server that stores user accounts, chat history or other shared data.
+Blabber was designed with privacy as one of its main goals.  Every participant stores
+only the information required for the spaces they have joined.
+
+\subsection{Encrypted identities}
+
+Each user identity is encrypted before being stored on disk. During identity
+creation, the user's password is used to derive an encryption key using
+Argon2. This key encrypts the identity with ChaCha20-Poly1305 before it is
+written to persistent storage. Therefore, the identity can only be restored with the correct password.
+
+\subsection{Authentication}
+
+Each identity contains a secret key that generates the same
+Iroh endpoint whenever the user logs in. This allows peers to authenticate one
+another through their cryptographic identities, so we don't need to rely on a central authentication server.
+
+\subsection{Message synchronization}
+
+Messages are stored inside replicated Iroh documents. Only users possessing the
+required document tickets can import and synchronize the corresponding
+documents. Because synchronization takes place directly between peers, no
+intermediate server is needed to relay or permanently store chat data.
+
+\subsection{Voice communication}
+
+Voice calls use a dedicated Iroh protocol that establishes a direct connection
+between two peers. Before transmitting audio, the peers perform a
+Diffie--Hellman key exchange to derive a shared secret that can be used for
+secure communication.
+
+\section{Supported chat operations}
+
+Blabber provides the core functionality expected from a modern chat application.
+Users can perform the following operations:
+
+\begin{itemize}
+    \item Create an encrypted local identity.
+    \item Log in using an existing identity.
+    \item Create new spaces.
+    \item Join existing spaces using an invite code.
+    \item Create chat rooms within a space.
+    \item Exchange text messages with all members of a room.
+    \item Receive newly synchronized messages automatically.
+    \item Start and end peer-to-peer voice calls.
+\end{itemize}
+
+\section{Achieved results}
+%Screenshots vom GUI
+Our project achieved the primary objectives defined at the beginning of the semester.
+\\
+Users are able to create spaces, join existing spaces, communicate through multiple chat rooms and establish peer-to-peer voice calls. Shared chat data is synchronized between participants without relying on a central server and identities are encrypted on local devices.
+\\
+Overall, our application shows that a decentralized messaging application can provide functionality similar to conventional chat platforms while the user has control over their data.
+\section{Conclusion}
+%Mehr persönlich?
+\newpage
+
+\end{document}

@@ -1,0 +1,646 @@
+%% ============================================================
+%% NOT PART OF THE HANDED-IN REPORT.
+%% Working notes for structuring report.tex, with pointers to the
+%% exact code locations you should read/cite while writing.
+%% Delete this file before submission.
+%% ============================================================
+
+
+%% ================================================================
+%% PART 0 — STATUS UPDATE / PASS 2 (2026-07-18)
+%% ================================================================
+%
+% Since this notes file was first written, commit 4710124 ("Merge pull
+% request #2 from bkarli/feature/new-gui", 2026-07-18) landed on main
+% and REPLACED the frontend. This makes several things in Part 1/2
+% below outdated. Summary of what changed and what it means for the
+% report:
+%
+% 1. THE FRONTEND DESCRIBED BELOW NO LONGER EXISTS AS THE SHIPPED APP.
+%    `blabber-gui` is still on disk but is no longer a workspace member
+%    (see root Cargo.toml: members = ["blabber-core",
+%    "blabber-app/src-tauri"]). The actual frontend is now
+%    `blabber-app`, added whole in commit 5f1f89a ("add new GUI") and
+%    iterated on through a889d47 ("add load spaces logic to join
+%    space"). Every blabber-gui/... file path in Part 2 below is stale;
+%    see the corrected pointers added inline.
+%
+% 2. IMPORTANT REGRESSION: voice calls and call rooms are backend-only
+%    right now. blabber-app/src-tauri/src/voice_channel.rs exists but
+%    its ENTIRE contents are commented out (start_call, hang_up,
+%    my_endpoint_id, answer_call - all dead code), and there is no
+%    call_room.rs at all in blabber-app. Compare to
+%    blabber-gui/src-tauri/src/commands/voice_channel.rs and
+%    commands/call_room.rs, where the same commands are live and wired
+%    into invoke_handler!. blabber-app/src-tauri/src/lib.rs's
+%    invoke_handler! only lists identity/space/room commands - no
+%    voice, no call rooms. This has been true since the new GUI was
+%    first added (5f1f89a) and is still true at HEAD.
+%    => report.tex currently claims, as an ACHIEVED result, that users
+%       can "start and end peer-to-peer voice calls" and describes a
+%       whole group-call mesh architecture as part of the system. That
+%       is only true of blabber-core (the Rust library) and of the old,
+%       now-orphaned blabber-gui. If blabber-app is what gets handed
+%       in, this is currently a factually wrong claim in "Supported
+%       chat operations" and "Achieved results". Decide before
+%       submission: (a) re-wire voice_channel.rs + add a call_room.rs
+%       in blabber-app so the claim becomes true again, or (b) rephrase
+%       the report to say voice/group-call is implemented at the
+%       blabber-core level and demonstrated separately, but not yet
+%       exposed in the new GUI. Don't leave the current wording as-is.
+%
+% 3. RESOLVED / NO LONGER APPLICABLE from Part 1's original gap list:
+%    - "Persistence... not currently described in the report text at
+%      all" is now WRONG as a note - report.tex already has a
+%      "Persistence and application restart" subsection (added after
+%      this notes file's first pass). No action needed there beyond
+%      normal proofreading.
+%
+% 4. STILL OPEN / CONFIRMED UNCHANGED at HEAD (re-verified 2026-07-18):
+%    - identity.rs:24 TODO ("mlock this one and use Zeroing") is still
+%      present, secret is still a plain [u8; 32]. NOTE: root Cargo.toml
+%      and blabber-core/Cargo.toml now declare a `zeroize = "1.9.0"`
+%      dependency (workspace-level) that did not exist when Part 2 was
+%      first written - but grepping the whole repo shows it is not
+%      actually imported or called anywhere. Someone added the
+%      dependency and never wired it up. Worth a one-line mention in
+%      Limitations ("a zeroize dependency has been added but is not yet
+%      used to clear the in-memory secret").
+%    - node.rs perform_key_exchange_as_initiator/acceptor (now at
+%      node.rs:460-467, diffie_hellman at 445-458) are still only
+%      exercised by test_dh_key_exchange_produces_matching_keys; still
+%      not consumed by VoiceChannel/MeshVoiceChannel to encrypt audio.
+%      The caveat in Part 2's Security considerations entry still
+%      holds verbatim.
+%    - join_call_room/join_mesh mesh handshake (node.rs:387-442) is
+%      unchanged: 16-byte room id + 1-byte ack, full mesh. Still
+%      accurate.
+%
+% 5. Frontend architecture text in report.tex (Sec. "Core components" /
+%    "Frontend architecture", describing App.vue switching between
+%    login/chat/settings views via reactive state) describes the OLD
+%    blabber-gui shape. Current blabber-app/src/App.vue is a two-line
+%    shell (`<router-view />`) using vue-router; there are only two
+%    top-level views (LoginView.vue, MainView.vue) with settings/room-
+%    /space-creation implemented as dialogs and drawers
+%    (IdentitySettingsDrawer.vue, CreateOrJoinSpaceDialog.vue,
+%    CreateRoomDialog.vue) rather than a separate SettingsView. This
+%    paragraph needs a rewrite, not just a proofread.
+
+
+%% ================================================================
+%% PART 1 — PROPOSED ACADEMIC STRUCTURE
+%% ================================================================
+%
+% Your current report.tex already has good bones. Academic project
+% reports (esp. for a DPI/distributed-systems course) are usually
+% expected to follow roughly this arc:
+%
+%   1. Title page / Abstract
+%   2. Introduction
+%      1.1 Motivation / Background
+%      1.2 Goals of the project
+%   3. Problem statement / Requirements
+%      2.1 Functional requirements
+%      2.2 Non-functional / security requirements
+%   4. Related work / Background technology
+%      3.1 Why peer-to-peer
+%      3.2 The Iroh protocol stack (endpoint, docs, gossip, blobs)
+%      3.3 CRDTs (could also live later, see below)
+%   5. System architecture
+%      4.1 High-level overview (GUI / backend / networking layers)
+%      4.2 Backend architecture (Node as entry point)
+%      4.3 Core domain model (Identity, Space, Room, Invite, CallRoom)
+%      4.4 Frontend architecture (Vue + Tauri commands)
+%   6. Implementation
+%      5.1 Identity creation & encrypted storage
+%      5.2 Space & room creation, document model
+%      5.3 Synchronization workflow (join, sync, live updates)
+%      5.4 Conflict-free replication (CRDTs via Iroh Docs)
+%      5.5 Voice communication (1:1 P2P calls)
+%      5.6 Group voice calls (mesh architecture)
+%   7. Security considerations
+%      6.1 Threat model
+%      6.2 Encrypted identities
+%      6.3 Authentication via cryptographic identity
+%      6.4 Message confidentiality/synchronization
+%      6.5 Voice call key exchange (Diffie-Hellman)
+%   8. Evaluation / Achieved results
+%      7.1 Supported operations
+%      7.2 Requirements coverage (map back to problem statement!)
+%      7.3 Known limitations
+%   9. Conclusion & future work
+%  10. (Optional) References / Bibliography
+%
+% Notes on what to ADD vs. what you already have:
+%
+% - You already have sections for most of this (Introduction, Problem
+%   statement, System architecture, Synchronization workflow, CRDTs,
+%   Security considerations, Supported chat operations, Achieved
+%   results, Conclusion). What's structurally missing for "academic
+%   standard":
+%     * An Abstract (short, 5-8 sentences, before Introduction).
+%     * A "Related work / Background" section introducing Iroh's
+%       building blocks (Endpoint, Docs, Gossip, Blobs) BEFORE you use
+%       them in System architecture — right now Iroh Docs/Gossip/Blobs
+%       are named in 3.1-3.2 without explanation of what each one does.
+%     * A "Limitations / Future work" subsection — right now Conclusion
+%       is a stub. Academic reports should be explicit about what does
+%       NOT work / was not finished (e.g. TODO in identity.rs about
+%       zeroizing secrets, missing message encryption at rest, no
+%       group text-chat permissions model, no NAT traversal discussion).
+%     * A explicit mapping from "Problem statement" requirements (a-f,
+%       and the 4 security requirements) to what was actually
+%       implemented — this is usually expected as a table in the
+%       Evaluation section, and you already have almost all the
+%       necessary facts in "Achieved results", just not tabulated
+%       against the original requirement list.
+%     * Bibliography/references for Iroh, Argon2, ChaCha20-Poly1305,
+%       CRDT literature (Shapiro et al.) — currently zero citations
+%       despite naming several protocols/algorithms.
+%     * Figures: at least one architecture diagram (GUI <-> Tauri <->
+%       Node <-> Iroh) and one sequence diagram for the synchronization
+%       workflow (Section 4) would strengthen the report considerably;
+%       you already have tikz loaded (see report.tex line 19-21) but
+%       unused.
+
+
+%% ================================================================
+%% PART 2 — WHERE TO FIND THE DEFINITIONS FOR EACH CHAPTER
+%% ================================================================
+%
+% Format: [Report section] -> [file:lines] -> what it gives you
+%
+% --- System architecture / Backend architecture (Node) ---
+%   blabber-core/src/node.rs:30-45   struct Node fields (identity,
+%       endpoint, gossip, router, blobs, docs, author, events,
+%       spaces, active_call_rooms) -- this IS your "entry point"
+%       paragraph, one sentence per field.
+%   blabber-core/src/node.rs:346-359 Node::run() -- the exact boot
+%       sequence: create_endpoint -> create_gossip -> create_blobs ->
+%       create_docs_engine -> create_author -> create_router.
+%       Use this as the backbone of an architecture diagram / the
+%       "Node" paragraph (report.tex line 74).
+%   blabber-core/src/node.rs:88-99   create_endpoint() -- explains
+%       "same endpoint every login" claim in report.tex Authentication
+%       subsection (line 146-148): SecretKey::from_bytes(identity.secret)
+%       is deterministic.
+%   blabber-core/src/node.rs:173-179 create_router() -- shows the four
+%       ALPNs accepted (GOSSIP_ALPN, BLOBS_ALPN, DOCS_ALPN, VOICE_ALPN,
+%       CALL_ROOM_ALPN) -- good concrete evidence for "networking layer"
+%       paragraph (report.tex line 72).
+%
+% --- Core components / Identity ---
+%   blabber-core/src/identity.rs:25-29  struct Identity fields.
+%   blabber-core/src/identity.rs:45-51  derive_key() -- Argon2 usage,
+%       cites report.tex line 140-142 directly.
+%   blabber-core/src/identity.rs:54-93  store() -- ChaCha20-Poly1305
+%       encryption, salt/nonce layout on disk (SALT_LEN=16, NONCE_LEN=12,
+%       KEY_LEN=32 at lines 15-17) -- use these constants if you want
+%       to describe the on-disk file format precisely.
+%   blabber-core/src/identity.rs:97-139 load_from_disk() -- decryption
+%       + manual byte-offset parsing of displayName/secret/author.
+%       Worth a short "wire format" figure/table (byte offsets).
+%   Note: line 24 has "TODO: mlock + Zeroing" -- good material for your
+%       Limitations section (secret is a plain [u8;32], not zeroized).
+%
+% --- Core components / Space ---
+%   blabber-core/src/space.rs:44-55   struct Space (id, name, info Doc,
+%       members Doc, rooms Vec<Room>, docs handle) -- matches report.tex
+%       line 88-89 almost verbatim; cite fields directly.
+%   blabber-core/src/space.rs:60-89   Space::new() -- creates two Iroh
+%       docs (info, members) and calls insert_self_as_member.
+%   blabber-core/src/space.rs:92-114  insert_self_as_member() -- shows
+%       the Member struct/key scheme "member/{author}" -- use as example
+%       of Iroh-doc-as-key-value-store pattern.
+%   blabber-core/src/space.rs:117-146 Space::from_invite() -- imports
+%       info/member docs from DocTicket -- ties to Invite (below) and to
+%       report.tex Synchronization workflow line 111-115.
+%   blabber-core/src/space.rs:188-210 create_room() -- shows RoomRecord
+%       {id, name, ticket} stored under key "room/{uuid}" in the info doc
+%       -- this is the concrete mechanism behind "the backend reads the
+%       available room records" (report.tex line 113-114).
+%   blabber-core/src/space.rs:214-247 sync_rooms() -- the exact loop that
+%       reads room/ prefixed keys, deserializes RoomRecord, imports each
+%       room's DocTicket, and starts watch() handles -- this is THE
+%       function to reference for "Synchronization workflow" section.
+%
+% --- Core components / Room + live sync ---
+%   blabber-core/src/room.rs:20-26   struct Room (id, name, messages Doc,
+%       cache).
+%   blabber-core/src/room.rs:53-72   send_message() -- key scheme
+%       "msg/{sent_at:020}-{author}" -- note the zero-padded timestamp
+%       prefix, which is what gives lexicographic == chronological
+%       ordering when listing via Query::single_latest_per_key(); good
+%       detail for a "message ordering" paragraph.
+%   blabber-core/src/room.rs:95-116  apply_event() -- reacts to
+%       LiveEvent::InsertRemote/InsertLocal, updates in-memory cache,
+%       and re-emits AppEvent::NewMessage -- this is the exact mechanism
+%       behind report.tex line 117-121 ("Whenever an imported document
+%       changes... sent as an application event").
+%   blabber-core/src/room.rs:119-146 watch() -- wires Room::apply_event
+%       into Node::watch_doc; a good target for a sequence diagram
+%       (Iroh LiveEvent -> Room::apply_event -> broadcast::Sender
+%       <AppEvent> -> Tauri event -> Vue listener).
+%   blabber-core/src/node.rs:310-329 watch_doc() -- generic helper that
+%       subscribes to any Doc and spawns a task calling a callback per
+%       LiveEvent; explain this once, then say Room/CallRoom both reuse it.
+%
+% --- Core components / Invite ---
+%   blabber-core/src/invite.rs:9-15   struct Invite (space_id, space_name,
+%       info_ticket, member_ticket).
+%   blabber-core/src/invite.rs:18-29  from_space() -- info doc shared
+%       Read-only, members doc shared Write -- worth flagging explicitly:
+%       this means every invited member can write directly into the
+%       shared members document (permission-model detail relevant to
+%       Security considerations).
+%   blabber-core/src/invite.rs:31-47  serialize/deserialize -- postcard +
+%       BASE32_NOPAD encoding -- explains the human-shareable "invite code"
+%       string format mentioned in report.tex line 96-97 and 173.
+%
+% --- Synchronization workflow / persistence across restarts ---
+%   blabber-core/src/node.rs:228-306 load_spaces() -- on-disk layout
+%       root/<identity>/<uuid>/meta/invite.txt, re-imports each saved
+%       invite and calls sync_rooms(); directly backs report.tex's
+%       implicit claim that spaces persist across restarts (mentioned
+%       in commit "Add persist and reload spaces across app restarts",
+%       fcbcd2e) but NOT currently described in the report text at all
+%       -- consider adding a short paragraph/subsection on persistence.
+%   blabber-core/src/space.rs:157-164 create_directory() -- writes the
+%       invite.txt used by load_spaces() above; the write side of the
+%       same mechanism.
+%
+% --- CRDTs section ---
+%   No CRDT algorithm is implemented directly in this repo (correctly
+%   noted in report.tex line 130: "the application does not need to
+%   implement its own... algorithms"). For citations/explanation, point
+%   to Iroh's docs/replication model conceptually rather than to a file;
+%   if you want a concrete "evidence" pointer, use:
+%   blabber-core/Cargo.toml:17  iroh-docs dependency (fs-store feature)
+%   -- and Query::single_latest_per_key() usage sites (space.rs:170,
+%   217; room.rs:77; call_rooms.rs:68) which is the mechanism you get
+%   "for free" from the CRDT doc (last-write-wins per key).
+%
+% --- Security considerations ---
+%   blabber-core/src/identity.rs:45-93   Argon2 + ChaCha20-Poly1305 (see
+%       above) -- Encrypted identities subsection.
+%   blabber-core/src/node.rs:88-94        deterministic SecretKey ->
+%       deterministic EndpointId -- Authentication subsection.
+%   blabber-core/src/invite.rs (whole file) + space.rs:117-146 -- Message
+%       synchronization subsection: only holders of a DocTicket can
+%       import/sync, i.e. capability-based access control.
+%   blabber-core/src/node.rs:429-452  diffie_hellman(),
+%       perform_key_exchange_as_initiator/acceptor() -- Voice
+%       communication subsection, cite directly: this is the actual DH
+%       exchange over an Iroh bidirectional stream using x25519-dalek.
+%   IMPORTANT CAVEAT to mention in Security considerations or
+%       Limitations: grep shows the shared secret produced by
+%       diffie_hellman() (node.rs:429-441) is computed but never
+%       actually consumed by VoiceChannel/MeshVoiceChannel afterwards
+%       (channel.rs sends raw f32 audio samples over
+%       connection.send_datagram() with no encryption using that key,
+%       see channel.rs:288-296 send_audio_chunk). Audio confidentiality
+%       relies solely on Iroh's transport-level (QUIC/TLS) encryption,
+%       not on an application-level cipher keyed by the DH secret. Also
+%       corroborated by commit ed07da1 "removed de/encryption from
+%       voicecall because this is already given via iroh". If your
+%       report claims the DH exchange is *for* securing voice content,
+%       double-check this is what you mean to write, or rephrase to say
+%       transport security is provided by Iroh and DH is present but
+%       currently unused/vestigial.
+%
+% --- Voice communication (1:1) ---
+%   blabber-core/src/channel.rs:74-153   VoiceChannel (start_capture /
+%       start_playback) -- CPAL device capture, mono-downmix, linear
+%       resampling to a fixed WIRE_SAMPLE_RATE=48000 (line 16), then
+%       chunked into datagrams sized to the connection's
+%       max_datagram_size (samples_per_packet(), line 20-26).
+%   blabber-core/src/channel.rs:155-196   ActiveVoiceCall -- capture/
+%       playback lifecycle on a dedicated OS thread, Drop-based cleanup.
+%   blabber-core/src/channel.rs:198-286   VoiceProtocol (ProtocolHandler
+%       impl) -- accept() flow: ask GUI via on_incoming handler with a
+%       30s timeout (line 252), then start ActiveVoiceCall, then wait on
+%       either connection.closed() or an explicit hang-up Notify.
+%   blabber-gui/src-tauri/src/commands/voice_channel.rs (whole file) --
+%       Tauri command surface: start_call, hang_up, answer_call,
+%       my_endpoint_id -- maps 1:1 to report.tex line 100-101 and to the
+%       "Start and end peer-to-peer voice calls" bullet (line 177).
+%
+% --- Group voice calls (mesh architecture) — NOT YET IN REPORT TEXT ---
+%   This is a whole feature (commits 11f26b4, 6ea19d6) with no
+%   corresponding report section yet. You likely want a new subsection,
+%   e.g. "5.6 Group voice calls" or extend "Voice communication".
+%   blabber-core/src/call_rooms.rs:20-26   struct CallRoom (id, name,
+%       participants, call_log Doc, cache) -- a call room is itself a
+%       replicated-doc-backed entity, same pattern as Space/Room.
+%   blabber-core/src/call_rooms.rs:54-79   log_call_started() /
+%       list_call_log() -- call history persisted the same way chat
+%       messages are (key prefix "call/").
+%   blabber-core/src/node.rs:387-426   join_call_room() -- THE key
+%       function to explain the mesh topology: connects directly to
+%       every other known participant via CALL_ROOM_ALPN, exchanges a
+%       16-byte room-id handshake (send room.id.as_bytes(), read 1-byte
+%       ack), and adds accepted peers to a MeshVoiceChannel. This is a
+%       full-mesh (every peer connects to every peer), NOT a relay/SFU
+%       architecture -- an important architectural fact worth stating
+%       explicitly (and a good "Limitations": O(n^2) connections, no
+%       server-side mixing).
+%   blabber-core/src/channel.rs:309-463   MeshVoiceChannel -- per-peer
+%       jitter buffers (peer_buffers: HashMap<String, VecDeque<f32>>),
+%       and start_playback()'s mixing loop (lines 405-432): every
+%       MIX_CHUNK_MS=10ms (line 17) it drains one sample per active peer
+%       buffer, sums, and divides by the active peer count -- this is
+%       your concrete "audio mixing algorithm" paragraph, cite lines
+%       405-432 directly and maybe include the averaging formula.
+%   blabber-core/src/channel.rs:501-549   CallRoomProtocol (ProtocolHandler)
+%       -- server-less signaling: on accept(), reads a 16-byte room id
+%       from the incoming stream, looks it up in active_call_rooms, and
+%       either accepts (adds peer to that room's MeshVoiceChannel) or
+%       rejects with a 1-byte ack/nack.
+%   blabber-gui/src-tauri/src/commands/call_room.rs (whole file) -- Tauri
+%       surface: create_call_room, list_call_rooms, join_call_room,
+%       leave_call_room.
+%
+% --- Frontend / GUI architecture ---
+%   ** SUPERSEDED 2026-07-18: blabber-gui is no longer a workspace **
+%   ** member (see PART 0). Use the blabber-app pointers below for **
+%   ** anything you're writing NOW; the blabber-gui pointers are kept **
+%   ** only for historical comparison (e.g. to describe the voice/call **
+%   ** regression in PART 0 item 2). **
+%
+%   blabber-app/src-tauri/src/lib.rs:17-22   struct AppState -- now
+%       just node, spaces, pending_call (no active_call,
+%       incoming_call_handle, call_rooms, active_call_room fields --
+%       those were dropped along with the commands that used them).
+%   blabber-app/src-tauri/src/lib.rs:29-43   invoke_handler![...] list --
+%       identity + space + room commands only (create_identity, login,
+%       list_identities, logout, delete_identity, create_server,
+%       list_servers, join_space, get_invite, create_room, list_rooms,
+%       send_message, list_messages). No voice/call-room commands are
+%       registered -- see PART 0 item 2.
+%   blabber-app/src-tauri/src/event_bridge.rs -- spawn_event_bridge()
+%       subscribes to Node's broadcast channel and re-emits every
+%       AppEvent to the frontend via Tauri's `app_handle.emit(
+%       "app-event", event)`; this is the concrete mechanism behind the
+%       "sent through a Tokio broadcast channel...forwarded to the
+%       frontend" claim in report.tex's Backend architecture paragraph.
+%   blabber-app/src/App.vue -- just `<router-view />`; navigation is
+%       now vue-router based, not manual view-switching.
+%   blabber-app/src/views/{LoginView,MainView}.vue -- only two
+%       top-level views now.
+%   blabber-app/src/components/{layout,room,space,settings,chat}/*.vue
+%       -- screen inventory for a UI walkthrough / screenshots section
+%       (Achieved results, report.tex has a commented-out
+%       "%Screenshots vom GUI" -- this is presumably where you intended
+%       to add them). Notable components: SpaceSidebar.vue,
+%       RoomSidebar.vue, CreateOrJoinSpaceDialog.vue,
+%       CreateRoomDialog.vue, IdentitySettingsDrawer.vue,
+%       MessageList.vue, MessageInput.vue.
+%
+%   --- historical (blabber-gui, no longer built) ---
+%   blabber-gui/src-tauri/src/lib.rs:31-40   old AppState, included
+%       active_call/call_rooms fields the new AppState dropped.
+%   blabber-gui/src-tauri/src/commands/voice_channel.rs,
+%   blabber-gui/src-tauri/src/commands/call_room.rs -- the LIVE
+%       versions of the commands that are commented out / missing in
+%       blabber-app; useful if you re-wire blabber-app before
+%       submission (see PART 0 item 2, option a).
+%   blabber-gui/src/API/tauriAPI.ts, blabber-gui/src/views/{LoginView,
+%   ChatView,SettingsView}.vue -- old three-view frontend, replaced.
+%
+% --- Dependency / technology references (for a Bibliography) ---
+%   Cargo.toml (workspace) lines 10-25 -- exact crate + version list:
+%       iroh 1.0.2, iroh-blobs 0.103.0, iroh-docs 0.101.0,
+%       iroh-gossip 0.101.0, argon2 0.5.3, chacha20poly1305 0.10.1 --
+%       cite these exact versions if your course wants reproducibility
+%       info.
+%   blabber-core/Cargo.toml line 26  x25519-dalek 2 -- DH key exchange
+%       library used in node.rs.
+
+
+%% ================================================================
+%% PART 3 — EXAMPLE CHAPTER DRAFTS (illustrative only, rewrite in
+%% your own words / verify against the current code before use)
+%% ================================================================
+
+\iffalse   % wrap in \iffalse so this whole block is inert if you ever
+           % accidentally \input this file from report.tex
+
+\section{Related work and background technology}
+
+Blabber is built on top of \textbf{Iroh}, a Rust networking stack for
+building peer-to-peer applications without central infrastructure.
+Iroh provides several independent building blocks that Blabber
+composes:
+
+\begin{itemize}
+    \item \textbf{Iroh Endpoint} provides peer discovery and directly
+    establishes QUIC connections between two peers identified by a
+    public key (\texttt{EndpointId}), removing the need for a central
+    connection broker.
+    \item \textbf{Iroh Docs} provides replicated, multi-writer
+    key-value documents. Every document is identified by a namespace
+    and can be shared with other peers through a \texttt{DocTicket},
+    which grants either read or write access.
+    \item \textbf{Iroh Gossip} propagates document updates between
+    peers that are interested in the same document, without requiring
+    all peers to be directly connected to each other.
+    \item \textbf{Iroh Blobs} stores the actual content referenced by
+    document entries; a document entry only stores a content hash, and
+    the associated bytes are fetched separately through the blob store
+    (see \texttt{blobs().get\_bytes(entry.content\_hash())}, used
+    throughout \texttt{space.rs}, \texttt{room.rs} and
+    \texttt{call\_rooms.rs} whenever an entry is read back).
+\end{itemize}
+
+Blabber's backend (\texttt{blabber-core}) combines these four
+components inside a single \texttt{Node} (see \texttt{node.rs}), and
+adds one custom protocol of its own, \texttt{blabber/voice/0}, for
+peer-to-peer audio transport, plus a second custom protocol
+\texttt{blabber/callroom/0} for group-call signaling
+(\texttt{channel.rs}).
+
+
+\section{Persistence and application restart}
+
+To make joined spaces available again after the application is
+restarted, Blabber persists a small amount of local state per space:
+the invite code used to join it. When a space is created or joined,
+its invite is written to
+\texttt{<identity>/<space-uuid>/meta/invite.txt}
+(\texttt{Space::create\_directory}, \texttt{space.rs}). On startup,
+\texttt{Node::load\_spaces} walks this directory, re-parses every
+saved invite, re-imports the corresponding Iroh documents, and calls
+\texttt{Space::sync\_rooms} to also restore every room that space
+contains (\texttt{node.rs}). This means Blabber itself stores no chat
+data or membership information outside of the replicated Iroh
+documents; the only bespoke persisted artifact is the invite code
+required to re-derive access to those documents.
+
+
+\section{Group voice calls}
+
+In addition to one-to-one calls, Blabber supports group voice calls
+through a full-mesh topology: every participant establishes a direct
+connection to every other known participant of the call room, rather
+than routing audio through a relay or a selective forwarding unit
+(SFU). A \texttt{CallRoom} (\texttt{call\_rooms.rs}) tracks the list of
+known participant endpoint IDs and stores a call history in a
+replicated Iroh document, following the same pattern used for chat
+rooms.
+
+When a user joins a call room (\texttt{Node::join\_call\_room},
+\texttt{node.rs}), the local node connects to every participant it
+already knows about via a dedicated ALPN
+(\texttt{blabber/callroom/0}), sends the 16-byte call room identifier,
+and waits for a one-byte acknowledgement before registering the
+connection with a \texttt{MeshVoiceChannel}. Symmetrically,
+\texttt{CallRoomProtocol::accept} handles inbound connections by
+reading the same 16-byte identifier and looking up whether the local
+node is currently active in that call room.
+
+Because every peer receives one audio stream per other participant,
+\texttt{MeshVoiceChannel} maintains one jitter buffer per peer
+(\texttt{peer\_buffers}) and mixes them on a fixed 10ms interval by
+averaging the buffered samples across all peers that currently have
+data available (\texttt{MeshVoiceChannel::start\_playback},
+\texttt{channel.rs}). This full-mesh design avoids any server-side
+component but scales the number of connections quadratically with the
+number of participants, which we discuss further in
+Section~\ref{sec:limitations}.
+
+
+\section{Limitations and future work}
+\label{sec:limitations}
+
+\begin{itemize}
+    \item The \texttt{Identity} secret key is held in a plain
+    \texttt{[u8; 32]} in memory and is not zeroized on drop (see the
+    \texttt{TODO} comment in \texttt{identity.rs}); a memory-scraping
+    attacker could recover it while the application is running.
+    \item The Diffie-Hellman key exchange performed before a
+    one-to-one voice call (\texttt{node.rs},
+    \texttt{perform\_key\_exchange\_as\_initiator/acceptor}) derives a
+    shared secret that is not currently used to encrypt the audio
+    payload; confidentiality of the audio stream instead relies
+    entirely on the transport-level encryption already provided by
+    Iroh's underlying QUIC connection.
+    \item Group voice calls use a full-mesh architecture
+    (\texttt{Node::join\_call\_room}), which does not scale well beyond
+    a small number of simultaneous participants, since every
+    participant must maintain a direct connection and audio stream to
+    every other participant.
+    \item [... add any remaining gaps you are aware of, e.g. no
+    read-receipts, no message editing/deletion, no rate limiting,
+    no NAT traversal fallback discussion, etc.]
+\end{itemize}
+
+\fi
+
+
+%% ================================================================
+%% PART 4 — ACADEMIC-STANDARD LINE-LEVEL REVIEW (pass 2, 2026-07-18)
+%% ================================================================
+%
+% Went through report.tex sentence by sentence against the current
+% code. Below are concrete, fixable issues, grouped by type. Line
+% numbers refer to report.tex as it currently stands.
+%
+% --- A. Typos / grammar (quick fixes, no judgement calls needed) ---
+%   L46  "goverment" -> "government".
+%   L46  "Government Id's" -> "government IDs" (no apostrophe for a
+%        plural; "ID" not "Id").
+%   L53  "Keep track of messages and and be assured..." -- duplicated
+%        "and".
+%   L227 "persistant" -> "persistent".
+%   L287 "%Screenshots vom GUI" -- stray German comment left in a
+%        comment; either fill in the screenshots here or remove the
+%        comment. Fine either way since it's a LaTeX comment and won't
+%        render, but tidy it up before submission.
+%   L294 "%Mehr persönlich?" -- same: a private author note left as a
+%        comment inside \section{Conclusion}. Resolve (write the
+%        conclusion) and delete the comment.
+%
+% --- B. Register / parallelism ---
+%   The requirements list (L50-59) mixes verb forms: "Create...",
+%   "Keep track...", "Send...", "Receive...", but then "Being able to
+%   start a call with another user" and "Navigate the user interface
+%   while intuitively achieving their goals" break the imperative/
+%   infinitive pattern set up by "Users should be able to:". Academic
+%   style wants parallel structure across enumerated items. Proposal:
+%   - (e) "Start a call with another user."
+%   - (f) "Navigate the interface intuitively." (the "achieving their
+%     goals" clause is redundant with "intuitively" and can be cut)
+%
+% --- C. Unsupported / unsourced factual claims ---
+%   L46  "documents of at least seventy thousand users were leaked" --
+%        a specific, checkable factual claim (presumably referring to
+%        the 2023 Discord-related ID-verification vendor breach) with
+%        no citation. Academic reports should either cite a source for
+%        this number or soften it to something you don't need to
+%        defend, e.g. "a large number of users' identification
+%        documents were leaked" (still motivates the section, no
+%        citation debt).
+%   L46  "the Iroh protocol, which was introduced during the lecture"
+%        -- fine as a factual/motivational aside, but if you want this
+%        to read as an academic report rather than a diary entry,
+%        consider citing the Iroh project (docs/website/GitHub) instead
+%        of relying on "introduced during the lecture", which won't
+%        mean anything to an external reader/grader outside your
+%        specific course context.
+%
+% --- D. Structural / rigor gaps (expands on PART 1) ---
+%   1. No Abstract. Every section currently jumps straight into prose
+%      with no forward-referencing summary. Add a 5-8 sentence
+%      abstract before Section 1.
+%   2. Iroh's building blocks (Docs/Gossip/Blobs, Sec. 3.1) are
+%      currently introduced INSIDE "System architecture", after they've
+%      already been used unexplained in the System architecture intro
+%      paragraph (L69-72: "Blabber uses Iroh Docs...Gossip...Blobs...")
+%      -- the reader meets the terms before their definitions. Either
+%      move 3.1 before the architecture overview paragraph, or move the
+%      four building-block definitions into their own "Background"
+%      section preceding "System architecture" (this matches the
+%      Related-work-before-architecture convention noted in PART 1).
+%   3. Zero citations in the whole document despite naming Argon2,
+%      ChaCha20-Poly1305, Diffie-Hellman/x25519, CRDTs, and Iroh
+%      itself. Minimum expected for a DPI report: one reference each
+%      for Iroh, the CRDT concept (Shapiro et al. 2011), Argon2 (RFC
+%      9106), and ChaCha20-Poly1305 (RFC 8439). Add a
+%      \texttt{references.bib} + \texttt{\textbackslash bibliography}
+%      or manual \texttt{thebibliography} block.
+%   4. "Conclusion" (L293-296) is currently empty (just a
+%      \texttt{\textbackslash newpage} and a leftover comment). This is
+%      the single biggest missing piece for academic standard: a
+%      report without a conclusion reads as unfinished regardless of
+%      how good the preceding sections are. At minimum: restate what
+%      was achieved, state explicitly which of the Section 2
+%      requirements (a-f, plus the 4 security requirements) were met
+%      vs. not (tie this to the requirements-mapping table proposed in
+%      PART 1), and close with 2-3 sentences of future work pulling
+%      from the Limitations list in PART 3.
+%   5. No requirements-to-implementation traceability table. You have
+%      6 functional + 4 security requirements in Section 2 and a prose
+%      "Achieved results" in Section 8, but nothing that explicitly
+%      maps requirement (a) -> implemented by X, satisfied Y/N. Add a
+%      small table; this is usually the first thing a grader looks for
+%      in a requirements-driven course project.
+%   6. Given PART 0 item 2 (voice calls not wired in blabber-app), the
+%      "Achieved results" and "Supported chat operations" sections
+%      currently assert full voice support as fact. Whatever you decide
+%      there (re-wire vs. rephrase), make sure Sections 7 and 8 agree
+%      with each other and with what a grader can actually click
+%      through in the delivered app -- an academic report is expected
+%      to be verifiable against the artifact it describes.
+%
+% --- E. Minor style ---
+%   The report uses "\\" line breaks to separate paragraphs throughout
+%   (e.g. L45, L69-72, L105-106, ...) instead of a blank line (LaTeX's
+%   native paragraph separator). This produces visually tight
+%   "paragraphs" with no first-line indent removed / spacing adjusted,
+%   which reads as a formatting artifact rather than an intentional
+%   choice in a typeset report. Consider removing the \texttt{\\}s and
+%   using blank lines (true \texttt{\textbackslash par}) instead, or if
+%   you want the current tight spacing, wrap it in a consistent
+%   \texttt{\textbackslash setlength{\textbackslash parskip}{...}}
+%   rather than hand-inserting \texttt{\\} after every paragraph.
