@@ -1,13 +1,13 @@
-use std::{str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 use anyhow::Context;
 
 
-use crate::{Node, events, invite::Invite};
+use crate::{Node, events, events::AppEvent, invite::Invite};
 use anyhow::{Ok, Result};
 use iroh_blobs::store::fs::FsStore;
-use iroh_docs::{AuthorId, DocTicket, api::protocol::ShareMode, engine::LiveEvent, store::Query};
+use iroh_docs::{AuthorId, DocTicket, Entry, api::protocol::ShareMode, engine::LiveEvent, store::Query};
 use n0_future::{Stream, StreamExt};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{sync::{broadcast, Mutex}, task::JoinHandle};
 use crate::room::Room;
 use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
@@ -63,6 +63,7 @@ pub struct Space {
     pub rooms: Arc<Mutex<Vec<Room>>>,
     pub docs: Docs,
     pub call_rooms: Arc<Mutex<Vec<CallRoom>>>,
+    member_pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
 }
 
 impl Space {
@@ -91,15 +92,16 @@ impl Space {
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
             call_rooms: Arc::new(Mutex::new(Vec::new())),
+            member_pending: Arc::new(Mutex::new(HashMap::new())),
         };
-        
+
         space
             .insert_self_as_member(author, endpoint_id, display_name)
             .await?;
 
         Ok(space)
     }
-    
+
     /// Once invited or space created insert yourself as a member
     async fn insert_self_as_member(
         &self,
@@ -150,6 +152,7 @@ impl Space {
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
             call_rooms: Arc::new(Mutex::new(Vec::new())),
+            member_pending: Arc::new(Mutex::new(HashMap::new())),
         };
 
         space
@@ -158,7 +161,7 @@ impl Space {
 
         Ok(space)
     }
-    
+
     /// create an invite for the Space
     /// Should include at least one bootstrap node
     pub async fn create_invite(&self) -> Result<Invite> {
@@ -322,7 +325,66 @@ impl Space {
         }
         Ok(handles)
     }
-    
+
+    async fn try_apply_member_entry(
+        entry: &Entry,
+        blobs: &FsStore,
+        events: &broadcast::Sender<AppEvent>,
+        space_id: Uuid,
+    ) -> bool {
+        let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+            return false;
+        };
+        let Some(member) = postcard::from_bytes::<Member>(&bytes).ok() else {
+            return false;
+        };
+        let _ = events.send(AppEvent::NewMember { space_id, member });
+        true
+    }
+
+    async fn apply_member_event(
+        pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
+        event: LiveEvent,
+        blobs: &FsStore,
+        events: &broadcast::Sender<AppEvent>,
+        space_id: Uuid,
+    ) {
+        match event {
+            LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } => {
+                let applied = Self::try_apply_member_entry(&entry, blobs, events, space_id).await;
+                if !applied {
+                    pending.lock().await.insert(entry.content_hash(), entry);
+                }
+            }
+            LiveEvent::ContentReady { hash } => {
+                let stashed = pending.lock().await.remove(&hash);
+                if let Some(entry) = stashed {
+                    Self::try_apply_member_entry(&entry, blobs, events, space_id).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn watch_members(&self, node: &Node, blobs: FsStore) -> Result<JoinHandle<()>> {
+        let doc = self.members.clone();
+        let pending = self.member_pending.clone();
+        let events = node.events.clone();
+        let space_id = self.id;
+        let label = format!("{}/members", self.name);
+
+        let handle = node.watch_doc(doc, label, move |event| {
+            let pending = pending.clone();
+            let blobs = blobs.clone();
+            let events = events.clone();
+
+            async move {
+                Space::apply_member_event(pending, event, &blobs, &events, space_id).await;
+            }
+        }).await?;
+        Ok(handle)
+    }
+
     /// subscribe to the info Document
     pub async fn subscribe_info(&self) -> Result<impl Stream<Item = Result<LiveEvent>>> {
         let events = self.info.subscribe().await?;
