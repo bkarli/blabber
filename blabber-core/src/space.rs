@@ -422,7 +422,13 @@ impl Space {
                             if !already_known {
                                 if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
                                     if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.name.clone(), ticket).await {
-                                        self.call_rooms.lock().await.push(room);
+                                        self.call_rooms.lock().await.push(room.clone());
+
+                                        let _ = events.send(AppEvent::NewCallRoom {
+                                            space_id,
+                                            room_id: room.id,
+                                            room_name: room.name.clone(),
+                                        });
                                     }
                                 }
                             }
