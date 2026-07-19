@@ -212,6 +212,8 @@ impl Node {
         let endpoint_id = endpoint.id().to_string();
 
         let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
+        let blobs = self.blobs.clone().context("blobs not created yet")?;
+        space.watch_members(self, blobs).await?;
         self.spaces.lock().await.push(space.clone());
         println!("CREATE SPACE ID: {}", space.id());
         Ok(space)
@@ -225,6 +227,8 @@ impl Node {
         let endpoint_id = endpoint.id().to_string();
 
         let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
+        let blobs = self.blobs.clone().context("blobs not created yet")?;
+        space.watch_members(self, blobs).await?;
         self.spaces.lock().await.push(space.clone());
         Ok(space)
     }
@@ -305,6 +309,13 @@ impl Node {
                 .await
                 .map_err(|error| {
                     anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
+                })?;
+
+            space
+                .watch_members(self, blobs.clone())
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to watch members for space {dir_name}: {error}")
                 })?;
 
             spaces.push(space);
@@ -537,6 +548,50 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_join_space() {
+    }
+
+    #[tokio::test]
+    async fn watch_members_emits_new_member_event_for_new_entry() -> Result<()> {
+        let identity = crate::identity::Identity::new("Alice");
+        let mut node = Node::new(identity);
+        let dir = tempdir().context("failed to create tempdir")?;
+        node.run(dir.path().to_path_buf()).await?;
+
+        let mut events = node.subscribe_events();
+
+        let space = node.create_space("Test Space").await?;
+
+        let docs = node.docs.as_ref().context("docs not created")?;
+        let bob_author = docs.author_create().await?;
+        let bob = crate::space::Member {
+            author_id: bob_author.to_string(),
+            endpoint_id: "bob-endpoint".to_string(),
+            display_name: "Bob".to_string(),
+            joined_at: 0,
+        };
+        let key = format!("member/{bob_author}");
+        let value = postcard::to_allocvec(&bob).context("failed to encode member")?;
+        space
+            .members
+            .set_bytes(bob_author, key.into_bytes(), value)
+            .await?;
+
+        let found = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Ok(AppEvent::NewMember { member, .. }) if member.display_name == "Bob" => {
+                        return true;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(found, "expected a NewMember event with display_name \"Bob\"");
+        Ok(())
     }
 
     #[tokio::test]

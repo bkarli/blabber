@@ -49,6 +49,7 @@ async function joinChannel(channelId: string) {
 onMounted(() => {
   store.loadRooms(props.spaceId);
   store.loadChannels(props.spaceId);
+  store.loadMembers(props.spaceId);
 });
 
 watch(
@@ -56,6 +57,7 @@ watch(
   (newSpaceId) => {
     store.loadRooms(newSpaceId);
     store.loadChannels(newSpaceId);
+    store.loadMembers(newSpaceId);
   }
 );
 </script>
