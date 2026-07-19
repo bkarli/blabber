@@ -472,8 +472,12 @@ impl MeshActiveCall {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
         let thread = std::thread::spawn(move || -> Result<()> {
-            let _capture = channel.start_capture()?;
-            let _playback = channel.start_playback(&handle)?;
+            let _capture = channel.start_capture().inspect_err(|e| {
+                eprintln!("[mesh voice] failed to start capture: {e:#}");
+            })?;
+            let _playback = channel.start_playback(&handle).inspect_err(|e| {
+                eprintln!("[mesh voice] failed to start playback: {e:#}");
+            })?;
             let _ = stop_rx.recv();
             Ok(())
         });

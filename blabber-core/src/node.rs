@@ -603,7 +603,7 @@ mod tests {
 
 
     #[tokio::test]
-    async fn test_broadcast_emits_new_message_event() { 
+    async fn test_broadcast_emits_new_message_event() {
 
     }
 
