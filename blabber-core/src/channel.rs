@@ -311,15 +311,15 @@ fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
 pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
     peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
-    handle: Arc<StdMutex<Option<tokio::runtime::Handle>>>,
+    handle: tokio::runtime::Handle,
 }
 
 impl MeshVoiceChannel {
-    pub fn new() -> Self {
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
         Self {
             connections: Arc::new(StdMutex::new(HashMap::new())),
             peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
-            handle: Arc::new(StdMutex::new(None)),
+            handle,
         }
     }
 
@@ -333,29 +333,26 @@ impl MeshVoiceChannel {
             .unwrap()
             .insert(peer_id.clone(), connection.clone());
 
-        let handle = self.handle.lock().unwrap().clone();
-        if let Some(handle) = handle {
-            let peer_buffers = self.peer_buffers.clone();
-            let peer_id_for_task = peer_id.clone();
-            handle.spawn(async move {
-                loop {
-                    match connection.read_datagram().await {
-                        Ok(bytes) => {
-                            if let Some(samples) = bytes_to_samples(&bytes) {
-                                let mut buffers = peer_buffers.lock().unwrap();
-                                if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
-                                    buf.extend(samples);
-                                }
+        let peer_buffers = self.peer_buffers.clone();
+        let peer_id_for_task = peer_id.clone();
+        self.handle.spawn(async move {
+            loop {
+                match connection.read_datagram().await {
+                    Ok(bytes) => {
+                        if let Some(samples) = bytes_to_samples(&bytes) {
+                            let mut buffers = peer_buffers.lock().unwrap();
+                            if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
+                                buf.extend(samples);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("iroh datagram recv error from {peer_id_for_task}: {e}");
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!("iroh datagram recv error from {peer_id_for_task}: {e}");
+                        break;
                     }
                 }
-            });
-        }
+            }
+        });
     }
 
     pub fn remove_peer(&self, peer_id: &str) {
@@ -395,8 +392,6 @@ impl MeshVoiceChannel {
         Ok(stream)
     }
     pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
-        *self.handle.lock().unwrap() = Some(handle.clone());
-
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
         let config = device.default_output_config().context("no default output config")?;
