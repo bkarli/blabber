@@ -78,7 +78,6 @@ pub async fn list_call_participants(
             return room.list_active_members(blobs).await.map_err(|e| e.to_string());
         }
     }
-
     Err("call room not found".to_string())
 }
 
