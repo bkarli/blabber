@@ -14,7 +14,12 @@ import { Button } from '@/components/ui/button';
 import { Mic, Volume2, Trash2 } from 'lucide-vue-next';
 import { api } from '@/lib/tauri';
 import { useAuthStore } from '@/stores/auth';
-
+import {
+  selectedInputId as selectedInput,
+  selectedOutputId as selectedOutput,
+  selectedInputLabel,
+  selectedOutputLabel,
+} from '@/components/settings/useAudioSettings';
 const open = defineModel<boolean>('open', { default: false });
 
 const auth = useAuthStore();
@@ -24,10 +29,7 @@ const loadingEndpointId = ref(false);
 
 const inputDevices = ref<MediaDeviceInfo[]>([]);
 const outputDevices = ref<MediaDeviceInfo[]>([]);
-const selectedInput = ref<string>('');
-const selectedOutput = ref<string>('');
 const devicePermissionError = ref<string | null>(null);
-
 const confirmDeleteOpen = ref(false);
 const deleting = ref(false);
 const deleteError = ref<string | null>(null);
@@ -60,6 +62,7 @@ async function loadAudioDevices() {
       selectedOutput.value = outputDevices.value[0].deviceId;
     }
   } catch (e) {
+    console.error('getUserMedia failed:', e);
     devicePermissionError.value = 'Microphone access is required to list audio devices.';
   }
 }
@@ -69,6 +72,17 @@ watch(open, (isOpen) => {
     loadEndpointId();
     loadAudioDevices();
   }
+});
+
+// cpal (the call audio backend) selects devices by name, so keep the persisted
+// label in sync with whichever deviceId is currently selected.
+watch([selectedInput, inputDevices], ([id, devices]) => {
+  const match = devices.find((d) => d.deviceId === id);
+  if (match) selectedInputLabel.value = match.label;
+});
+watch([selectedOutput, outputDevices], ([id, devices]) => {
+  const match = devices.find((d) => d.deviceId === id);
+  if (match) selectedOutputLabel.value = match.label;
 });
 
 async function handleDelete() {

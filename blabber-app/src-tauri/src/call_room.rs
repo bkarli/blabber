@@ -80,7 +80,12 @@ pub async fn list_call_participants(
 }
 
 #[tauri::command]
-pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Result<(), String> {
+pub async fn join_call_room(
+    state: State<'_, AppState>,
+    room_id: String,
+    input_device: Option<String>,
+    output_device: Option<String>,
+) -> Result<(), String> {
     let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet")?;
@@ -98,7 +103,10 @@ pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Resu
         found.ok_or("call room not found")?
     };
 
-    let (call, _channel) = node.join_call_room(space_id, &room).await.map_err(|e| e.to_string())?;
+    let (call, _channel) = node
+        .join_call_room(space_id, &room, input_device, output_device)
+        .await
+        .map_err(|e| e.to_string())?;
     *state.active_call_room.lock().unwrap() = Some((room_uuid, call));
     Ok(())
 }
