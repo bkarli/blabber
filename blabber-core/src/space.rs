@@ -1,13 +1,13 @@
-use std::{str::FromStr, sync::Arc};
-use anyhow::Context;
+use std::{collections::HashMap, str::FromStr, sync::Arc, task::Poll::Pending};
+use anyhow::{Context};
 
 
-use crate::{Node, events, invite::Invite};
-use anyhow::{Ok, Result};
-use iroh_blobs::store::fs::FsStore;
-use iroh_docs::{AuthorId, DocTicket, api::protocol::ShareMode, engine::LiveEvent, store::Query};
+use crate::{AppEvent, Node, events, invite::Invite};
+use anyhow::{Result};
+use iroh_blobs::{Hash, store::fs::FsStore};
+use iroh_docs::{AuthorId, DocTicket, Entry, api::protocol::ShareMode, engine::LiveEvent, store::Query};
 use n0_future::{Stream, StreamExt};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
 use crate::room::Room;
 use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
@@ -38,6 +38,17 @@ struct CallRoomRecord {
     ticket: String,
 }
 
+enum SpaceRecords {
+    RoomRecord,
+    CallRoomRecord,
+}
+
+
+enum SpaceEvents {
+    RecordEvent,
+    MemberEvent,
+}
+
 /// Space holds
 /// - Each endpoint connected to it
 /// - Rooms: Chat Rooms
@@ -63,6 +74,18 @@ pub struct Space {
     pub rooms: Arc<Mutex<Vec<Room>>>,
     pub docs: Docs,
     pub call_rooms: Arc<Mutex<Vec<CallRoom>>>,
+
+    pub member_cache: Arc<Mutex<Vec<Member>>>,
+    pending_member: Arc<Mutex<HashMap<Hash, Entry>>>,
+
+    pub room_record_cache : Arc<Mutex<Vec<RoomRecord>>>,
+    pub call_room_record_cache: Arc<Mutex<Vec<CallRoomRecord>>>,
+
+    pending_room: Arc<Mutex<HashMap<Hash, Entry>>>,
+
+
+
+
 }
 
 impl Space {
@@ -91,6 +114,14 @@ impl Space {
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
             call_rooms: Arc::new(Mutex::new(Vec::new())),
+
+            member_cache: Arc::new(Mutex::new(Vec::new())),
+            pending_member: Arc::new(Mutex::new(HashMap::new())),
+
+            room_record_cache: Arc::new(Mutex::new(Vec::new())),
+            call_room_record_cache: Arc::new(Mutex::new(Vec::new())),
+
+            pending_room: Arc::new(Mutex::new(HashMap::new())),
         };
         
         space
@@ -150,6 +181,14 @@ impl Space {
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
             call_rooms: Arc::new(Mutex::new(Vec::new())),
+
+            member_cache: Arc::new(Mutex::new(Vec::new())),
+            pending_member: Arc::new(Mutex::new(HashMap::new())),
+
+            room_record_cache: Arc::new(Mutex::new(Vec::new())),
+            call_room_record_cache: Arc::new(Mutex::new(Vec::new())),
+
+            pending_room: Arc::new(Mutex::new(HashMap::new())),
         };
 
         space
@@ -321,6 +360,166 @@ impl Space {
             handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
         }
         Ok(handles)
+    }
+
+
+    pub async fn try_apply_entry(
+        &self,
+        event_type: SpaceEvents,
+        entry: &Entry,
+        blobs: &FsStore,
+        events: &broadcast::Sender<AppEvent>,
+        space_id: Uuid,
+    ) -> bool {
+
+        match event_type {
+            SpaceEvents::MemberEvent => {
+                if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
+                    if let Ok(member) = postcard::from_bytes::<Member>(&bytes) {
+                        self.member_cache.lock().await.push(member.clone());
+                        let _ = events.send(AppEvent::NewMember { space_id, member });
+                        return true;
+                    }
+                }
+                false
+            },
+                SpaceEvents::RecordEvent => {
+                let Ok(key) = std::str::from_utf8(entry.key()) else { return false; };
+
+                if let Some(_room_id_str) = key.strip_prefix("room/") {
+                    if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
+                        if let Ok(record) = postcard::from_bytes::<RoomRecord>(&bytes) {
+                            println!("Room discovered");
+                            let already_known = {
+                                let rooms = self.rooms.lock().await;
+                                rooms.iter().any(|r| r.id == record.id)
+                            };
+                            if !already_known {
+                                if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
+                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket).await {
+                                        self.rooms.lock().await.push(room.clone());
+                                        let _ = events.send(AppEvent::NewRoom {
+                                            space_id,
+                                            room_id: room.id,
+                                            room_name: room.name.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                if let Some(_room_id_str) = key.strip_prefix("callroom/") {
+                    if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
+                        if let Ok(record) = postcard::from_bytes::<CallRoomRecord>(&bytes) {
+                            let already_known = {
+                                let call_rooms = self.call_rooms.lock().await;
+                                call_rooms.iter().any(|r| r.id == record.id)
+                            };
+                            if !already_known {
+                                if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
+                                    if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.name.clone(), ticket).await {
+                                        self.call_rooms.lock().await.push(room);
+                                    }
+                                }
+                            }
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                true 
+            }    
+        }
+    }
+
+    
+    pub async fn apply_event(
+        &self,
+        event_type: SpaceEvents,
+        pending: Arc<Mutex<HashMap<Hash, Entry>>>,
+        event: LiveEvent,
+        blobs: &FsStore,
+        events: &broadcast::Sender<AppEvent>,
+        space_id: Uuid,
+    ) {
+        match event {
+            LiveEvent::InsertLocal { entry, .. } | LiveEvent::InsertRemote { entry, .. } => {
+                let applied = self.try_apply_entry(event_type, &entry, blobs, events, space_id).await;
+                if !applied {
+                    pending.lock().await.insert(entry.content_hash(), entry);
+                }
+            }
+            LiveEvent::ContentReady { hash } => {
+                let stashed = pending.lock().await.remove(&hash);
+                if let Some(entry) = stashed {
+                    self.try_apply_entry(event_type, &entry, blobs, events, space_id).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn watch_members(
+        &self,
+        node: &Node,
+        blobs: FsStore,
+        label: impl Into<String>,
+    ) -> Result<JoinHandle<()>> {
+        let existing = self.list_members(&blobs).await?;
+        *self.member_cache.lock().await = existing;
+
+        let space = self.clone();
+        let doc = self.members.clone();
+        let pending = self.pending_member.clone();
+        let label = label.into();
+        let events = node.events.clone();
+        let space_id = self.id();
+
+        let handle = node.watch_doc(doc, label, move |event| {
+            let space = space.clone();
+            let pending = pending.clone();
+            let blobs = blobs.clone();
+            let events = events.clone();
+
+            async move {
+                space.apply_event(SpaceEvents::MemberEvent, pending, event, &blobs, &events, space_id).await;
+            }
+        }).await?;
+
+        Ok(handle)
+    }
+
+    pub async fn watch_info(
+        &self,
+        node: &Node,
+        blobs: FsStore,
+        label: impl Into<String>,
+    ) -> Result<JoinHandle<()>> {
+        let doc = self.info.clone();
+        let space = self.clone();
+        let pending = self.pending_room.clone();
+        let label = label.into();
+        let events = node.events.clone();
+        let space_id = self.id().clone();
+
+        let handle = node.watch_doc(doc, label, move |event| {
+            let space = space.clone();
+            let pending = pending.clone();
+            let blobs = blobs.clone();
+            let events = events.clone();
+
+            async move {
+                space.apply_event(SpaceEvents::RecordEvent, pending, event, &blobs, &events, space_id).await;
+            }
+        }).await?;
+
+        Ok(handle)
+
     }
     
     /// subscribe to the info Document

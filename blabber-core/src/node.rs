@@ -214,6 +214,12 @@ impl Node {
         let endpoint_id = endpoint.id().to_string();
 
         let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
+        let blobs = self.blobs.clone().context("blobs not created yet")?;
+        let label = format!("{}/members", space.name());
+        space.watch_members(self, blobs.clone(), label).await?;
+        let label = format!("{}/info", space.name());
+        space.watch_info(self, blobs, label).await?;
+
         self.spaces.lock().await.push(space.clone());
         println!("CREATE SPACE ID: {}", space.id());
         Ok(space)
@@ -227,9 +233,15 @@ impl Node {
         let endpoint_id = endpoint.id().to_string();
 
         let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
+        let blobs = self.blobs.clone().context("blobs not created yet")?;
+        let label = format!("{}/members", space.name());
+        space.watch_members(self, blobs.clone(), label).await?;
+        let label = format!("{}/info", space.name());
+        space.watch_info(self, blobs, label).await?;
+
         self.spaces.lock().await.push(space.clone());
         Ok(space)
-    }
+        }
 
     /// Additionally we need to load the docs
     pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
@@ -308,6 +320,14 @@ impl Node {
                 .map_err(|error| {
                     anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
                 })?;
+
+            let label = format!("{}/members", space.name());
+            space.watch_members(self, blobs.clone(), label).await
+                .map_err(|error| anyhow::anyhow!("failed to watch members for space {dir_name}: {error}"))?;
+
+            let label = format!("{}/info", space.name());
+            space.watch_info(self, blobs.clone(), label).await
+                .map_err(|error| anyhow::anyhow!("failed to watch info for space {dir_name}: {error}"))?;
 
             spaces.push(space);
         }
