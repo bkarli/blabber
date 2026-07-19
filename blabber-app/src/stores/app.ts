@@ -14,6 +14,7 @@ export interface Message {
 }
 
 export interface Member {
+  author_id: string;
   endpoint_id: string;
   display_name: string;
   joined_at: number;
@@ -55,6 +56,12 @@ export const useAppStore = defineStore('app', {
     channelsFor: (state) => (spaceId: string) => state.channelsBySpace[spaceId] ?? [],
     membersFor: (state) => (spaceId: string) => state.membersBySpace[spaceId] ?? [],
     messagesFor: (state) => (roomId: string) => state.messagesByRoom[roomId] ?? [],
+
+    displayNameFor: (state) => (spaceId: string, authorId: string) => {
+      if (authorId === state.myAuthorId) return 'You';
+      const member = (state.membersBySpace[spaceId] ?? []).find((m) => m.author_id === authorId);
+      return member?.display_name ?? authorId.slice(0,8);
+    },
   },
 
   actions: {
@@ -214,6 +221,11 @@ export const useAppStore = defineStore('app', {
 
     async loadCallParticipants(roomId: string) {
       return invoke<string[]>('list_call_participants', { roomId });
+    },
+
+    async loadMembers(spaceId: string) {
+      const members = await invoke<Member[]>('list_members', { spaceId });
+      this.membersBySpace[spaceId] = members;
     },
   },
 });

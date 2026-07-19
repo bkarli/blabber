@@ -18,6 +18,7 @@ use crate::call_rooms::CallRoom;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Member {
+    pub author_id: String,
     pub endpoint_id: String,
     pub display_name: String,
     pub joined_at: u64,
@@ -112,6 +113,7 @@ impl Space {
             .as_secs();
 
         let member = Member {
+            author_id: author.to_string(), 
             endpoint_id: endpoint_id.to_string(),
             display_name: display_name.to_string(),
             joined_at,

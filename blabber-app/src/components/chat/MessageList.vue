@@ -25,6 +25,10 @@ const grouped = computed(() => {
   return groups;
 });
 
+function displayName(authorId: string) {
+  return store.displayNameFor(props.spaceId, authorId);
+}
+
 function scrollToBottom() {
   nextTick(() => {
     const viewport = document.querySelector('[data-message-scroll] [data-reka-scroll-area-viewport]');
@@ -45,8 +49,8 @@ function formatTime(ms: number) {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function initials(authorId: string) {
-  return authorId.slice(0, 2).toUpperCase();
+function initials(name: string) {
+  return name.slice(0, 2).toUpperCase();
 }
 </script>
 
@@ -61,23 +65,23 @@ function initials(authorId: string) {
       >
         <MessageAvatar>
           <Avatar>
-            <AvatarFallback>{{ initials(group.author) }}</AvatarFallback>
+            <AvatarFallback>{{ initials(displayName(group.author)) }}</AvatarFallback>
           </Avatar>
         </MessageAvatar>
         <MessageContent class="flex-1 min-w-0">
           <div class="mb-1 flex items-baseline gap-2">
-            <span class="text-sm font-semibold">{{ group.isOwn ? 'You' : group.author.slice(0, 8) }}</span>
+            <span class="text-sm font-semibold">{{ displayName(group.author) }}</span>
             <span class="text-xs text-muted-foreground">{{ formatTime(group.sentAt) }}</span>
           </div>
           <BubbleGroup>
-    <Bubble
-      v-for="(content, j) in group.contents"
-      :key="j"
-      :variant="group.isOwn ? 'default' : 'muted'"
-      class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
-    >
-    <BubbleContent>{{ content }}</BubbleContent>
-  </Bubble>
+            <Bubble
+              v-for="(content, j) in group.contents"
+              :key="j"
+              :variant="group.isOwn ? 'default' : 'muted'"
+              class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
+            >
+              <BubbleContent>{{ content }}</BubbleContent>
+            </Bubble>
           </BubbleGroup>
         </MessageContent>
       </Message>

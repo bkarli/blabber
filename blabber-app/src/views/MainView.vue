@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import SpaceSidebar from '@/components/layout/SpaceSidebar.vue';
 import RoomSidebar from '@/components/layout/RoomSidebar.vue';
+import ChatHeader from '@/components/chat/ChatHeader.vue';
 import MessageList from '@/components/chat/MessageList.vue';
 import MessageInput from '@/components/chat/MessageInput.vue';
 import { MessageSquare } from 'lucide-vue-next';
@@ -19,6 +20,7 @@ const roomId = computed(() => route.params.roomId as string | undefined);
 
     <main class="flex min-h-0 flex-1 flex-col bg-background">
       <template v-if="spaceId && roomId">
+        <ChatHeader :space-id="spaceId" :room-id="roomId" />
         <MessageList :space-id="spaceId" :room-id="roomId" />
         <MessageInput :space-id="spaceId" :room-id="roomId" />
       </template>
