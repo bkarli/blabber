@@ -85,8 +85,6 @@ impl Node {
         Ok(path.join(identity_dir))
     }
 
-    /// Create the endpoint from the identity
-    /// This should always generate always the same Enpoint
     pub async fn create_endpoint(&mut self) -> Result<()> {
         let secret_key = SecretKey::from_bytes(&self.identity.secret);
         let ep = Endpoint::builder(presets::N0)
@@ -463,8 +461,6 @@ impl Node {
         // let CallRoomProtocol::accept find our space when someone else dials into us later
         self.room_spaces.lock().unwrap().insert(room.id, space_id);
 
-        // discover who's *currently* in the call - not everyone who has ever joined - so
-        // participants who already left aren't dialed and retried on every join
         let known_participants: Vec<String> = room
             .list_active_members(blobs)
             .await?

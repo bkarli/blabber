@@ -13,11 +13,6 @@ pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
 pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
 
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
-// `Connection::max_datagram_size()` tracks a per-side, dynamically probed path-MTU estimate.
-// Over real NAT/relay paths, that probing can blackhole asymmetrically (one side's oversized
-// probes get silently dropped without the ICMP feedback PMTU discovery needs), so one peer can
-// end up believing a larger size is safe than the path actually supports. Cap to a conservative,
-// widely-safe ceiling instead of trusting the raw negotiated value.
 const SAFE_DATAGRAM_CEILING: usize = 1200;
 const SAFETY_MARGIN: usize = 32;
 const WIRE_SAMPLE_RATE: u32 = 48000;
@@ -360,8 +355,6 @@ impl MeshVoiceChannel {
                     }
                 }
             }
-            // the peer is gone: stop trying to send to their dead connection and
-            // drop their now-permanently-empty buffer from the mix
             mesh_channel.remove_peer(&peer_id_for_task);
         });
     }
@@ -371,17 +364,14 @@ impl MeshVoiceChannel {
         self.peer_buffers.lock().unwrap().remove(peer_id);
     }
 
-    /// Ids of all peers currently registered in this mesh.
     pub fn peer_ids(&self) -> Vec<String> {
         self.connections.lock().unwrap().keys().cloned().collect()
     }
 
-    /// The connection to a given peer, if one is registered.
     pub fn connection_for(&self, peer_id: &str) -> Option<Connection> {
         self.connections.lock().unwrap().get(peer_id).cloned()
     }
 
-    /// Number of samples currently buffered (received but not yet mixed/played) for a peer.
     pub fn buffered_sample_count(&self, peer_id: &str) -> Option<usize> {
         self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.len())
     }

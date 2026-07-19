@@ -16,11 +16,6 @@ pub struct CallLogEntry {
     pub ended_at: Option<u64>,
 }
 
-/// Tracks whether a given author is *currently* in the call. Unlike `CallLogEntry` (an
-/// append-only history of past calls, one entry per join), each author writes to the same
-/// `member/{author}` key every time, so the latest write always reflects their current
-/// status. This is what discovery reads from, so leaving a call actually removes you from
-/// future participants' connection attempts instead of being retried forever.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CallMembership {
     pub endpoint_id: String,
@@ -94,7 +89,6 @@ impl CallRoom{
         Ok(log)
     }
 
-    /// Records that `author` is now active (joined) or inactive (left) in this call.
     pub async fn set_membership(&self, author: AuthorId, endpoint_id: String, active: bool) -> Result<()> {
         let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         let membership = CallMembership { endpoint_id, active, updated_at };
@@ -104,8 +98,6 @@ impl CallRoom{
         Ok(())
     }
 
-    /// Endpoint ids of everyone currently marked active in this call - i.e. who to actually
-    /// dial when joining, as opposed to everyone who has *ever* joined historically.
     pub async fn list_active_members(&self, blobs: FsStore) -> Result<Vec<String>> {
         let entries = self.call_log.get_many(Query::single_latest_per_key().key_prefix("member/")).await?;
         let mut entries = std::pin::pin!(entries);
