@@ -16,11 +16,17 @@ pub struct CallLogEntry {
     pub ended_at: Option<u64>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CallMembership {
+    pub endpoint_id: String,
+    pub active: bool,
+    pub updated_at: u64,
+}
+
 #[derive(Clone)]
 pub struct CallRoom {
     pub id: Uuid,
     pub name: String,
-    pub participants: Arc<Mutex<Vec<String>>>,
     pub call_log: Doc,
     pub cache: Arc<Mutex<Vec<CallLogEntry>>>,
     pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
@@ -35,7 +41,6 @@ impl CallRoom{
             name: name.into(),
             call_log,
             cache: Arc::new(Mutex::new(Vec::new())),
-            participants: Arc::new(Mutex::new(Vec::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -48,7 +53,6 @@ impl CallRoom{
             name: name.into(),
             call_log,
             cache: Arc::new(Mutex::new(Vec::new())),
-            participants: Arc::new(Mutex::new(Vec::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
         })
 
@@ -74,11 +78,44 @@ impl CallRoom{
 
         while let Some(entry) = entries.next().await{
             let entry = entry?;
-            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
-            let call_entry: CallLogEntry = postcard::from_bytes(&bytes)?;
+            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                continue;
+            };
+            let Ok(call_entry) = postcard::from_bytes::<CallLogEntry>(&bytes) else {
+                continue;
+            };
             log.push(call_entry);
         }
         Ok(log)
+    }
+
+    pub async fn set_membership(&self, author: AuthorId, endpoint_id: String, active: bool) -> Result<()> {
+        let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        let membership = CallMembership { endpoint_id, active, updated_at };
+        let key = format!("member/{author}");
+        let value = postcard::to_allocvec(&membership)?;
+        self.call_log.set_bytes(author, key.into_bytes(), value).await?;
+        Ok(())
+    }
+
+    pub async fn list_active_members(&self, blobs: FsStore) -> Result<Vec<String>> {
+        let entries = self.call_log.get_many(Query::single_latest_per_key().key_prefix("member/")).await?;
+        let mut entries = std::pin::pin!(entries);
+        let mut active_members = Vec::new();
+
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                continue;
+            };
+            let Ok(membership) = postcard::from_bytes::<CallMembership>(&bytes) else {
+                continue;
+            };
+            if membership.active {
+                active_members.push(membership.endpoint_id);
+            }
+        }
+        Ok(active_members)
     }
     async fn try_apply_entry(
         cache: &Arc<Mutex<Vec<CallLogEntry>>>,

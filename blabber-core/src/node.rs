@@ -85,8 +85,6 @@ impl Node {
         Ok(path.join(identity_dir))
     }
 
-    /// Create the endpoint from the identity
-    /// This should always generate always the same Enpoint
     pub async fn create_endpoint(&mut self) -> Result<()> {
         let secret_key = SecretKey::from_bytes(&self.identity.secret);
         let ep = Endpoint::builder(presets::N0)
@@ -416,8 +414,8 @@ impl Node {
         peers: Vec<(String, iroh::EndpointAddr)>,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
-        let mesh_channel = crate::channel::MeshVoiceChannel::new();
         let handle = tokio::runtime::Handle::current();
+        let mesh_channel = crate::channel::MeshVoiceChannel::new(handle.clone());
         self.active_call_rooms
             .lock()
             .unwrap()
@@ -460,13 +458,13 @@ impl Node {
         let author = self.author.context("author not created yet")?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
 
-        // discover who's already in the call by reading the synced call log,
-        // before writing our own join entry
+        // let CallRoomProtocol::accept find our space when someone else dials into us later
+        self.room_spaces.lock().unwrap().insert(room.id, space_id);
+
         let known_participants: Vec<String> = room
-            .list_call_log(blobs)
+            .list_active_members(blobs)
             .await?
             .into_iter()
-            .flat_map(|entry| entry.participants)
             .filter(|id| id != &my_id)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
@@ -483,6 +481,7 @@ impl Node {
 
         // record our own join in the synced log, so peers who join after us can discover us
         room.log_call_started(author, vec![my_id.clone()]).await?;
+        room.set_membership(author, my_id.clone(), true).await?;
 
         let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
             space_id,
@@ -603,7 +602,7 @@ mod tests {
 
 
     #[tokio::test]
-    async fn test_broadcast_emits_new_message_event() { 
+    async fn test_broadcast_emits_new_message_event() {
 
     }
 

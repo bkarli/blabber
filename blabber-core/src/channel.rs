@@ -13,6 +13,7 @@ pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
 pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
 
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
+const SAFE_DATAGRAM_CEILING: usize = 1200;
 const SAFETY_MARGIN: usize = 32;
 const WIRE_SAMPLE_RATE: u32 = 48000;
 const MIX_CHUNK_MS: u64 = 10;
@@ -21,7 +22,8 @@ const MIX_CHUNK_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * (MIX_CHUNK
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
         .max_datagram_size()
-        .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE);
+        .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE)
+        .min(SAFE_DATAGRAM_CEILING);
     let safe_bytes = max_datagram.saturating_sub(SAFETY_MARGIN).max(4);
     (safe_bytes / 4).max(1)
 }
@@ -311,15 +313,15 @@ fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
 pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
     peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
-    handle: Arc<StdMutex<Option<tokio::runtime::Handle>>>,
+    handle: tokio::runtime::Handle,
 }
 
 impl MeshVoiceChannel {
-    pub fn new() -> Self {
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
         Self {
             connections: Arc::new(StdMutex::new(HashMap::new())),
             peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
-            handle: Arc::new(StdMutex::new(None)),
+            handle,
         }
     }
 
@@ -333,34 +335,45 @@ impl MeshVoiceChannel {
             .unwrap()
             .insert(peer_id.clone(), connection.clone());
 
-        let handle = self.handle.lock().unwrap().clone();
-        if let Some(handle) = handle {
-            let peer_buffers = self.peer_buffers.clone();
-            let peer_id_for_task = peer_id.clone();
-            handle.spawn(async move {
-                loop {
-                    match connection.read_datagram().await {
-                        Ok(bytes) => {
-                            if let Some(samples) = bytes_to_samples(&bytes) {
-                                let mut buffers = peer_buffers.lock().unwrap();
-                                if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
-                                    buf.extend(samples);
-                                }
+        let peer_buffers = self.peer_buffers.clone();
+        let peer_id_for_task = peer_id.clone();
+        let mesh_channel = self.clone();
+        self.handle.spawn(async move {
+            loop {
+                match connection.read_datagram().await {
+                    Ok(bytes) => {
+                        if let Some(samples) = bytes_to_samples(&bytes) {
+                            let mut buffers = peer_buffers.lock().unwrap();
+                            if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
+                                buf.extend(samples);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("iroh datagram recv error from {peer_id_for_task}: {e}");
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!("iroh datagram recv error from {peer_id_for_task}: {e}");
+                        break;
                     }
                 }
-            });
-        }
+            }
+            mesh_channel.remove_peer(&peer_id_for_task);
+        });
     }
 
     pub fn remove_peer(&self, peer_id: &str) {
         self.connections.lock().unwrap().remove(peer_id);
         self.peer_buffers.lock().unwrap().remove(peer_id);
+    }
+
+    pub fn peer_ids(&self) -> Vec<String> {
+        self.connections.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub fn connection_for(&self, peer_id: &str) -> Option<Connection> {
+        self.connections.lock().unwrap().get(peer_id).cloned()
+    }
+
+    pub fn buffered_sample_count(&self, peer_id: &str) -> Option<usize> {
+        self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.len())
     }
 
     pub fn connection_count(&self)->usize{
@@ -395,8 +408,6 @@ impl MeshVoiceChannel {
         Ok(stream)
     }
     pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
-        *self.handle.lock().unwrap() = Some(handle.clone());
-
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
         let config = device.default_output_config().context("no default output config")?;
@@ -477,8 +488,12 @@ impl MeshActiveCall {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
         let thread = std::thread::spawn(move || -> Result<()> {
-            let _capture = channel.start_capture()?;
-            let _playback = channel.start_playback(&handle)?;
+            let _capture = channel.start_capture().inspect_err(|e| {
+                eprintln!("[mesh voice] failed to start capture: {e:#}");
+            })?;
+            let _playback = channel.start_playback(&handle).inspect_err(|e| {
+                eprintln!("[mesh voice] failed to start playback: {e:#}");
+            })?;
             let _ = stop_rx.recv();
             Ok(())
         });

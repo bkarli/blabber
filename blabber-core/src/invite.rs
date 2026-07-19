@@ -3,7 +3,7 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use data_encoding::BASE32_NOPAD;
-use iroh_docs::api::protocol::ShareMode;
+use iroh_docs::api::protocol::{AddrInfoOptions, ShareMode};
 
 
 #[derive(Serialize, Deserialize)]
@@ -17,8 +17,8 @@ pub struct Invite {
 impl Invite {
     /// Create a invite string from a space
     pub async fn from_space(space: &Space) -> Result<Self> {
-        let info_ticket = space.info.share(ShareMode::Read, Default::default()).await?;
-        let member_ticket = space.members.share(ShareMode::Write, Default::default()).await?;
+        let info_ticket = space.info.share(ShareMode::Read, AddrInfoOptions::RelayAndAddresses).await?;
+        let member_ticket = space.members.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
         Ok(Self {
             space_id: space.id(),
