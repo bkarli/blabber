@@ -26,49 +26,11 @@ pub struct AppState {
     pub active_call_room: Mutex<Option<(Uuid, MeshActiveCall)>>,
 }
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
-))]
-fn enable_webview_media_devices(app: &tauri::App) {
-    use tauri::Manager;
-    use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
-
-    let Some(window) = app.get_webview_window("main") else { return };
-    let _ = window.with_webview(|webview| {
-        let wv = webview.inner();
-        if let Some(settings) = wv.settings() {
-            settings.set_enable_media_stream(true);
-            settings.set_enable_mediasource(true);
-        }
-        wv.connect_permission_request(|_wv, request| {
-            request.allow();
-            true
-        });
-    });
-}
-
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
-)))]
-fn enable_webview_media_devices(_app: &tauri::App) {}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
-        .setup(|app| {
-            enable_webview_media_devices(app);
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             create_identity,
             login,

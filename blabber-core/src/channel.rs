@@ -50,30 +50,6 @@ fn upmix_from_mono(data: &[f32], channels: u16) -> Vec<f32> {
     out
 }
 
-fn find_input_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
-    if let Some(wanted) = name {
-        if let Ok(mut devices) = host.input_devices() {
-            if let Some(device) = devices.find(|d| d.name().map(|n| n == wanted).unwrap_or(false)) {
-                return Ok(device);
-            }
-        }
-        eprintln!("input device '{wanted}' not found, falling back to default");
-    }
-    host.default_input_device().ok_or_else(|| anyhow!("no input device available"))
-}
-
-fn find_output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
-    if let Some(wanted) = name {
-        if let Ok(mut devices) = host.output_devices() {
-            if let Some(device) = devices.find(|d| d.name().map(|n| n == wanted).unwrap_or(false)) {
-                return Ok(device);
-            }
-        }
-        eprintln!("output device '{wanted}' not found, falling back to default");
-    }
-    host.default_output_device().ok_or_else(|| anyhow!("no output device available"))
-}
-
 fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || input.is_empty() {
         return input.to_vec();
@@ -391,9 +367,9 @@ impl MeshVoiceChannel {
         self.connections.lock().unwrap().len()
     }
 
-    pub fn start_capture(&self, device_name: Option<&str>) -> Result<cpal::Stream> {
+    pub fn start_capture(&self) -> Result<cpal::Stream> {
         let host = cpal::default_host();
-        let device = find_input_device(&host, device_name)?;
+        let device = host.default_input_device().ok_or_else(|| anyhow!("no input device available"))?;
         let supported_config = device.default_input_config().context("no supported input config")?;
         let native_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels();
@@ -418,11 +394,11 @@ impl MeshVoiceChannel {
         stream.play().context("failed to start capture stream")?;
         Ok(stream)
     }
-    pub fn start_playback(&self, handle: &tokio::runtime::Handle, device_name: Option<&str>) -> Result<cpal::Stream> {
+    pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
         *self.handle.lock().unwrap() = Some(handle.clone());
 
         let host = cpal::default_host();
-        let device = find_output_device(&host, device_name)?;
+        let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
         let config = device.default_output_config().context("no default output config")?;
         let native_rate = config.sample_rate().0;
         let channels = config.channels();
@@ -497,17 +473,12 @@ pub struct MeshActiveCall {
 }
 
 impl MeshActiveCall {
-    pub fn start(
-        channel: MeshVoiceChannel,
-        handle: tokio::runtime::Handle,
-        input_device: Option<String>,
-        output_device: Option<String>,
-    ) -> Self {
+    pub fn start(channel: MeshVoiceChannel, handle: tokio::runtime::Handle) -> Self {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
         let thread = std::thread::spawn(move || -> Result<()> {
-            let _capture = channel.start_capture(input_device.as_deref())?;
-            let _playback = channel.start_playback(&handle, output_device.as_deref())?;
+            let _capture = channel.start_capture()?;
+            let _playback = channel.start_playback(&handle)?;
             let _ = stop_rx.recv();
             Ok(())
         });

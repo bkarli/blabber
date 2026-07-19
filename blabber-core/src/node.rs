@@ -414,8 +414,6 @@ impl Node {
         room_id: Uuid,
         my_id: String,
         peers: Vec<(String, iroh::EndpointAddr)>,
-        input_device: Option<String>,
-        output_device: Option<String>,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
         let mesh_channel = crate::channel::MeshVoiceChannel::new();
@@ -448,7 +446,7 @@ impl Node {
             }
         }
         let channel_for_inspection = mesh_channel.clone();
-        let call = crate::channel::MeshActiveCall::start(mesh_channel, handle, input_device, output_device);
+        let call = crate::channel::MeshActiveCall::start(mesh_channel, handle);
         Ok((call, channel_for_inspection))
     }
 
@@ -456,8 +454,6 @@ impl Node {
         &self,
         space_id: Uuid,
         room: &crate::call_rooms::CallRoom,
-        input_device: Option<String>,
-        output_device: Option<String>,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
         let my_id = endpoint.id().to_string();
@@ -483,7 +479,7 @@ impl Node {
             }
         }
 
-        let result = self.join_mesh(room.id, my_id.clone(), peers, input_device, output_device).await?;
+        let result = self.join_mesh(room.id, my_id.clone(), peers).await?;
 
         // record our own join in the synced log, so peers who join after us can discover us
         room.log_call_started(author, vec![my_id.clone()]).await?;
