@@ -110,6 +110,8 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
         call.hang_up();
         let node_guard = state.node.lock().await;
         if let Some(node) = node_guard.as_ref() {
+            node.active_call_rooms.lock().unwrap().remove(&room_uuid);
+            node.room_spaces.lock().unwrap().remove(&room_uuid);
             if let Some(endpoint) = node.endpoint.as_ref() {
                 let my_id = endpoint.id().to_string();
                 let spaces = state.spaces.lock().await;

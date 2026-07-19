@@ -13,6 +13,12 @@ pub const VOICE_ALPN: &[u8] = b"blabber/voice/0";
 pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
 
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
+// `Connection::max_datagram_size()` tracks a per-side, dynamically probed path-MTU estimate.
+// Over real NAT/relay paths, that probing can blackhole asymmetrically (one side's oversized
+// probes get silently dropped without the ICMP feedback PMTU discovery needs), so one peer can
+// end up believing a larger size is safe than the path actually supports. Cap to a conservative,
+// widely-safe ceiling instead of trusting the raw negotiated value.
+const SAFE_DATAGRAM_CEILING: usize = 1200;
 const SAFETY_MARGIN: usize = 32;
 const WIRE_SAMPLE_RATE: u32 = 48000;
 const MIX_CHUNK_MS: u64 = 10;
@@ -21,7 +27,8 @@ const MIX_CHUNK_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * (MIX_CHUNK
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
         .max_datagram_size()
-        .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE);
+        .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE)
+        .min(SAFE_DATAGRAM_CEILING);
     let safe_bytes = max_datagram.saturating_sub(SAFETY_MARGIN).max(4);
     (safe_bytes / 4).max(1)
 }
@@ -335,6 +342,7 @@ impl MeshVoiceChannel {
 
         let peer_buffers = self.peer_buffers.clone();
         let peer_id_for_task = peer_id.clone();
+        let mesh_channel = self.clone();
         self.handle.spawn(async move {
             loop {
                 match connection.read_datagram().await {
@@ -352,6 +360,9 @@ impl MeshVoiceChannel {
                     }
                 }
             }
+            // the peer is gone: stop trying to send to their dead connection and
+            // drop their now-permanently-empty buffer from the mix
+            mesh_channel.remove_peer(&peer_id_for_task);
         });
     }
 
