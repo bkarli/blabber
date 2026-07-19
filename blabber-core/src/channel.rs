@@ -371,6 +371,21 @@ impl MeshVoiceChannel {
         self.peer_buffers.lock().unwrap().remove(peer_id);
     }
 
+    /// Ids of all peers currently registered in this mesh.
+    pub fn peer_ids(&self) -> Vec<String> {
+        self.connections.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// The connection to a given peer, if one is registered.
+    pub fn connection_for(&self, peer_id: &str) -> Option<Connection> {
+        self.connections.lock().unwrap().get(peer_id).cloned()
+    }
+
+    /// Number of samples currently buffered (received but not yet mixed/played) for a peer.
+    pub fn buffered_sample_count(&self, peer_id: &str) -> Option<usize> {
+        self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.len())
+    }
+
     pub fn connection_count(&self)->usize{
         self.connections.lock().unwrap().len()
     }
