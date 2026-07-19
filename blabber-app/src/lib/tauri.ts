@@ -38,4 +38,6 @@ export const api = {
 
   listRooms: (spaceId: string) => invoke<RoomInfo[]>('list_rooms', { spaceId }),
   createRoom: (spaceId: string, name: string) => invoke<RoomInfo>('create_room', { spaceId, name }),
+
+  listAudioDevices: () => invoke<{ inputs: string[]; outputs: string[] }>('list_audio_devices'),
 };

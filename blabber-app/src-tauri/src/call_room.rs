@@ -10,6 +10,20 @@ pub struct CallRoomInfo {
     pub name: String,
 }
 
+#[derive(Serialize)]
+pub struct AudioDeviceList {
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
+#[tauri::command]
+pub fn list_audio_devices() -> AudioDeviceList {
+    AudioDeviceList {
+        inputs: blabber_core::channel::list_input_device_names(),
+        outputs: blabber_core::channel::list_output_device_names(),
+    }
+}
+
 #[tauri::command]
 pub async fn create_call_room(
     state: State<'_, AppState>,

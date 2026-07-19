@@ -74,6 +74,20 @@ fn find_output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Dev
     host.default_output_device().ok_or_else(|| anyhow!("no output device available"))
 }
 
+pub fn list_input_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn list_output_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    host.output_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
 fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || input.is_empty() {
         return input.to_vec();

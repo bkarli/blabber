@@ -17,8 +17,6 @@ import { useAuthStore } from '@/stores/auth';
 import {
   selectedInputId as selectedInput,
   selectedOutputId as selectedOutput,
-  selectedInputLabel,
-  selectedOutputLabel,
 } from '@/components/settings/useAudioSettings';
 const open = defineModel<boolean>('open', { default: false });
 
@@ -27,8 +25,8 @@ const auth = useAuthStore();
 const endpointId = ref<string | null>(null);
 const loadingEndpointId = ref(false);
 
-const inputDevices = ref<MediaDeviceInfo[]>([]);
-const outputDevices = ref<MediaDeviceInfo[]>([]);
+const inputDevices = ref<string[]>([]);
+const outputDevices = ref<string[]>([]);
 const devicePermissionError = ref<string | null>(null);
 const confirmDeleteOpen = ref(false);
 const deleting = ref(false);
@@ -48,22 +46,19 @@ async function loadEndpointId() {
 async function loadAudioDevices() {
   devicePermissionError.value = null;
   try {
-    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    tempStream.getTracks().forEach((track) => track.stop());
+    const { inputs, outputs } = await api.listAudioDevices();
+    inputDevices.value = inputs;
+    outputDevices.value = outputs;
 
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    inputDevices.value = devices.filter((d) => d.kind === 'audioinput');
-    outputDevices.value = devices.filter((d) => d.kind === 'audiooutput');
-
-    if (inputDevices.value.length > 0 && !selectedInput.value) {
-      selectedInput.value = inputDevices.value[0].deviceId;
+    if (inputs.length > 0 && !selectedInput.value) {
+      selectedInput.value = inputs[0];
     }
-    if (outputDevices.value.length > 0 && !selectedOutput.value) {
-      selectedOutput.value = outputDevices.value[0].deviceId;
+    if (outputs.length > 0 && !selectedOutput.value) {
+      selectedOutput.value = outputs[0];
     }
   } catch (e) {
-    console.error('getUserMedia failed:', e);
-    devicePermissionError.value = 'Microphone access is required to list audio devices.';
+    console.error('list_audio_devices failed:', e);
+    devicePermissionError.value = 'Could not list audio devices.';
   }
 }
 
@@ -72,17 +67,6 @@ watch(open, (isOpen) => {
     loadEndpointId();
     loadAudioDevices();
   }
-});
-
-// cpal (the call audio backend) selects devices by name, so keep the persisted
-// label in sync with whichever deviceId is currently selected.
-watch([selectedInput, inputDevices], ([id, devices]) => {
-  const match = devices.find((d) => d.deviceId === id);
-  if (match) selectedInputLabel.value = match.label;
-});
-watch([selectedOutput, outputDevices], ([id, devices]) => {
-  const match = devices.find((d) => d.deviceId === id);
-  if (match) selectedOutputLabel.value = match.label;
 });
 
 async function handleDelete() {
@@ -126,10 +110,10 @@ async function handleDelete() {
               <SelectContent>
                 <SelectItem
                   v-for="device in inputDevices"
-                  :key="device.deviceId"
-                  :value="device.deviceId"
+                  :key="device"
+                  :value="device"
                 >
-                  {{ device.label || 'Unknown microphone' }}
+                  {{ device }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -146,10 +130,10 @@ async function handleDelete() {
               <SelectContent>
                 <SelectItem
                   v-for="device in outputDevices"
-                  :key="device.deviceId"
-                  :value="device.deviceId"
+                  :key="device"
+                  :value="device"
                 >
-                  {{ device.label || 'Unknown speaker' }}
+                  {{ device }}
                 </SelectItem>
               </SelectContent>
             </Select>
