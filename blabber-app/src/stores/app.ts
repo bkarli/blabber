@@ -102,6 +102,13 @@ export const useAppStore = defineStore('app', {
       });
 
     },
+    handleNewCallRoom({ space_id, room_id, room_name }: { space_id: string; room_id: string; room_name: string }) {
+      const list = (this.channelsBySpace[space_id] ??= []);
+      const alreadyExists = list.some((c) => c.id === room_id);
+      if (!alreadyExists) {
+        list.push({ id: room_id, name: room_name });
+      }
+    },
 
     handleNewCallParticipant({ room_id, endpoint_id }: { space_id: string; room_id: string; endpoint_id: string }) {
       if (room_id === this.activeCallRoomId) {
