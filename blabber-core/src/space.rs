@@ -123,14 +123,14 @@ impl Space {
 
             pending_room: Arc::new(Mutex::new(HashMap::new())),
         };
-        
+
         space
             .insert_self_as_member(author, endpoint_id, display_name)
             .await?;
 
         Ok(space)
     }
-    
+
     /// Once invited or space created insert yourself as a member
     async fn insert_self_as_member(
         &self,
@@ -197,7 +197,7 @@ impl Space {
 
         Ok(space)
     }
-    
+
     /// create an invite for the Space
     /// Should include at least one bootstrap node
     pub async fn create_invite(&self) -> Result<Invite> {
@@ -247,7 +247,7 @@ impl Space {
         let name = name.into();
         let room = Room::new(&self.docs, name.clone()).await?;
 
-        let ticket = room.messages.share(ShareMode::Write, Default::default()).await?;
+        let ticket = room.messages.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
         let record = RoomRecord {
             id: room.id,
@@ -284,7 +284,7 @@ impl Space {
     pub async fn create_call_room(&self, author: AuthorId, name: impl Into<String>) -> Result<CallRoom> {
         let name = name.into();
         let room = CallRoom::new(&self.docs, name.clone()).await?;
-        let ticket = room.call_log.share(ShareMode::Write, Default::default()).await?;
+        let ticket = room.call_log.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
         let record = CallRoomRecord {
             id: room.id,
             name: name.clone(),
@@ -309,7 +309,11 @@ impl Space {
         // go through the entries and create RoomRecors
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
+            // content may not have finished downloading yet if the entry metadata
+            // synced ahead of the blob content; skip it for now, a later sync will pick it up
+            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                continue;
+            };
             let record: RoomRecord = postcard::from_bytes(&bytes)?;
 
             let already_known = {
@@ -342,7 +346,11 @@ impl Space {
         let mut entries = std::pin::pin!(entries);
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
+            // content may not have finished downloading yet if the entry metadata
+            // synced ahead of the blob content; skip it for now, a later sync will pick it up
+            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                continue;
+            };
             let record: CallRoomRecord = postcard::from_bytes(&bytes)?;
             let already_known = {
                 let call_rooms = self.call_rooms.lock().await;

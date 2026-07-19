@@ -25,6 +25,3 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 blabber-core = { path = "../../blabber-core" }
 uuid = { workspace = true }
-
-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
-webkit2gtk = "2.0"
