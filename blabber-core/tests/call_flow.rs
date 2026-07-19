@@ -6,7 +6,7 @@
 //! conditions (NAT traversal, path MTU, etc. can't be reproduced on one machine).
 
 use anyhow::Result;
-use blabber_core::{Identity, Node};
+use blabber_core::{AppEvent, Identity, Node};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -125,7 +125,7 @@ async fn call_room_discovery_syncs_and_connects() -> Result<()> {
     let space_b = node_b.join_space(invite).await?;
 
     let author_a = node_a.author.unwrap();
-    let room_a = space_a.create_call_room(author_a, "Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Test Call").await?;
 
     let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
 
@@ -269,7 +269,7 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
 
     let author_a = node_a.author.unwrap();
     let author_b = node_b.author.unwrap();
-    let room_a = space_a.create_call_room(author_a, "Leave Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Leave Test Call").await?;
 
     let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
 
@@ -358,7 +358,7 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
 
     let author_a = node_a.author.unwrap();
-    let room_a = space_a.create_call_room(author_a, "Event Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Event Test Call").await?;
 
     // subscribe before A joins so we don't miss the event
     let mut events_a = node_a.events.subscribe();
@@ -410,6 +410,99 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
     assert!(
         saw_event,
         "A never received a NewCallParticipant event for B dialing in - room_spaces regression"
+    );
+
+    Ok(())
+}
+
+/// Regression test for a live-discovery gap: a peer who already joined a
+/// space, with no explicit re-sync (nothing in the real app ever calls
+/// `sync_call_rooms` again after the initial join - see `RoomSidebar.vue`'s
+/// `onMounted`/`watch(spaceId)`, and `list_call_rooms` just reads the
+/// in-memory `Vec`), must still discover a voice channel created by someone
+/// else afterwards via `Space::watch_info` live-watching the info doc, get a
+/// `NewCallRoom` event, and be able to join and mesh-connect to it.
+#[tokio::test]
+async fn call_room_created_after_join_is_auto_discovered() -> Result<()> {
+    let (node_a, _dir_a) = make_node("LateAlice").await?;
+    let (node_b, _dir_b) = make_node("LateBob").await?;
+
+    let space_a = node_a.create_space("Late Room Space").await?;
+    // B joins the space *before* any call room exists - exactly like a
+    // real member who was already in the space.
+    let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+
+    // Give the space's initial (empty) sync a moment, mirroring what the
+    // real app does once on join.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(space_b.call_rooms.lock().await.is_empty());
+
+    let mut events_b = node_b.events.subscribe();
+
+    // A creates a voice channel *after* B has already joined.
+    let author_a = node_a.author.unwrap();
+    let room_a = space_a.create_call_room(&node_a, author_a, "Late Voice Channel").await?;
+
+    // B never calls `sync_call_rooms` again (nothing in the real app does);
+    // it should pick up the new room purely from `watch_info` live-syncing
+    // the info doc, exactly as `list_call_rooms` would then observe it.
+    let discovered = wait_until(3000, 100, || {
+        space_b
+            .call_rooms
+            .try_lock()
+            .map(|rooms| rooms.iter().any(|r| r.id == room_a.id))
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        discovered,
+        "B never discovered the call room without an explicit re-sync"
+    );
+
+    let saw_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match events_b.recv().await {
+                Ok(AppEvent::NewCallRoom { room_id, .. }) if room_id == room_a.id => return true,
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(saw_event, "B never received a NewCallRoom event for A's channel");
+
+    // and it should actually be joinable/connectable, not just present in
+    // the list
+    let room_b = {
+        let rooms = space_b.call_rooms.lock().await;
+        rooms.iter().find(|r| r.id == room_a.id).unwrap().clone()
+    };
+    let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
+
+    // give B's copy of the call log doc a moment to sync A's join entry
+    // before B reads known participants off of it (same as
+    // `call_room_discovery_syncs_and_connects` above)
+    let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
+    let blobs_b = node_b.blobs.clone().unwrap();
+    for _ in 0..100 {
+        if room_b.list_active_members(blobs_b.clone()).await?.contains(&id_a) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let (_call_b, mesh_b) = node_b.join_call_room(space_b.id(), &room_b).await?;
+
+    let connected = wait_until(3000, 100, || {
+        mesh_a.connection_count() == 1 && mesh_b.connection_count() == 1
+    })
+    .await;
+    assert!(
+        connected,
+        "expected mesh to form after live discovery, got A={} B={}",
+        mesh_a.connection_count(),
+        mesh_b.connection_count()
     );
 
     Ok(())

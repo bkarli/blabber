@@ -145,7 +145,7 @@ impl Room {
 
     pub async fn watch(
         &self,
-        node: &Node,
+        events: broadcast::Sender<AppEvent>,
         blobs: FsStore,
         label: impl Into<String>,
         space_id: Uuid,
@@ -157,10 +157,9 @@ impl Room {
         let cache = self.cache.clone();
         let pending = self.pending.clone();
         let label = label.into();
-        let events = node.events.clone();
         let room_id = self.id;
 
-        let handle = node.watch_doc(doc, label, move |event| {
+        let handle = Node::watch_doc(doc, label, move |event| {
             let cache = cache.clone();
             let pending = pending.clone();
             let blobs = blobs.clone();

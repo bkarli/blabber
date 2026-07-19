@@ -213,7 +213,8 @@ impl Node {
 
         let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
-        space.watch_members(self, blobs).await?;
+        space.watch_members(self, blobs.clone()).await?;
+        space.watch_info(self, blobs).await?;
         self.spaces.lock().await.push(space.clone());
         println!("CREATE SPACE ID: {}", space.id());
         Ok(space)
@@ -228,7 +229,8 @@ impl Node {
 
         let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
-        space.watch_members(self, blobs).await?;
+        space.watch_members(self, blobs.clone()).await?;
+        space.watch_info(self, blobs).await?;
         self.spaces.lock().await.push(space.clone());
         Ok(space)
     }
@@ -318,6 +320,13 @@ impl Node {
                     anyhow::anyhow!("failed to watch members for space {dir_name}: {error}")
                 })?;
 
+            space
+                .watch_info(self, blobs.clone())
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to watch info for space {dir_name}: {error}")
+                })?;
+
             spaces.push(space);
         }
 
@@ -328,7 +337,12 @@ impl Node {
     
 
     /// Generic function on watching a Document
-    pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
+    ///
+    /// Deliberately takes no `&self`: it's spawned into 'static tasks
+    /// (including nested ones, e.g. watching a room discovered while
+    /// watching a space's info doc) that can outlive any particular
+    /// borrow of a `Node`.
+    pub async fn watch_doc<F, Fut>(doc: Doc, label: impl Into<String>, on_event: F) -> Result<JoinHandle<()>>
     where
         F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,

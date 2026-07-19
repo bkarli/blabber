@@ -30,7 +30,7 @@ pub async fn create_call_room(
         .find(|s| s.id() == space_uuid)
         .ok_or("space not found")?;
     let room = space
-        .create_call_room(author, name)
+        .create_call_room(node, author, name)
         .await
         .map_err(|e| e.to_string())?;
     Ok(CallRoomInfo {
