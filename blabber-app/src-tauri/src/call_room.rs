@@ -67,12 +67,15 @@ pub async fn list_call_participants(
 ) -> Result<Vec<String>, String> {
     let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
 
+    let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
+    let blobs = node.blobs.clone().ok_or("blobs not created yet")?;
+
     let spaces = state.spaces.lock().await;
     for space in spaces.iter() {
         let call_rooms = space.call_rooms.lock().await;
         if let Some(room) = call_rooms.iter().find(|r| r.id == room_uuid) {
-            let participants = room.participants.lock().await;
-            return Ok(participants.clone());
+            return room.list_active_members(blobs).await.map_err(|e| e.to_string());
         }
     }
 
@@ -118,8 +121,9 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
                 for space in spaces.iter() {
                     let call_rooms = space.call_rooms.lock().await;
                     if let Some(room) = call_rooms.iter().find(|r| r.id == room_uuid) {
-                        let mut participants = room.participants.lock().await;
-                        participants.retain(|id| id != &my_id);
+                        if let Some(author) = node.author {
+                            let _ = room.set_membership(author, my_id.clone(), false).await;
+                        }
 
                         let _ = node.events.send(blabber_core::events::AppEvent::CallParticipantLeft {
                             space_id: space.id(),

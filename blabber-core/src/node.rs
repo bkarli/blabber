@@ -460,13 +460,15 @@ impl Node {
         let author = self.author.context("author not created yet")?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
 
-        // discover who's already in the call by reading the synced call log,
-        // before writing our own join entry
+        // let CallRoomProtocol::accept find our space when someone else dials into us later
+        self.room_spaces.lock().unwrap().insert(room.id, space_id);
+
+        // discover who's *currently* in the call - not everyone who has ever joined - so
+        // participants who already left aren't dialed and retried on every join
         let known_participants: Vec<String> = room
-            .list_call_log(blobs)
+            .list_active_members(blobs)
             .await?
             .into_iter()
-            .flat_map(|entry| entry.participants)
             .filter(|id| id != &my_id)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
@@ -483,6 +485,7 @@ impl Node {
 
         // record our own join in the synced log, so peers who join after us can discover us
         room.log_call_started(author, vec![my_id.clone()]).await?;
+        room.set_membership(author, my_id.clone(), true).await?;
 
         let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
             space_id,

@@ -253,3 +253,164 @@ async fn disconnected_peer_is_cleaned_up_automatically() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
+    let (node_a, _dir_a) = make_node("LeaveAlice").await?;
+    let (node_b, _dir_b) = make_node("LeaveBob").await?;
+    let (node_c, _dir_c) = make_node("LeaveCarol").await?;
+
+    let blobs_b = node_b.blobs.clone().unwrap();
+    let blobs_c = node_c.blobs.clone().unwrap();
+
+    let space_a = node_a.create_space("Leave Test Space").await?;
+    let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let space_c = node_c.join_space(space_a.create_invite().await?).await?;
+
+    let author_a = node_a.author.unwrap();
+    let author_b = node_b.author.unwrap();
+    let room_a = space_a.create_call_room(author_a, "Leave Test Call").await?;
+
+    let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
+
+    let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
+    let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
+
+    // B discovers the room and A's membership, then joins
+    let mut room_b = None;
+    for _ in 0..100 {
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
+        let rooms = space_b.call_rooms.lock().await;
+        if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
+            room_b = Some(r.clone());
+            break;
+        }
+        drop(rooms);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let room_b = room_b.expect("B never discovered the call room");
+    for _ in 0..100 {
+        if room_b.list_active_members(blobs_b.clone()).await?.contains(&id_a) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (_call_b, mesh_b) = node_b.join_call_room(space_b.id(), &room_b).await?;
+
+    let connected = wait_until(3000, 100, || {
+        mesh_a.connection_count() == 1 && mesh_b.connection_count() == 1
+    })
+    .await;
+    assert!(connected, "expected A and B to connect before B leaves");
+
+    // B leaves - marks itself inactive instead of just disappearing
+    room_b.set_membership(author_b, id_b.clone(), false).await?;
+
+    // C joins afterwards and should discover only A as an active member
+    let mut room_c = None;
+    for _ in 0..100 {
+        space_c.sync_call_rooms(&node_c, &blobs_c).await?;
+        let rooms = space_c.call_rooms.lock().await;
+        if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
+            room_c = Some(r.clone());
+            break;
+        }
+        drop(rooms);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let room_c = room_c.expect("C never discovered the call room");
+
+    let mut members_seen = Vec::new();
+    for _ in 0..100 {
+        members_seen = room_c.list_active_members(blobs_c.clone()).await?;
+        if members_seen.contains(&id_a) && !members_seen.contains(&id_b) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(members_seen.contains(&id_a), "C should see A as active");
+    assert!(
+        !members_seen.contains(&id_b),
+        "C should NOT see B as active after B left - stale peers must not be retried forever"
+    );
+
+    let (_call_c, mesh_c) = node_c.join_call_room(space_c.id(), &room_c).await?;
+    wait_until(3000, 100, || mesh_c.connection_count() >= 1).await;
+
+    assert_eq!(
+        mesh_c.connection_count(),
+        1,
+        "C should only connect to A, not dial the departed B"
+    );
+    assert_eq!(mesh_c.peer_ids(), vec![id_a]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn accept_side_emits_new_call_participant_event() -> Result<()> {
+    let (node_a, _dir_a) = make_node("EventAlice").await?;
+    let (node_b, _dir_b) = make_node("EventBob").await?;
+
+    let blobs_b = node_b.blobs.clone().unwrap();
+
+    let space_a = node_a.create_space("Event Test Space").await?;
+    let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+
+    let author_a = node_a.author.unwrap();
+    let room_a = space_a.create_call_room(author_a, "Event Test Call").await?;
+
+    // subscribe before A joins so we don't miss the event
+    let mut events_a = node_a.events.subscribe();
+
+    let (_call_a, _mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
+
+    let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
+    let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
+
+    let mut room_b = None;
+    for _ in 0..100 {
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
+        let rooms = space_b.call_rooms.lock().await;
+        if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
+            room_b = Some(r.clone());
+            break;
+        }
+        drop(rooms);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let room_b = room_b.expect("B never discovered the call room");
+    for _ in 0..100 {
+        if room_b.list_active_members(blobs_b.clone()).await?.contains(&id_a) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // B dials into A - this is the accept-side path that used to never fire
+    // NewCallParticipant because `room_spaces` was never populated
+    let (_call_b, _mesh_b) = node_b.join_call_room(space_b.id(), &room_b).await?;
+
+    let saw_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match events_a.recv().await {
+                Ok(blabber_core::AppEvent::NewCallParticipant { room_id, endpoint_id, .. })
+                    if room_id == room_a.id && endpoint_id == id_b =>
+                {
+                    return true;
+                }
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        saw_event,
+        "A never received a NewCallParticipant event for B dialing in - room_spaces regression"
+    );
+
+    Ok(())
+}
