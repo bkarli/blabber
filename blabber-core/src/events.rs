@@ -20,6 +20,11 @@ pub enum AppEvent {
         room_id: Uuid,
         room_name: String,
     },
+    NewCallRoom {
+        space_id: Uuid,
+        room_id: Uuid,
+        room_name: String,
+    },
     NewCallLogEntry {
         space_id: Uuid,
         room_id: Uuid,

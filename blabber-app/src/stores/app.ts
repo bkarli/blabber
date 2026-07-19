@@ -35,6 +35,7 @@ export type AppEvent =
   | { NewMessage: { space_id: string; room_id: string; message: Message } }
   | { NewMember: { space_id: string; member: Member } }
   | { NewRoom: { space_id: string; room_id: string; room_name: string } }
+  | { type: 'NewCallRoom'; space_id: string; room_id: string; room_name: string }
  | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
   | { type: 'CallParticipantLeft'; space_id: string; room_id: string; endpoint_id: string };
 
@@ -90,6 +91,8 @@ export const useAppStore = defineStore('app', {
           this.handleNewMember(payload);
         } else if (payload.type === 'NewRoom') {
           this.handleNewRoom(payload);
+        } else if (payload.type === 'NewCallRoom') {
+          this.handleNewCallRoom(payload);
         } else if (payload.type === 'NewCallParticipant') {
           this.handleNewCallParticipant(payload);
         } else if (payload.type === 'CallParticipantLeft') {
@@ -97,6 +100,13 @@ export const useAppStore = defineStore('app', {
         }
       });
 
+    },
+    handleNewCallRoom({ space_id, room_id, room_name }: { space_id: string; room_id: string; room_name: string }) {
+      const list = (this.channelsBySpace[space_id] ??= []);
+      const alreadyExists = list.some((c) => c.id === room_id);
+      if (!alreadyExists) {
+        list.push({ id: room_id, name: room_name });
+      }
     },
 
     handleNewCallParticipant({ room_id, endpoint_id }: { space_id: string; room_id: string; endpoint_id: string }) {
