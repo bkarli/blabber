@@ -36,6 +36,7 @@ export type AppEvent =
   | { NewMessage: { space_id: string; room_id: string; message: Message } }
   | { NewMember: { space_id: string; member: Member } }
   | { NewRoom: { space_id: string; room_id: string; room_name: string } }
+  | { type: 'NewCallRoom'; space_id: string; room_id: string; room_name: string }
  | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
   | { type: 'CallParticipantLeft'; space_id: string; room_id: string; endpoint_id: string };
 
@@ -91,6 +92,8 @@ export const useAppStore = defineStore('app', {
           this.handleNewMember(payload);
         } else if (payload.type === 'NewRoom') {
           this.handleNewRoom(payload);
+        } else if (payload.type === 'NewCallRoom') {
+          this.handleNewCallRoom(payload);
         } else if (payload.type === 'NewCallParticipant') {
           this.handleNewCallParticipant(payload);
         } else if (payload.type === 'CallParticipantLeft') {
