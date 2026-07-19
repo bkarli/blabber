@@ -206,115 +206,204 @@ impl Node {
         Ok(())
     }
 
-    pub async fn create_space(&self, name: impl Into<String>) -> Result<Space> {
-        let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        
-        let endpoint_id = endpoint.id().to_string();
-
-        let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
-        self.spaces.lock().await.push(space.clone());
-        println!("CREATE SPACE ID: {}", space.id());
-        Ok(space)
-
-    }
-
-    pub async fn join_space(&self, invite: Invite) -> Result<Space> {
-        let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        let endpoint_id = endpoint.id().to_string();
-
-        let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
-        self.spaces.lock().await.push(space.clone());
-        Ok(space)
-    }
-
-    /// Additionally we need to load the docs
-    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
-        // go through the root_path and enumerate all the spaces present
-        // in the directory
-        // root_directory
-        //      - UUID
-        //          - Meta
-        //              - Info Read only
-        //              - Members
-        //              - Channels and Rooms
-        //          - [UUID]chat
-        
-        // add identity to the path
-        let root_path = self.add_idetity_to_path(&root_path)?;
-        tokio::fs::create_dir_all(&root_path).await?;
-        let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        let endpoint_id = endpoint.id().to_string();
-        let display_name = self.identity.displayName.clone();
+    pub async fn create_space(
+        self: &Arc<Self>,
+        name: impl Into<String>,
+    ) -> Result<Space> {
+        let docs = self
+            .docs
+            .as_ref()
+            .context("docs engine not created yet")?;
         let blobs = self
             .blobs
             .as_ref()
             .context("blobs not created yet")?;
-        
-        let mut spaces = Vec::new();
-        let mut entries = fs::read_dir(root_path).await?;
+        let author = self
+            .author
+            .context("author not created yet")?;
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .context("endpoint not created yet")?;
+        let endpoint_id = endpoint.id().to_string();
+        let space = Arc::new(
+            Space::new(
+                docs,
+                author,
+                endpoint_id,
+                self.identity.displayName.clone(),
+                name,
+            )
+                .await?,
+        );
+        space
+            .clone()
+            .watch_info(Arc::clone(self), blobs.clone())
+            .await?;
+        let stored_space = (*space).clone();
+        self.spaces
+            .lock()
+            .await
+            .push(stored_space.clone());
+        println!("CREATE SPACE ID: {}", stored_space.id());
+        Ok(stored_space)
+    }
 
+    pub async fn join_space(
+        self: &Arc<Self>,
+        invite: Invite,
+    ) -> Result<Space> {
+        let docs = self
+            .docs
+            .as_ref()
+            .context("docs engine not created yet")?;
 
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
+        let blobs = self
+            .blobs
+            .as_ref()
+            .context("blobs not created yet")?;
 
-            if !path.is_dir() {
-                continue;
-            }
+        let author = self
+            .author
+            .context("author not created yet")?;
 
-            let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if Uuid::parse_str(dir_name).is_err(){
-                continue;
-            }
-            let invite_path = path.join("meta").join("invite.txt");
-            if !invite_path.is_file(){
-                continue;
-            }
-            
-            let code = fs::read_to_string(&invite_path).await?;
-            let invite = match Invite::deserialize_invite(code){
-                Ok(i) => i,
-                Err(e) =>{
-                    eprintln!("skipping unreadable space {dir_name}");
-                    continue;
-                }
-            };
-            let space = Space::from_invite(
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .context("endpoint not created yet")?;
+
+        let endpoint_id = endpoint.id().to_string();
+
+        let space = Arc::new(
+            Space::from_invite(
                 docs,
                 invite,
                 author,
-                endpoint_id.clone(),
-                display_name.clone(),
-            ).await?;
+                endpoint_id,
+                self.identity.displayName.clone(),
+            )
+                .await?,
+        );
 
+        // Import rooms that already exist.
+        space
+            .sync_rooms(self.as_ref(), blobs)
+            .await?;
 
+        // Continuously listen for new room records.
+        space
+            .clone()
+            .watch_info(Arc::clone(self), blobs.clone())
+            .await?;
+
+        let stored_space = (*space).clone();
+
+        self.spaces
+            .lock()
+            .await
+            .push(stored_space.clone());
+
+        Ok(stored_space)
+    }
+
+    /// Additionally we need to load the docs
+    pub async fn load_spaces(
+        self: &Arc<Self>,
+        root_path: PathBuf,
+    ) -> Result<Vec<Space>> {
+        let root_path = self.add_idetity_to_path(&root_path)?;
+        tokio::fs::create_dir_all(&root_path).await?;
+        let docs = self
+            .docs
+            .as_ref()
+            .context("docs engine not created yet")?;
+        let author = self
+            .author
+            .context("author not created yet")?;
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .context("endpoint not created yet")?;
+        let blobs = self
+            .blobs
+            .as_ref()
+            .context("blobs not created yet")?;
+        let endpoint_id = endpoint.id().to_string();
+        let display_name = self.identity.displayName.clone();
+        let mut loaded_spaces = Vec::new();
+        let mut entries = fs::read_dir(root_path).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(directory_name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+            else {
+                continue;
+            };
+            if Uuid::parse_str(directory_name).is_err() {
+                continue;
+            }
+            let invite_path = path
+                .join("meta")
+                .join("invite.txt");
+            if !invite_path.is_file() {
+                continue;
+            }
+            let code = fs::read_to_string(&invite_path).await?;
+            let invite = match Invite::deserialize_invite(code) {
+                Ok(invite) => invite,
+                Err(error) => {
+                    eprintln!(
+                        "Skipping unreadable space {directory_name}: {error}"
+                    );
+                    continue;
+                }
+            };
+            let space = Arc::new(
+                Space::from_invite(
+                    docs,
+                    invite,
+                    author,
+                    endpoint_id.clone(),
+                    display_name.clone(),
+                )
+                    .await?,
+            );
             space
-                .sync_rooms(self, blobs)
+                .sync_rooms(self.as_ref(), blobs)
                 .await
                 .map_err(|error| {
-                    anyhow::anyhow!("failed to sync rooms for space {dir_name}: {error}")
+                    anyhow::anyhow!(
+                    "failed to sync rooms for space {directory_name}: {error}"
+                )
                 })?;
-
             space
-                .sync_call_rooms(self, blobs)
+                .sync_call_rooms(self.as_ref(), blobs)
                 .await
                 .map_err(|error| {
-                    anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
+                    anyhow::anyhow!(
+                    "failed to sync call rooms for space {directory_name}: {error}"
+                )
                 })?;
-
-            spaces.push(space);
+            space
+                .clone()
+                .watch_info(Arc::clone(self), blobs.clone())
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                    "failed to watch info document for space {directory_name}: {error}"
+                )
+                })?;
+            loaded_spaces.push((*space).clone());
         }
-
-        self.spaces.lock().await.extend(spaces.clone());
-        Ok(spaces)
-
+        self.spaces
+            .lock()
+            .await
+            .extend(loaded_spaces.clone());
+        Ok(loaded_spaces)
     }
     
 

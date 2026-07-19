@@ -1,20 +1,28 @@
 use std::{str::FromStr, sync::Arc};
-use anyhow::Context;
 
-
-use crate::{Node, events, invite::Invite};
-use anyhow::{Ok, Result};
+use crate::{events, invite::Invite, Node};
+use anyhow::{Context, Result};
 use iroh_blobs::store::fs::FsStore;
-use iroh_docs::{AuthorId, DocTicket, api::protocol::ShareMode, engine::LiveEvent, store::Query};
+use iroh_docs::{
+    api::protocol::ShareMode,
+    engine::LiveEvent,
+    store::Query,
+    AuthorId,
+    DocTicket,
+};
 use n0_future::{Stream, StreamExt};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{
+    sync::Mutex,
+    task::JoinHandle,
+};
+
+use crate::call_rooms::CallRoom;
 use crate::room::Room;
 use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
-use uuid::Uuid;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::call_rooms::CallRoom;
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Member {
@@ -216,18 +224,18 @@ impl Space {
             ticket: ticket.to_string(),
         };
 
-        let key = format!("room/{}", room.id);
-
-        let value = postcard::to_allocvec(&record)?;
-
-        self.info.set_bytes(author, key.into_bytes(), value).await?;
-
         self.rooms.lock().await.push(room.clone());
 
         let blobs = node.blobs.clone().context("blobs not created yet")?;
 
         let label = format!("{}/{}", self.name, room.name);
         room.watch(node, blobs, label, self.id).await?;
+
+        let key = format!("room/{}", room.id);
+
+        let value = postcard::to_allocvec(&record)?;
+        self.info.set_bytes(author, key.into_bytes(), value).await?;
+
 
         let _ = node.events.send(events::AppEvent::NewRoom {
             space_id: self.id,
@@ -259,38 +267,120 @@ impl Space {
 
     /// initially called when joining a space just to update the in memory
     /// information on the rooms currently on that space
-    pub async fn sync_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
+    pub async fn sync_rooms(
+        &self,
+        node: &Node,
+        blobs: &FsStore,
+    ) -> Result<Vec<JoinHandle<()>>> {
+        println!("[space: {}] Starting room synchronization", self.name);
+
         let entries = self
             .info
             .get_many(Query::single_latest_per_key().key_prefix("room/"))
             .await?;
-        
-        let mut entries = std::pin::pin!(entries);
 
-        // go through the entries and create RoomRecors
+        let mut entries = std::pin::pin!(entries);
+        let mut new_rooms = Vec::new();
+
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
-            let record: RoomRecord = postcard::from_bytes(&bytes)?;
+
+            let bytes = match blobs.blobs().get_bytes(entry.content_hash()).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "[space: {}] Room record content not ready: {error}",
+                        self.name
+                    );
+                    continue;
+                }
+            };
+
+            let record: RoomRecord = match postcard::from_bytes(&bytes) {
+                Ok(record) => record,
+                Err(error) => {
+                    eprintln!(
+                        "[space: {}] Could not decode room record: {error}",
+                        self.name
+                    );
+                    continue;
+                }
+            };
+
+            println!(
+                "[SYNC_ROOMS] found room {} ({})",
+                record.name,
+                record.id
+            );
 
             let already_known = {
                 let rooms = self.rooms.lock().await;
-                rooms.iter().any(|r| r.id == record.id)
+                rooms.iter().any(|room| room.id == record.id)
             };
 
-            if !already_known {
-                let ticket = DocTicket::from_str(&record.ticket)?;
-                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket).await?;
-                self.rooms.lock().await.push(room);
+            if already_known {
+                continue;
             }
+
+            let ticket = match DocTicket::from_str(&record.ticket) {
+                Ok(ticket) => ticket,
+                Err(error) => {
+                    eprintln!(
+                        "[space: {}] Invalid ticket for room {}: {error}",
+                        self.name,
+                        record.name
+                    );
+                    continue;
+                }
+            };
+
+            let room = match Room::from_ticket(
+                &self.docs,
+                record.id,
+                record.name,
+                ticket,
+            )
+                .await
+            {
+                Ok(room) => room,
+                Err(error) => {
+                    eprintln!(
+                        "[space: {}] Could not import room: {error}",
+                        self.name
+                    );
+                    continue;
+                }
+            };
+
+            self.rooms.lock().await.push(room.clone());
+            new_rooms.push(room);
         }
 
-        let rooms = self.rooms.lock().await;
         let mut handles = Vec::new();
-        for room in rooms.iter() {
+
+        for room in new_rooms {
             let label = format!("{}/{}", self.name, room.name);
-            handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
+
+            let handle = room
+                .watch(node, blobs.clone(), label, self.id)
+                .await?;
+
+            handles.push(handle);
+
+            let _ = node.events.send(events::AppEvent::NewRoom {
+                space_id: self.id,
+                room_id: room.id,
+                room_name: room.name.clone(),
+            });
+
+            println!(
+                "[space: {}] Imported new room {} ({})",
+                self.name,
+                room.name,
+                room.id
+            );
         }
+
         Ok(handles)
     }
 
@@ -334,7 +424,49 @@ impl Space {
         let events = self.members.subscribe().await?;
         Ok(events)
     }
+    pub async fn watch_info(
+        self: Arc<Self>,
+        node: Arc<Node>,
+        blobs: FsStore,
+    ) -> Result<JoinHandle<()>> {
+        let info = self.info.clone();
+        let label = format!("{}/info", self.name);
 
+        let space_for_callback = Arc::clone(&self);
+        let node_for_callback = Arc::clone(&node);
+
+        node.watch_doc(info, label, move |event| {
+            let space = Arc::clone(&space_for_callback);
+            let node = Arc::clone(&node_for_callback);
+            let blobs = blobs.clone();
+
+            async move {
+                match event {
+                    LiveEvent::InsertRemote { .. }
+                    | LiveEvent::InsertLocal { .. }
+                    | LiveEvent::ContentReady { .. } => {
+                        println!(
+                            "[INFO {}] update received",
+                            space.name
+                        );
+
+                        if let Err(error) = space
+                            .sync_rooms(node.as_ref(), &blobs)
+                            .await
+                        {
+                            eprintln!(
+                                "[INFO {}] Failed to synchronize rooms: {error:#}",
+                                space.name
+                            );
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+        })
+            .await
+    }
     pub fn id(&self) -> Uuid {
         self.id
     }
