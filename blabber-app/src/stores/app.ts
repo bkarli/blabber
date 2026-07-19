@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { selectedInputLabel, selectedOutputLabel } from '@/components/settings/useAudioSettings';
 
 export interface SpaceInfo {
   id: string;
@@ -209,11 +208,7 @@ export const useAppStore = defineStore('app', {
     },
 
     async joinCallRoom(roomId: string) {
-      await invoke<void>('join_call_room', {
-        roomId,
-        inputDevice: selectedInputLabel.value || null,
-        outputDevice: selectedOutputLabel.value || null,
-      });
+      await invoke<void>('join_call_room', { roomId });
       this.activeCallRoomId = roomId;
       this.callParticipants = await invoke<string[]>('list_call_participants', { roomId });
     },
