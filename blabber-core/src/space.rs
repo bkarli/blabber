@@ -12,6 +12,7 @@ use crate::room::Room;
 use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
 use uuid::Uuid;
+use iroh_docs::api::protocol::AddrInfoOptions;
 use serde::{Serialize, Deserialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::call_rooms::CallRoom;
