@@ -416,8 +416,8 @@ impl Node {
         peers: Vec<(String, iroh::EndpointAddr)>,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
-        let mesh_channel = crate::channel::MeshVoiceChannel::new();
         let handle = tokio::runtime::Handle::current();
+        let mesh_channel = crate::channel::MeshVoiceChannel::new(handle.clone());
         self.active_call_rooms
             .lock()
             .unwrap()
