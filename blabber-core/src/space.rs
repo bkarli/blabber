@@ -1,6 +1,7 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc, task::Poll::Pending};
 use anyhow::{Context};
 use rand::prelude::*;
+use zeroize::Zeroizing;
 
 
 use crate::{AppEvent, Node, events, invite::Invite};
@@ -72,7 +73,7 @@ pub struct Space {
     // Documents
     pub info: Doc,
     pub members: Doc,
-    key: [u8; 32],
+    key: Arc<Zeroizing<[u8; 32]>>,
     users: Vec<String>,
     pub rooms: Arc<Mutex<Vec<Room>>>,
     pub docs: Docs,
@@ -107,7 +108,7 @@ impl Space {
         let members = docs.create().await?;
 
         let id = Uuid::new_v4();
-        let key: [u8; 32] = rand::rng().random();
+        let key = Arc::new(Zeroizing::new(rand::rng().random::<[u8; 32]>()));
 
         let space = Self {
             id,
@@ -179,10 +180,10 @@ impl Space {
 
         let space = Self {
             id: invite.space_id,
-            name: invite.space_name,
+            name: invite.space_name.clone(),
             info,
             members,
-            key: invite.space_key,
+            key: Arc::new(Zeroizing::new(invite.space_key)),
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
@@ -251,7 +252,7 @@ impl Space {
     /// Create a completely new room
     pub async fn create_room(&self,node: &Node ,author: AuthorId, name: impl Into<String>) -> Result<Room> {
         let name = name.into();
-        let room = Room::new(&self.docs, name.clone(), self.key).await?;
+        let room = Room::new(&self.docs, name.clone(), self.key.clone()).await?;
 
         let ticket = room.messages.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
@@ -329,7 +330,7 @@ impl Space {
 
             if !already_known {
                 let ticket = DocTicket::from_str(&record.ticket)?;
-                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket, self.key).await?;
+                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket, self.key.clone()).await?;
                 self.rooms.lock().await.push(room);
             }
         }
@@ -410,7 +411,7 @@ impl Space {
                             };
                             if !already_known {
                                 if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
-                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key).await {
+                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key.clone()).await {
                                         self.rooms.lock().await.push(room.clone());
                                         let _ = events.send(AppEvent::NewRoom {
                                             space_id,
@@ -558,8 +559,8 @@ impl Space {
         self.id
     }
 
-    pub fn key(&self) -> [u8; 32] {
-        self.key
+    pub fn key(&self) -> Arc<Zeroizing<[u8; 32]>> {
+        self.key.clone()
     }
 
     pub fn name(&self) -> &str {

@@ -7,6 +7,7 @@ use n0_future::StreamExt;
 use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
 use uuid::Uuid;
 use serde::{Serialize,Deserialize};
+use zeroize::Zeroizing;
 
 use crate::{Node, crypto, events::AppEvent};
 
@@ -23,14 +24,14 @@ pub struct Room {
     pub name: String,
     pub messages: Doc,
     pub cache: Arc<Mutex<Vec<Message>>>,
-    key: [u8; 32],
+    key: Arc<Zeroizing<[u8; 32]>>,
 
     pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
 }
 
 impl Room {
     /// Create a new room
-    pub async fn new(docs: &Docs, name: impl Into<String>, key: [u8; 32]) -> Result<Self> {
+    pub async fn new(docs: &Docs, name: impl Into<String>, key: Arc<Zeroizing<[u8; 32]>>) -> Result<Self> {
         let messages = docs.create().await?;
 
         Ok(Self {
@@ -44,7 +45,7 @@ impl Room {
     }
 
     /// Construct the Room from the ticket
-    pub async fn from_ticket(docs: &Docs, id: Uuid, name: impl Into<String>, ticket: DocTicket, key: [u8; 32]) -> Result<Self> {
+    pub async fn from_ticket(docs: &Docs, id: Uuid, name: impl Into<String>, ticket: DocTicket, key: Arc<Zeroizing<[u8; 32]>>) -> Result<Self> {
         let messages = docs.import(ticket).await?;
 
         Ok(Self {
@@ -108,7 +109,7 @@ impl Room {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
-        key: [u8; 32],
+        key: Arc<Zeroizing<[u8; 32]>>,
     ) -> bool {
         if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
             if let Ok(plaintext) = crypto::decrypt(&key, &bytes, room_id.as_bytes()) {
@@ -131,7 +132,7 @@ impl Room {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
-        key: [u8; 32],
+        key: Arc<Zeroizing<[u8; 32]>>,
     ) {
         match event {
             LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } => {
@@ -168,13 +169,14 @@ impl Room {
         let label = label.into();
         let events = node.events.clone();
         let room_id = self.id;
-        let key = self.key;
+        let key = self.key.clone();
 
         let handle = node.watch_doc(doc, label, move |event| {
             let cache = cache.clone();
             let pending = pending.clone();
             let blobs = blobs.clone();
             let events = events.clone();
+            let key = key.clone();
 
             async move {
                 Room::apply_event(cache, pending, event, &blobs, &events, space_id, room_id, key).await;

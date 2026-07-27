@@ -4,6 +4,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use rand::prelude::*;
+use zeroize::Zeroizing;
 
 const NONCE_LEN: usize = 12;
 
@@ -22,14 +23,15 @@ pub fn encrypt(key: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> 
     Ok(out)
 }
 
-pub fn decrypt(key: &[u8; 32], data: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+pub fn decrypt(key: &[u8; 32], data: &[u8], aad: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     ensure!(data.len() > NONCE_LEN, "ciphertext too short");
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
 
     let cipher = ChaCha20Poly1305::new(key.into());
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    cipher
+    let plaintext = cipher
         .decrypt(nonce, Payload { msg: ciphertext, aad })
-        .map_err(|e| anyhow!("decryption failed: {e}"))
+        .map_err(|e| anyhow!("decryption failed: {e}"))?;
+    Ok(Zeroizing::new(plaintext))
 }

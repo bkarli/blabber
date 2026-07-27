@@ -25,3 +25,4 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 blabber-core = { path = "../../blabber-core" }
 uuid = { workspace = true }
+zeroize = { workspace = true }
