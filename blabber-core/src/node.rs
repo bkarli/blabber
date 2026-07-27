@@ -85,6 +85,10 @@ impl Node {
         Ok(path.join(identity_dir))
     }
 
+    pub fn local_storage_key(&self) -> [u8; 32] {
+        blake3::derive_key("blabber-app invite local storage v1", &self.identity.secret)
+    }
+
     pub async fn create_endpoint(&mut self) -> Result<()> {
         let secret_key = SecretKey::from_bytes(&self.identity.secret);
         let ep = Endpoint::builder(presets::N0)
@@ -288,11 +292,11 @@ impl Node {
                 continue;
             }
             
-            let code = fs::read_to_string(&invite_path).await?;
-            let invite = match Invite::deserialize_invite(code){
+            let encrypted = fs::read(&invite_path).await?;
+            let invite = match Invite::deserialize_invite_encrypted(&encrypted, &self.local_storage_key()){
                 Ok(i) => i,
                 Err(e) =>{
-                    eprintln!("skipping unreadable space {dir_name}");
+                    eprintln!("skipping unreadable space {dir_name}: {e}");
                     continue;
                 }
             };

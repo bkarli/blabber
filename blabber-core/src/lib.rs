@@ -4,6 +4,7 @@ pub mod space;
 pub mod invite;
 mod meta;
 mod room;
+mod crypto;
 pub mod events;
 pub mod channel;
 

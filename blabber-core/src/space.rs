@@ -1,5 +1,6 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc, task::Poll::Pending};
 use anyhow::{Context};
+use rand::prelude::*;
 
 
 use crate::{AppEvent, Node, events, invite::Invite};
@@ -71,6 +72,7 @@ pub struct Space {
     // Documents
     pub info: Doc,
     pub members: Doc,
+    key: [u8; 32],
     users: Vec<String>,
     pub rooms: Arc<Mutex<Vec<Room>>>,
     pub docs: Docs,
@@ -105,12 +107,14 @@ impl Space {
         let members = docs.create().await?;
 
         let id = Uuid::new_v4();
+        let key: [u8; 32] = rand::rng().random();
 
         let space = Self {
             id,
             name: name.into(),
             info,
             members,
+            key,
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
@@ -178,6 +182,7 @@ impl Space {
             name: invite.space_name,
             info,
             members,
+            key: invite.space_key,
             users: vec![],
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
@@ -208,12 +213,12 @@ impl Space {
     /// create the directory for the space
     /// Document for Meta aswell as the chats
     /// will be saved in that directory
-    pub async fn create_directory(&self, root_path: &std::path::Path) -> Result<()> {
+    pub async fn create_directory(&self, root_path: &std::path::Path, storage_key: &[u8; 32]) -> Result<()> {
         let meta_dir = root_path.join(self.id.to_string()).join("meta");
         tokio::fs::create_dir_all(&meta_dir).await?;
         let invite = self.create_invite().await?;
-        let code = invite.serialize_invite()?;
-        tokio::fs::write(meta_dir.join("invite.txt"), code).await?;
+        let encrypted = invite.serialize_invite_encrypted(storage_key)?;
+        tokio::fs::write(meta_dir.join("invite.txt"), encrypted).await?;
         Ok(())
     }
 
@@ -246,7 +251,7 @@ impl Space {
     /// Create a completely new room
     pub async fn create_room(&self,node: &Node ,author: AuthorId, name: impl Into<String>) -> Result<Room> {
         let name = name.into();
-        let room = Room::new(&self.docs, name.clone()).await?;
+        let room = Room::new(&self.docs, name.clone(), self.key).await?;
 
         let ticket = room.messages.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
@@ -324,7 +329,7 @@ impl Space {
 
             if !already_known {
                 let ticket = DocTicket::from_str(&record.ticket)?;
-                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket).await?;
+                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket, self.key).await?;
                 self.rooms.lock().await.push(room);
             }
         }
@@ -405,7 +410,7 @@ impl Space {
                             };
                             if !already_known {
                                 if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
-                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket).await {
+                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key).await {
                                         self.rooms.lock().await.push(room.clone());
                                         let _ = events.send(AppEvent::NewRoom {
                                             space_id,
@@ -551,6 +556,10 @@ impl Space {
 
     pub fn id(&self) -> Uuid {
         self.id
+    }
+
+    pub fn key(&self) -> [u8; 32] {
+        self.key
     }
 
     pub fn name(&self) -> &str {
