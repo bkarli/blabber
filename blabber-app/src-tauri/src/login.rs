@@ -3,6 +3,7 @@ use blabber_core::node::Node;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
+use zeroize::Zeroizing;
 use crate::space::spaces_dir;
 
 use crate::AppState;
@@ -73,9 +74,6 @@ async fn start_node_for_identity(
         .join("blobs");
     fs::create_dir_all(&blobs_path).map_err(|error| error.to_string())?;
 
-    let displayName = identity.displayName.clone();
-    let secret = identity.secret;
-
     let mut node = Node::new(identity);
 
     let app_for_event = app.clone();
@@ -84,16 +82,11 @@ async fn start_node_for_identity(
 
         let app_state = app_for_event.state::<AppState>();
         *app_state.pending_call.lock().unwrap() = Some(decision_tx);
-        let _ = app_for_event.emit("incoming_call", peer_id); 
+        let _ = app_for_event.emit("incoming_call", peer_id);
     });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
 
-    if let Some(author) = node.author {
-        let updated_identity = Identity {
-            displayName: displayName,
-            secret,
-            author: Some(author),
-        };
+    if let Some(updated_identity) = node.identity_with_author() {
         updated_identity
             .store(password, identity_path)
             .map_err(|error| error.to_string())?;
@@ -119,6 +112,7 @@ pub async fn create_identity(
     display_name: String,
     password: String,
 ) -> Result<String, String> {
+    let password = Zeroizing::new(password);
     let display_name = display_name.trim();
     if display_name.is_empty() {
         return Err("Display name cannot be empty".to_string());
@@ -150,6 +144,7 @@ pub async fn login(
     display_name: String,
     password: String,
 ) -> Result<String, String> {
+    let password = Zeroizing::new(password);
     let path = identity_path(&app, display_name.trim())?;
     if !path.exists() {
         return Err("Identity does not exist".to_string());
