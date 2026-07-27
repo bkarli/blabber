@@ -19,6 +19,11 @@ const SAFETY_MARGIN: usize = 32;
 const WIRE_SAMPLE_RATE: u32 = 48000;
 const MIX_CHUNK_MS: u64 = 10;
 const MIX_CHUNK_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * (MIX_CHUNK_MS as usize);
+const LEVELER_TARGET_RMS: f32 = 0.15;
+const LEVELER_NOISE_GATE_RMS: f32 = 0.004;
+const LEVELER_MAX_GAIN: f32 = 8.0;
+const LEVELER_ATTACK_MS: f32 = 15.0;
+const LEVELER_RELEASE_MS: f32 = 300.0;
 
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
@@ -51,6 +56,44 @@ fn upmix_from_mono(data: &[f32], channels: u16) -> Vec<f32> {
         }
     }
     out
+}
+/// RMS-based level control with a noise gate.
+struct RmsLeveler {
+    gain: f32,
+}
+
+impl RmsLeveler {
+    fn new() -> Self {
+        Self { gain: 0.0 }
+    }
+
+    fn process(&mut self, input: &[f32], sample_rate: u32) -> Vec<f32> {
+        if input.is_empty() {
+            return Vec::new();
+        }
+
+        let sum_sq: f32 = input.iter().map(|&s| s * s).sum();
+        let rms = (sum_sq / input.len() as f32).sqrt();
+
+        let desired_gain = if rms < LEVELER_NOISE_GATE_RMS {
+            0.0
+        } else {
+            (LEVELER_TARGET_RMS / rms).min(LEVELER_MAX_GAIN)
+        };
+
+        let time_constant_ms = if desired_gain < self.gain {
+            LEVELER_ATTACK_MS
+        } else {
+            LEVELER_RELEASE_MS
+        };
+        let block_duration_s = input.len() as f32 / sample_rate as f32;
+        let coeff = 1.0 - (-block_duration_s / (time_constant_ms / 1000.0)).exp();
+        self.gain += (desired_gain - self.gain) * coeff;
+
+        input.iter()
+            .map(|&sample| (sample * self.gain).clamp(-1.0, 1.0))
+            .collect()
+    }
 }
 
 fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
@@ -94,11 +137,13 @@ impl VoiceChannel {
 
         let connection = self.connection.clone();
         let max_samples = samples_per_packet(&connection);
+        let mut leveler = RmsLeveler::new();
         let stream = device.build_input_stream(
             &stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 let mono = downmix_to_mono(data, channels);
-                let resampled = resample_linear(&mono, native_rate, WIRE_SAMPLE_RATE);
+                let leveled = leveler.process(&mono, native_rate);
+                let resampled = resample_linear(&leveled, native_rate, WIRE_SAMPLE_RATE);
                 send_audio_chunk(&connection, &resampled, max_samples);
             },
             move |err| { eprintln!("audio capture error: {err}");},
@@ -397,6 +442,7 @@ impl MeshVoiceChannel {
 
         let connections = self.connections.clone();
         let muted = self.muted.clone();
+        let mut leveler = RmsLeveler::new();
         let stream = device.build_input_stream(
             &stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -405,7 +451,8 @@ impl MeshVoiceChannel {
                 }
 
                 let mono = downmix_to_mono(data, channels);
-                let resampled = resample_linear(&mono, native_rate, WIRE_SAMPLE_RATE);
+                let leveled = leveler.process(&mono, native_rate);
+                let resampled = resample_linear(&leveled, native_rate, WIRE_SAMPLE_RATE);
 
                 let conns = connections.lock().unwrap();
                 for connection in conns.values() {
@@ -601,5 +648,3 @@ impl ProtocolHandler for CallRoomProtocol {
         Ok(())
     }
 }
-#[cfg(test)]
-mod tests {}
