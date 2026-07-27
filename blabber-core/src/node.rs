@@ -85,8 +85,12 @@ impl Node {
         Ok(path.join(identity_dir))
     }
 
+    pub fn local_storage_key(&self) -> [u8; 32] {
+        blake3::derive_key("blabber-app invite local storage v1", self.identity.secret.as_bytes())
+    }
+
     pub async fn create_endpoint(&mut self) -> Result<()> {
-        let secret_key = SecretKey::from_bytes(&self.identity.secret);
+        let secret_key = SecretKey::from_bytes(self.identity.secret.as_bytes());
         let ep = Endpoint::builder(presets::N0)
             .secret_key(secret_key)
             .alpns(vec![])
@@ -204,6 +208,14 @@ impl Node {
         Ok(())
     }
 
+    /// Rebuilds a copy of this node's identity with the now-known author, for
+    /// re-persisting to disk. Keeps `LockedSecret` construction internal to
+    /// `blabber-core` rather than exposing raw secret bytes to callers.
+    /// Returns `None` if no author has been created yet.
+    pub fn identity_with_author(&self) -> Option<Identity> {
+        self.author.map(|author| self.identity.with_author(author))
+    }
+
     pub async fn create_space(&self, name: impl Into<String>) -> Result<Space> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
         let author = self.author.context("author not created yet")?;
@@ -288,11 +300,11 @@ impl Node {
                 continue;
             }
             
-            let code = fs::read_to_string(&invite_path).await?;
-            let invite = match Invite::deserialize_invite(code){
+            let encrypted = fs::read(&invite_path).await?;
+            let invite = match Invite::deserialize_invite_encrypted(&encrypted, &self.local_storage_key()){
                 Ok(i) => i,
                 Err(e) =>{
-                    eprintln!("skipping unreadable space {dir_name}");
+                    eprintln!("skipping unreadable space {dir_name}: {e}");
                     continue;
                 }
             };

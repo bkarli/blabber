@@ -43,7 +43,7 @@ async function load() {
 
 onMounted(load);
 watch(() => props.roomId, load);
-watch(messages, scrollToBottom, { deep: false });
+watch(messages, scrollToBottom, { deep: true });
 
 function formatTime(ms: number) {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
