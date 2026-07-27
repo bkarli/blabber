@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { PhoneOff, Mic } from 'lucide-vue-next';
+import { PhoneOff, Mic, MicOff } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 
 const route = useRoute();
@@ -58,6 +58,14 @@ onUnmounted(() => {
   if (pollHandle) clearInterval(pollHandle);
 });
 
+async function toggleMute() {
+  try {
+    await store.setMuted(!store.isMuted);
+  } catch (e) {
+    console.error('failed to toggle mute', e);
+  }
+}
+
 function initials(id: string) {
   return id.slice(0, 2).toUpperCase();
 }
@@ -90,8 +98,11 @@ function initials(id: string) {
     </div>
 
     <div class="flex items-center gap-4 pb-8">
-      <Button variant="secondary" size="icon" class="h-12 w-12 rounded-full">
-        <Mic class="h-5 w-5" />
+      <Button :variant="store.isMuted ? 'destructive' : 'secondary'" size="icon" class="h-12 w-12 rounded-full"
+              @click="toggleMute()"
+      >
+        <MicOff v-if="store.isMuted" class="h-5 w-5" />
+        <Mic v-else class="h-5 w-5" />
       </Button>
       <Button variant="destructive" size="icon" class="h-14 w-14 rounded-full" @click="hangUp">
         <PhoneOff class="h-5 w-5" />

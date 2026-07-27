@@ -5,6 +5,7 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tokio::sync::broadcast;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex as StdMutex};
 use uuid::Uuid;
@@ -314,6 +315,7 @@ pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
     peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
     handle: tokio::runtime::Handle,
+    muted: Arc<AtomicBool>,
 }
 
 impl MeshVoiceChannel {
@@ -322,7 +324,12 @@ impl MeshVoiceChannel {
             connections: Arc::new(StdMutex::new(HashMap::new())),
             peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
             handle,
+            muted: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Relaxed);
     }
 
     pub fn add_peer(&self, peer_id: String, connection: Connection) {
@@ -389,9 +396,14 @@ impl MeshVoiceChannel {
         let stream_config: StreamConfig = supported_config.into();
 
         let connections = self.connections.clone();
+        let muted = self.muted.clone();
         let stream = device.build_input_stream(
             &stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                if muted.load(Ordering::Relaxed) {
+                    return;
+                }
+
                 let mono = downmix_to_mono(data, channels);
                 let resampled = resample_linear(&mono, native_rate, WIRE_SAMPLE_RATE);
 
@@ -481,11 +493,13 @@ impl MeshVoiceChannel {
 pub struct MeshActiveCall {
     stop_tx: std::sync::mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<Result<()>>>,
+    channel: MeshVoiceChannel,
 }
 
 impl MeshActiveCall {
     pub fn start(channel: MeshVoiceChannel, handle: tokio::runtime::Handle) -> Self {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let channel_handle = channel.clone();
 
         let thread = std::thread::spawn(move || -> Result<()> {
             let _capture = channel.start_capture().inspect_err(|e| {
@@ -501,6 +515,7 @@ impl MeshActiveCall {
         Self {
             stop_tx,
             thread: Some(thread),
+            channel: channel_handle,
         }
     }
     pub fn hang_up(mut self) {
@@ -508,6 +523,10 @@ impl MeshActiveCall {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.channel.set_muted(muted);
     }
 }
 impl Drop for MeshActiveCall {

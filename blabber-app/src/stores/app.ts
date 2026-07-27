@@ -49,6 +49,7 @@ export const useAppStore = defineStore('app', {
     messagesByRoom: {} as Record<string, Message[]>,
     activeCallRoomId: null as string | null,
     callParticipants: [] as string[],
+    isMuted: false,
     initialized: false,
   }),
 
@@ -227,6 +228,12 @@ export const useAppStore = defineStore('app', {
       await invoke<void>('leave_call_room');
       this.activeCallRoomId = null;
       this.callParticipants = [];
+      this.isMuted = false;
+    },
+
+    async setMuted(muted: boolean) {
+      await invoke<void>('set_muted', { muted });
+      this.isMuted = muted;
     },
 
     async loadCallParticipants(roomId: string) {

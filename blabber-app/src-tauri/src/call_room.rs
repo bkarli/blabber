@@ -139,3 +139,12 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_muted(state: State<'_, AppState>, muted: bool) -> Result<(), String> {
+    let guard = state.active_call_room.lock().unwrap();
+    if let Some((_, call)) = guard.as_ref() {
+        call.set_muted(muted);
+    }
+    Ok(())
+}
+
