@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 const WIRE_SAMPLE_RATE: u32 = 48000;
 const MIX_CHUNK_MS: u64 = 10;
-const MIX_CHUNK_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * (MIX_CHUNK_MS as usize);
 const LEVELER_TARGET_RMS: f32 = 0.15;
 const LEVELER_NOISE_GATE_RMS: f32 = 0.004;
 const LEVELER_MAX_GAIN: f32 = 8.0;
@@ -330,8 +329,14 @@ pub fn decode_mp3_to_wire_rate(bytes: &[u8]) -> Result<DecodedSound> {
     Ok(DecodedSound { samples: Arc::new(resampled) })
 }
 
-/// A one-shot sound-effect voice: plays its samples once, then reports
-/// finished so the mixer removes it.
+/// Length of the linear fade applied to the start/end of a sound effect, to
+/// avoid the audible click a hard start/stop discontinuity would otherwise
+/// produce mid-waveform.
+const SFX_FADE_MS: usize = 5;
+const SFX_FADE_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * SFX_FADE_MS;
+
+/// A one-shot sound-effect voice: plays its samples once (fading in/out at
+/// the edges to avoid clicks), then reports finished so the mixer removes it.
 struct SfxVoice {
     samples: Arc<Vec<f32>>,
     cursor: usize,
@@ -339,10 +344,15 @@ struct SfxVoice {
 
 impl MixSource for SfxVoice {
     fn mix_into(&mut self, out: &mut [f32]) {
-        let remaining = self.samples.len().saturating_sub(self.cursor);
+        let total = self.samples.len();
+        let fade = SFX_FADE_SAMPLES.min(total / 2).max(1);
+        let remaining = total.saturating_sub(self.cursor);
         let n = remaining.min(out.len());
         for i in 0..n {
-            out[i] += self.samples[self.cursor + i];
+            let idx = self.cursor + i;
+            let fade_in = ((idx + 1) as f32 / fade as f32).min(1.0);
+            let fade_out = ((total - idx) as f32 / fade as f32).min(1.0);
+            out[i] += self.samples[idx] * fade_in.min(fade_out);
         }
         self.cursor += n;
     }
@@ -432,6 +442,15 @@ fn output_thread_main(
         }
     };
 
+    // Ordinary OS thread scheduling gives no real-time guarantee on how
+    // promptly `recv_timeout` actually wakes up. Producing a fixed-size
+    // chunk per wake-up regardless of how late it was would let the mixer's
+    // output supply drift behind the device's steady consumption rate,
+    // periodically starving `pending` in the audio callback and zero-filling
+    // gaps - audible as clicking/crackling. Sizing each chunk to the actual
+    // elapsed time keeps supply matched to real time even under jitter.
+    let mut last_tick = std::time::Instant::now();
+
     loop {
         match cmd_rx.recv_timeout(std::time::Duration::from_millis(MIX_CHUNK_MS)) {
             Ok(OutputCommand::SetDevice(name)) => {
@@ -443,11 +462,18 @@ fn output_thread_main(
                         None
                     }
                 };
+                last_tick = std::time::Instant::now();
             }
             Ok(OutputCommand::Shutdown) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(last_tick);
+                last_tick = now;
+
                 if let Some(s) = state.as_ref() {
-                    let mut acc = vec![0.0f32; MIX_CHUNK_SAMPLES];
+                    let n_samples = ((elapsed.as_secs_f64() * WIRE_SAMPLE_RATE as f64).round() as usize)
+                        .clamp(1, WIRE_SAMPLE_RATE as usize / 2);
+                    let mut acc = vec![0.0f32; n_samples];
                     {
                         let mut voices = voices.lock().unwrap();
                         voices.retain_mut(|(_, voice)| {
@@ -456,7 +482,11 @@ fn output_thread_main(
                         });
                     }
                     for sample in acc.iter_mut() {
-                        *sample = sample.clamp(-1.0, 1.0);
+                        // soft-clip instead of hard clamping: several loud
+                        // voices summing past unity (or resample overshoot)
+                        // rounds off gently instead of hard-clipping into a
+                        // harsh digital crunch
+                        *sample = sample.tanh();
                     }
                     let _ = s.mixed_tx.send(acc);
                 }

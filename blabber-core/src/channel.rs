@@ -76,11 +76,17 @@ impl MeshVoiceChannel {
             .lock()
             .unwrap()
             .insert(peer_id.clone(), VecDeque::new());
-        self.connections
+
+        let previous = self
+            .connections
             .lock()
             .unwrap()
             .insert(peer_id.clone(), connection.clone());
+        if let Some(old) = previous {
+            old.close(0u32.into(), b"superseded by a newer connection to the same peer");
+        }
 
+        let stable_id = connection.stable_id();
         let peer_buffers = self.peer_buffers.clone();
         let peer_id_for_task = peer_id.clone();
         let mesh_channel = self.clone();
@@ -101,13 +107,36 @@ impl MeshVoiceChannel {
                     }
                 }
             }
-            mesh_channel.remove_peer(&peer_id_for_task);
+            // only clean up if this tasks connection is still the one
+            // registered for this peer, a newer connection may have
+            // already replaced it.
+            mesh_channel.remove_peer_if_current(&peer_id_for_task, stable_id);
         });
     }
 
     pub fn remove_peer(&self, peer_id: &str) {
         self.connections.lock().unwrap().remove(peer_id);
         self.peer_buffers.lock().unwrap().remove(peer_id);
+    }
+
+    fn remove_peer_if_current(&self, peer_id: &str, stable_id: usize) {
+        let mut connections = self.connections.lock().unwrap();
+        let is_current = connections.get(peer_id).map(|c| c.stable_id()) == Some(stable_id);
+        if is_current {
+            connections.remove(peer_id);
+            drop(connections);
+            self.peer_buffers.lock().unwrap().remove(peer_id);
+        }
+    }
+
+    /// Closes every peer connection and clears local state. Called when a
+    /// call ends, so connections are torn down immediately.
+    pub(crate) fn close_all(&self) {
+        let connections = std::mem::take(&mut *self.connections.lock().unwrap());
+        self.peer_buffers.lock().unwrap().clear();
+        for connection in connections.into_values() {
+            connection.close(0u32.into(), b"call ended");
+        }
     }
 
     pub fn peer_ids(&self) -> Vec<String> {
@@ -164,6 +193,7 @@ impl MixSource for CallVoiceSource {
 pub struct MeshActiveCall {
     sound: Arc<SoundHandler>,
     voice_handle: Option<VoiceHandle>,
+    channel: MeshVoiceChannel,
 }
 
 impl MeshActiveCall {
@@ -175,7 +205,7 @@ impl MeshActiveCall {
             eprintln!("[mesh voice] failed to start capture: {e:#}");
         }
 
-        let voice_handle = match sound.register_call_voice(CallVoiceSource(channel)) {
+        let voice_handle = match sound.register_call_voice(CallVoiceSource(channel.clone())) {
             Ok(handle) => Some(handle),
             Err(e) => {
                 eprintln!("[mesh voice] failed to start playback: {e:#}");
@@ -183,7 +213,7 @@ impl MeshActiveCall {
             }
         };
 
-        Self { sound, voice_handle }
+        Self { sound, voice_handle, channel }
     }
 
     pub fn hang_up(self) {}
@@ -193,6 +223,8 @@ impl Drop for MeshActiveCall {
     fn drop(&mut self) {
         let _ = self.sound.set_capture_listener(None);
         self.voice_handle = None;
+        // close every peer connection
+        self.channel.close_all();
     }
 }
 pub type RoomSpaceMap = Arc<StdMutex<HashMap<Uuid, Uuid>>>;
