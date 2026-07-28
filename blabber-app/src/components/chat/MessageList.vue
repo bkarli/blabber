@@ -63,50 +63,50 @@ function initials(name: string) {
 
 <template>
   <ScrollArea data-message-scroll class="min-h-0 flex-1 px-4">
-    <div class="flex flex-col gap-4 py-4">
-      <Message
+  <div class="flex flex-col gap-4 py-4">
+    <Message
         v-for="(group, i) in grouped"
         :key="`${group.author}-${group.sentAt}-${i}`"
         :align="group.isOwn ? 'end' : 'start'"
         class="max-w-full"
-      >
+        >
         <MessageAvatar>
-          <Avatar>
-            <AvatarFallback>{{ initials(displayName(group.author)) }}</AvatarFallback>
-          </Avatar>
+        <Avatar>
+        <AvatarFallback>{{ initials(displayName(group.author)) }}</AvatarFallback>
+        </Avatar>
         </MessageAvatar>
         <MessageContent class="flex-1 min-w-0">
-          <div class="mb-1 flex items-baseline gap-2">
-            <span class="text-sm font-semibold">{{ displayName(group.author) }}</span>
-            <span class="text-xs text-muted-foreground">{{ formatTime(group.sentAt) }}</span>
-          </div>
+        <div class="mb-1 flex items-baseline gap-2">
+          <span class="text-sm font-semibold">{{ displayName(group.author) }}</span>
+          <span class="text-xs text-muted-foreground">{{ formatTime(group.sentAt) }}</span>
+        </div>
 
-          <BubbleGroup>
-            <template v-for="(content, j) in group.contents" :key="j">
-              <Bubble
-                v-if="content.kind === 'Text'"
-                :variant="group.isOwn ? 'default' : 'muted'"
-                class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
-              >
-                <BubbleContent>{{ content.text }}</BubbleContent>
-              </Bubble>
+        <BubbleGroup>
+  <template v-for="(content, j) in group.contents" :key="j">
+    <Bubble
+      v-if="'Text' in content"
+      :variant="group.isOwn ? 'default' : 'muted'"
+      class="max-w-[320px] w-fit break-words whitespace-pre-wrap"
+    >
+      <BubbleContent>{{ content.Text.text }}</BubbleContent>
+    </Bubble>
 
-              <div v-else class="max-w-[280px] overflow-hidden rounded-lg border border-border">
-                <img
-                  :src="`data:${content.mime};base64,${content.data_base64}`"
-                  :alt="content.filename"
-                  class="block max-h-[320px] w-full object-cover"
-                  loading="lazy"
-                />
-              </div>
-            </template>
-          </BubbleGroup>
+    <div v-else class="max-w-[280px] overflow-hidden rounded-lg border border-border">
+      <img
+        :src="`data:${content.Image.mime};base64,${content.Image.data_base64}`"
+        :alt="content.Image.filename"
+        class="block max-h-[320px] w-full object-cover"
+        loading="lazy"
+      />
+    </div>
+  </template>
+</BubbleGroup>
         </MessageContent>
-      </Message>
+    </Message>
 
-      <p v-if="messages.length === 0" class="py-8 text-center text-sm text-muted-foreground">
-        No messages yet. Say hello!
-      </p>
+    <p v-if="messages.length === 0" class="py-8 text-center text-sm text-muted-foreground">
+    No messages yet. Say hello!
+    </p>
     </div>
   </ScrollArea>
 </template>

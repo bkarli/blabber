@@ -25,8 +25,8 @@ export interface ChannelInfo {
 }
 
 export type MessageContent =
-  | { kind: 'Text'; text: string }
-  | { kind: 'Image'; filename: string; mime: string; data_base64: string };
+  | { Text: { text: string } }
+  | { Image: { filename: string; mime: string; data_base64: string } };
 
 export interface Message {
   author: string;

@@ -28,5 +28,5 @@ uuid = { workspace = true }
 zeroize = { workspace = true }
 tauri-plugin-dialog = "2.7.2"
 
-base64 = "0.22"
-mime_guess = "2"
+base64 = { workspace = true } 
+mime_guess = { workspace = true }

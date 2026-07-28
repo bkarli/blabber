@@ -83,30 +83,6 @@ pub async fn create_room(
     })
 }
 
-#[derive(Serialize, Clone)]
-#[serde(tag= "kind")]
-pub enum MessageContentInfo {
-    Text { text: String },
-    Image {filename: String, mime: String, data_base64: String },
-}
-
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageInfo {
-    pub author: String,
-    pub content: MessageContentInfo,
-    pub sent_at: u64,
-}
-
-fn to_message_info(message: blabber_core::room::Message) -> MessageInfo {
-    let content = match message.content {
-        blabber_core::room::MessageContent::Text(text) => MessageContentInfo::Text { text },
-        blabber_core::room::MessageContent::Image { filename, mime, data } => {
-            MessageContentInfo::Image { filename, mime, data_base64: base64_engine.encode(data) }
-        }
-    };
-    MessageInfo { author: message.author, content, sent_at: message.sent_at }}
 
 #[tauri::command]
     pub async fn send_message(
@@ -173,24 +149,21 @@ pub async fn list_messages(
     state: State<'_, AppState>,
     space_id: String,
     room_id: String,
-) -> Result<Vec<MessageInfo>, String> {
+) -> Result<Vec<blabber_core::room::Message>, String> {
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet")?;
     let blobs = node.blobs.clone().ok_or("Blobs not created yet")?;
 
     let spaces = state.spaces.lock().await;
-    let space = spaces
-        .iter()
-        .find(|s| s.id().to_string() == space_id)
-        .ok_or("Space not found")?;
+    let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
 
     let room_uuid = Uuid::parse_str(&room_id).map_err(|e| e.to_string())?;
     let rooms = space.rooms.lock().await;
     let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
 
-    let messages = room.list_messages(blobs).await.map_err(|e| e.to_string())?;
-    Ok(messages.into_iter().map(to_message_info).collect())
+    room.list_messages(blobs).await.map_err(|e| e.to_string())
 }
+
 
 #[tauri::command]
 pub async fn get_my_author_id(state: State<'_, AppState>) -> Result<String, String> {

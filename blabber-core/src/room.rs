@@ -1,4 +1,5 @@
 use std::{collections::HashMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 
 use anyhow::Result;
 use iroh_blobs::store::fs::FsStore;
@@ -20,12 +21,8 @@ pub struct Message {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum MessageContent {
-    Text(String),
-    Image {
-        filename: String,
-        mime: String,
-        data: Vec<u8>,
-    },
+    Text { text: String },
+    Image { filename: String, mime: String, data_base64: String },
 }
 
 #[derive(Clone)]
@@ -106,16 +103,10 @@ impl Room {
     }
     
     /// Send just a plain text message
-    pub async fn send_message(
-        &self,
-        author: AuthorId,
-        content: impl Into<String>
-    ) -> Result<()> {
-        self.send_content(author, MessageContent::Text(content.into())).await
+    pub async fn send_message(&self, author: AuthorId, content: impl Into<String>) -> Result<()> {
+        self.send_content(author, MessageContent::Text { text: content.into() }).await
     }
-    
-    /// Send an image with correct filename
-    /// and meta data
+
     pub async fn send_image(
         &self,
         author: AuthorId,
@@ -126,7 +117,7 @@ impl Room {
         self.send_content(author, MessageContent::Image {
             filename: filename.into(),
             mime: mime.into(),
-            data 
+            data_base64: base64_engine.encode(data),
         }).await
     }
 
