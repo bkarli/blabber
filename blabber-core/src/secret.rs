@@ -1,14 +1,6 @@
 use rand::prelude::*;
 use zeroize::Zeroize;
 
-/// A 32-byte secret held in a heap allocation that:
-/// - is best-effort `mlock`'d (excluded from swap) for as long as it lives,
-/// - is zeroized in place on drop, before being `munlock`'d.
-///
-/// Uses `Box<[u8; 32]>` rather than an inline array so the underlying address
-/// stays stable even if the owning struct itself is moved (moving a `Box`
-/// only moves the pointer, not the heap allocation it points to) a plain
-/// `[u8; 32]` field would silently invalidate its `mlock` on every move.
 pub struct LockedSecret {
     bytes: Box<[u8; 32]>,
     locked: bool,
@@ -23,9 +15,9 @@ impl LockedSecret {
         Self { bytes: boxed, locked }
     }
 
-    /// Allocates a zeroed, page-locked buffer, then fills it directly from the
-    /// CSPRNG — avoids the extra unlocked stack copy that generating the
-    /// bytes first and copying them in afterward would leave behind.
+    /// Allocates a zeroed, page-locked buffer, then fills it from the
+    /// CSPRNG. avoids extra unlocked stack copy that generating the
+    /// bytes first and copying them in leaves behind.
     pub fn generate_random() -> Self {
         let mut boxed: Box<[u8; 32]> = Box::new([0u8; 32]);
         let locked = Self::lock(&mut boxed);
@@ -38,9 +30,6 @@ impl LockedSecret {
     }
 
     fn lock(boxed: &mut Box<[u8; 32]>) -> bool {
-        // Best-effort: mlock can fail (e.g. RLIMIT_MEMLOCK exceeded). That must
-        // never be fatal — swap protection is defense-in-depth, not something
-        // the rest of the app can depend on being available.
         let locked = unsafe { memsec::mlock(boxed.as_mut_ptr(), boxed.len()) };
         if !locked {
             eprintln!("warning: failed to mlock identity secret (RLIMIT_MEMLOCK?); continuing without swap protection");
@@ -89,8 +78,6 @@ mod tests {
 
     #[test]
     fn lock_failure_is_non_fatal() {
-        // mlock may or may not actually succeed in a sandboxed/CI environment
-        // (RLIMIT_MEMLOCK) — either outcome must be safe to construct and drop.
         let secret = LockedSecret::from_bytes(&[7u8; 32]);
         drop(secret);
     }

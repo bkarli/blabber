@@ -76,32 +76,30 @@ function initials(name: string) {
 </script>
 
 <template>
-  <div class="flex h-full flex-1 flex-col items-center justify-between bg-background p-8">
-    <div class="flex flex-1 flex-col items-center justify-center gap-6">
-      <p v-if="joining" class="text-sm text-muted-foreground">Joining call...</p>
-      <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
+  <div class="flex h-full flex-1 flex-col items-center justify-center gap-10 bg-background p-8">
+    <p v-if="joining" class="text-sm text-muted-foreground">Joining call...</p>
+    <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
 
-      <div v-else class="grid grid-cols-3 gap-6">
-        <div
-          v-for="participant in participants"
-          :key="participant"
-          class="flex flex-col items-center gap-2"
-        >
-          <Avatar class="h-20 w-20">
-            <AvatarFallback class="text-lg">{{ initials(store.displayNameForEndpoint(spaceId, participant)) }}</AvatarFallback>
-          </Avatar>
-          <span class="max-w-[100px] truncate text-xs text-muted-foreground">
-            {{ store.displayNameForEndpoint(spaceId, participant) }}
-          </span>
-        </div>
-
-        <p v-if="participants.length === 0" class="col-span-3 text-sm text-muted-foreground">
-          You're the only one here.
-        </p>
+    <div v-else class="flex w-full max-w-2xl flex-wrap items-start justify-center gap-6">
+      <div
+        v-for="participant in participants"
+        :key="participant"
+        class="flex flex-col items-center gap-2"
+      >
+        <Avatar class="h-20 w-20">
+          <AvatarFallback class="text-lg">{{ initials(store.displayNameForEndpoint(spaceId, participant)) }}</AvatarFallback>
+        </Avatar>
+        <span class="max-w-[100px] truncate text-xs text-muted-foreground">
+          {{ store.displayNameForEndpoint(spaceId, participant) }}
+        </span>
       </div>
+
+      <p v-if="participants.length === 0" class="text-sm text-muted-foreground">
+        You're the only one here.
+      </p>
     </div>
 
-    <div class="flex items-center gap-4 pb-8">
+    <div class="flex items-center gap-4">
       <Button :variant="store.isMuted ? 'destructive' : 'secondary'" size="icon" class="h-12 w-12 rounded-full"
               @click="toggleMute()"
       >
