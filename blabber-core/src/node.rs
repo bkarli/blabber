@@ -253,6 +253,32 @@ impl Node {
         Ok(space)
         }
 
+    /// Leave a space for good! remove identity from the space member
+    /// list, stop syncing it, drop the local
+    /// document replicas, and delete the invite/meta directory so
+    /// `load_spaces` won't load it on next launch.
+    pub async fn leave_space(&self, space_id: Uuid, spaces_root: PathBuf) -> Result<()> {
+        let author = self.author.context("author not created yet")?;
+
+        let space = {
+            let mut spaces = self.spaces.lock().await;
+            let index = spaces
+                .iter()
+                .position(|space| space.id() == space_id)
+                .context("space not found")?;
+            spaces.remove(index)
+        };
+
+        space.leave(author).await?;
+
+        let user_root = self.add_idetity_to_path(&spaces_root)?;
+        let space_dir = user_root.join(space_id.to_string());
+        if space_dir.is_dir() {
+            fs::remove_dir_all(&space_dir).await?;
+        }
+        Ok(())
+    }
+
     /// Additionally we need to load the docs
     pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
         // go through the root_path and enumerate all the spaces present
@@ -612,6 +638,58 @@ mod tests {
         .unwrap_or(false);
 
         assert!(found, "expected a NewMember event with display_name \"Bob\"");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn leaving_space_tombstones_member_and_emits_member_left_event() -> Result<()> {
+        let identity = crate::identity::Identity::new("Alice");
+        let mut node = Node::new(identity);
+        let dir = tempdir().context("failed to create tempdir")?;
+        node.run(dir.path().to_path_buf()).await?;
+
+        let mut events = node.subscribe_events();
+        let space = node.create_space("Test Space").await?;
+        let author = node.author.context("author not created")?;
+
+        space.leave(author).await?;
+
+        let found = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Ok(AppEvent::MemberLeft { author_id, .. }) if author_id == author.to_string() => {
+                        return true;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(found, "expected a MemberLeft event for the departing author");
+
+        let members = space.member_cache.lock().await;
+        assert!(members.iter().all(|m| m.author_id != author.to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn node_leave_space_removes_it_from_spaces_list() -> Result<()> {
+        let identity = crate::identity::Identity::new("Alice");
+        let mut node = Node::new(identity);
+        let dir = tempdir().context("failed to create tempdir")?;
+        node.run(dir.path().to_path_buf()).await?;
+
+        let space = node.create_space("Test Space").await?;
+        let space_id = space.id();
+
+        node.leave_space(space_id, dir.path().join("spaces")).await?;
+
+        let spaces = node.spaces.lock().await;
+        assert!(spaces.iter().all(|s| s.id() != space_id));
         Ok(())
     }
 

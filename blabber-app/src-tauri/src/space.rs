@@ -152,6 +152,24 @@ pub async fn join_space(
 }
 
 #[tauri::command]
+pub async fn leave_space(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    space_id: String,
+) -> Result<(), String> {
+    let space_uuid = space_id.parse::<Uuid>().map_err(|error| error.to_string())?;
+
+    let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
+
+    let root = spaces_dir(&app)?;
+    node.leave_space(space_uuid, root).await.map_err(|error| error.to_string())?;
+
+    state.spaces.lock().await.retain(|space| space.id() != space_uuid);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn list_members(state: State<'_, AppState>, space_id: String) -> Result<Vec<Member>, String> {
     let space_uuid = space_id.parse::<Uuid>().map_err(|error| error.to_string())?;
     let node_guard = state.node.lock().await;
