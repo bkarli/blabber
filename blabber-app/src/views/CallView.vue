@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -13,25 +13,15 @@ const store = useAppStore();
 const spaceId = route.params.spaceId as string;
 const roomId = route.params.roomId as string;
 
-const participants = ref<string[]>([]);
 const joining = ref(true);
 const error = ref<string | null>(null);
-
-let pollHandle: ReturnType<typeof setInterval> | undefined;
-
-async function refreshParticipants() {
-  try {
-    participants.value = await store.loadCallParticipants(roomId);
-  } catch (e) {
-    console.error('failed to load participants', e);
-  }
-}
 
 async function join() {
   try {
     await store.loadMembers(spaceId);
+    // seeds store.callParticipants. NewCallParticipant/CallParticipantLeft
+    // events keep it live-updated for the rest of the call
     await store.joinCallRoom(roomId);
-    await refreshParticipants();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -51,12 +41,6 @@ async function hangUp() {
 
 onMounted(() => {
   join();
-  // simple polling until a live participant-join/leave event exists
-  pollHandle = setInterval(refreshParticipants, 3000);
-});
-
-onUnmounted(() => {
-  if (pollHandle) clearInterval(pollHandle);
 });
 
 async function toggleMute() {
@@ -82,7 +66,7 @@ function initials(name: string) {
 
     <div v-else class="flex w-full max-w-2xl flex-wrap items-start justify-center gap-6">
       <div
-        v-for="participant in participants"
+        v-for="participant in store.callParticipants"
         :key="participant"
         class="flex flex-col items-center gap-2"
       >
@@ -94,7 +78,7 @@ function initials(name: string) {
         </span>
       </div>
 
-      <p v-if="participants.length === 0" class="text-sm text-muted-foreground">
+      <p v-if="store.callParticipants.length === 0" class="text-sm text-muted-foreground">
         You're the only one here.
       </p>
     </div>

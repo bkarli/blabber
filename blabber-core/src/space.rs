@@ -394,8 +394,10 @@ impl Space {
         Ok(handles)
     }
 
-    /// initially called when joining a space just to update the in memory info on the call rooms currently on that space
-    pub async fn sync_call_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
+    /// Discover call rooms published in the space's info doc since we last checked,
+    /// and track them locally. Membership within a room is read fresh on demand
+    /// (via `CallRoom::list_active_members`), so no live subscription is needed here.
+    pub async fn sync_call_rooms(&self, blobs: &FsStore) -> Result<()> {
         let entries = self
             .info
             .get_many(Query::single_latest_per_key().key_prefix("callroom/"))
@@ -417,14 +419,9 @@ impl Space {
                 let ticket = DocTicket::from_str(&record.ticket)?;
                 let room = CallRoom::from_ticket(&self.docs, record.id, record.name, ticket).await?;
                 self.call_rooms.lock().await.push(room);
-            }}
-        let call_rooms = self.call_rooms.lock().await;
-        let mut handles = Vec::new();
-        for room in call_rooms.iter() {
-            let label = format!("{}/{}", self.name, room.name);
-            handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
+            }
         }
-        Ok(handles)
+        Ok(())
     }
 
 

@@ -122,7 +122,7 @@ pub async fn join_space(
         .map_err(|error| error.to_string())?;
 
     space
-        .sync_call_rooms(node, &blobs)
+        .sync_call_rooms(&blobs)
         .await
         .map_err(|err| err.to_string())?;
 
