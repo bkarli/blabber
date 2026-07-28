@@ -5,13 +5,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAppStore } from '@/stores/app';
-import { useRouter } from 'vue-router';
 
 const open = defineModel<boolean>('open', { default: false });
 const props = defineProps<{ spaceId: string }>();
-
 const store = useAppStore();
-const router = useRouter();
 
 const channelName = ref('');
 const creating = ref(false);
@@ -25,7 +22,7 @@ async function handleCreate() {
   }
   creating.value = true;
   try {
-    const channel = await store.createChannel(props.spaceId, channelName.value.trim());
+    await store.createChannel(props.spaceId, channelName.value.trim());
     channelName.value = '';
     open.value = false;
   } catch (e) {
@@ -42,7 +39,6 @@ async function handleCreate() {
       <DialogHeader>
         <DialogTitle>Create a Channel</DialogTitle>
       </DialogHeader>
-
       <div class="space-y-4 pt-2">
         <div class="space-y-2">
           <Label for="channel-name">Channel Name</Label>
@@ -61,4 +57,3 @@ async function handleCreate() {
     </DialogContent>
   </Dialog>
 </template>
-

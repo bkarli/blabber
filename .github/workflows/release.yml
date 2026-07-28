@@ -72,15 +72,18 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           VERSION="${GITHUB_REF_NAME#v}"
-          rsync -avz --mkpath \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+
+          ssh -p 12345 -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no deploy@updates.b3ni.net \
+            "mkdir -p /srv/blabber-updates/releases/$VERSION"
+
+          rsync -avz \
+            -e "ssh -p 12345 -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             blabber-app/${{ matrix.bundle-glob }} \
             deploy@updates.b3ni.net:/srv/blabber-updates/releases/$VERSION/
 
       - name: Save signature for manifest job
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p signatures
           find blabber-app/src-tauri/target/release/bundle -name '*.sig' -exec cp {} signatures/${{ matrix.target-key }}.sig \;
 
@@ -138,5 +141,5 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          scp -P 12345 -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             latest.json deploy@updates.b3ni.net:/srv/blabber-updates/latest.json
