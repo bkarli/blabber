@@ -4,7 +4,11 @@ import { useAuthStore } from '@/stores/auth';
 import { useRouter } from 'vue-router';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Share2, Check, Plus, Hash, Settings } from 'lucide-vue-next';
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+} from '@/components/ui/alert-dialog';
+import { Share2, Check, Plus, Hash, Settings, LogOut } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
 import CreateChannelDialog from '@/components/room/CreateChannelDialog.vue';
@@ -20,6 +24,9 @@ const auth = useAuthStore();
 const createRoomOpen = ref(false);
 const createChannelOpen = ref(false);
 const settingsOpen = ref(false);
+const confirmLeaveOpen = ref(false);
+const leaving = ref(false);
+const leaveError = ref<string | null>(null);
 
 const space = computed(() => store.spaces.find((s) => s.id === props.spaceId));
 const rooms = computed(() => store.roomsFor(props.spaceId));
@@ -39,6 +46,20 @@ async function handleShare() {
 }
 function openRoom(roomId: string) {
   router.push({ name: 'room', params: { spaceId: props.spaceId, roomId } });
+}
+
+async function handleLeave() {
+  leaveError.value = null;
+  leaving.value = true;
+  try {
+    await store.leaveSpace(props.spaceId);
+    confirmLeaveOpen.value = false;
+    router.push({ name: 'spaces' });
+  } catch (e) {
+    leaveError.value = String(e);
+  } finally {
+    leaving.value = false;
+  }
 }
 
 
@@ -66,15 +87,25 @@ watch(
   <div class="flex h-full w-60 flex-col border-r border-border bg-sidebar">
     <div class="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
       <span class="truncate font-semibold">{{ space?.name ?? 'Space' }}</span>
-      <Button
-        variant="ghost"
-        size="icon"
-        class="h-7 w-7 text-muted-foreground hover:text-foreground"
-        @click="handleShare"
-      >
-        <Check v-if="copied" class="h-4 w-4 text-primary" />
-        <Share2 v-else class="h-4 w-4" />
-      </Button>
+      <div class="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          class="h-7 w-7 text-muted-foreground hover:text-foreground"
+          @click="handleShare"
+        >
+          <Check v-if="copied" class="h-4 w-4 text-primary" />
+          <Share2 v-else class="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          class="h-7 w-7 text-muted-foreground hover:text-destructive"
+          @click="confirmLeaveOpen = true"
+        >
+          <LogOut class="h-4 w-4" />
+        </Button>
+      </div>
     </div>
 
     <ScrollArea class="flex-1 px-2 py-3">
@@ -149,5 +180,27 @@ watch(
     <CreateRoomDialog v-model:open="createRoomOpen" :space-id="spaceId" />
     <CreateChannelDialog v-model:open="createChannelOpen" :space-id="spaceId" />
     <IdentitySettingsDrawer v-model:open="settingsOpen" />
+
+    <AlertDialog v-model:open="confirmLeaveOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Leave "{{ space?.name ?? 'this space' }}"?</AlertDialogTitle>
+          <AlertDialogDescription>
+            You will lose access to all rooms and channels unless you are invited back.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <p v-if="leaveError" class="text-sm text-destructive">{{ leaveError }}</p>
+        <AlertDialogFooter>
+          <AlertDialogCancel :disabled="leaving">Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            class="bg-destructive text-white hover:bg-destructive/90"
+            :disabled="leaving"
+            @click.prevent="handleLeave"
+          >
+            {{ leaving ? 'Leaving...' : 'Leave Space' }}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>
 </template>

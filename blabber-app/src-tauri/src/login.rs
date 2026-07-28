@@ -75,15 +75,6 @@ async fn start_node_for_identity(
     fs::create_dir_all(&blobs_path).map_err(|error| error.to_string())?;
 
     let mut node = Node::new(identity);
-
-    let app_for_event = app.clone();
-    node.set_incoming_call_handler(move |peer_id: String, decision_tx| {
-        use tauri::Emitter;
-
-        let app_state = app_for_event.state::<AppState>();
-        *app_state.pending_call.lock().unwrap() = Some(decision_tx);
-        let _ = app_for_event.emit("incoming_call", peer_id);
-    });
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
 
     if let Some(updated_identity) = node.identity_with_author() {

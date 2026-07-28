@@ -9,7 +9,6 @@ use tokio::task::JoinHandle;
 use crate::events::AppEvent;
 use crate::space::Space;
 use crate::Identity;
-use crate::channel::{VoiceChannel, VoiceProtocol, VOICE_ALPN};
 use crate::invite::Invite;
 use anyhow::{Result};
 use iroh::{protocol::Router, Endpoint, SecretKey, EndpointId, endpoint::presets};
@@ -24,7 +23,6 @@ use iroh_docs::api::protocol::ShareMode;
 
 use anyhow::Context;
 use tokio::fs;
-use x25519_dalek::{EphemeralSecret, PublicKey};
 
 
 pub struct Node {
@@ -39,9 +37,10 @@ pub struct Node {
     // Node can produce App Events and GUI can subscribe to these events
     pub events: broadcast::Sender<AppEvent>,
     pub spaces: Arc<Mutex<Vec<Space>>>,
-    on_incoming_call: Option<crate::channel::IncomingCallHandler>,
-    on_call_started: Option<crate::channel::CallStartedHandler>,
+    /// mesh call rooms this node is currently participating in, keyed by room id
     pub active_call_rooms: crate::channel::ActiveCallRooms,
+    /// maps a call room id back to the space it belongs to, so an inbound
+    /// mesh connection can be attributed to the right space
     pub room_spaces: crate::channel::RoomSpaceMap,
 }
 
@@ -59,25 +58,9 @@ impl Node {
             author: None,
             events,
             spaces: Arc::new(Mutex::new(Vec::new())),
-            on_incoming_call: None,
-            on_call_started: None,
             active_call_rooms: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             room_spaces: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
-    }
-
-    pub fn set_incoming_call_handler(
-        &mut self,
-        handler: impl Fn(String, tokio::sync::oneshot::Sender<bool>) + Send + Sync + 'static,
-    ) {
-        self.on_incoming_call = Some(std::sync::Arc::new(handler));
-    }
-
-    pub fn set_call_started_handler(
-        &mut self,
-        handler: impl Fn(crate::channel::CallHandle) + Send + Sync + 'static,
-    ) {
-        self.on_call_started = Some(std::sync::Arc::new(handler));
     }
 
     pub fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
@@ -165,14 +148,6 @@ impl Node {
             .clone()
             .context("docs not created yet")?;
 
-        let mut voice = VoiceProtocol::new();
-        if let Some(handler) = &self.on_incoming_call {
-            voice = voice.with_incoming_handler(handler.clone());
-        }
-        if let Some(handler) = &self.on_call_started {
-            voice = voice.with_call_started_handler(handler.clone());
-        }
-
         let call_room_protocol = crate::channel::CallRoomProtocol::new(
             self.active_call_rooms.clone(),
             self.room_spaces.clone(),
@@ -183,7 +158,6 @@ impl Node {
             .accept(GOSSIP_ALPN, gossip)
             .accept(BLOBS_ALPN, BlobsProtocol::new(&blobs, None))
             .accept(DOCS_ALPN, docs)
-            .accept(VOICE_ALPN, voice)
             .accept(crate::channel::CALL_ROOM_ALPN, call_room_protocol)
             .spawn();
 
@@ -252,6 +226,32 @@ impl Node {
         self.spaces.lock().await.push(space.clone());
         Ok(space)
         }
+
+    /// Leave a space for good! remove identity from the space member
+    /// list, stop syncing it, drop the local
+    /// document replicas, and delete the invite/meta directory so
+    /// `load_spaces` won't load it on next launch.
+    pub async fn leave_space(&self, space_id: Uuid, spaces_root: PathBuf) -> Result<()> {
+        let author = self.author.context("author not created yet")?;
+
+        let space = {
+            let mut spaces = self.spaces.lock().await;
+            let index = spaces
+                .iter()
+                .position(|space| space.id() == space_id)
+                .context("space not found")?;
+            spaces.remove(index)
+        };
+
+        space.leave(author).await?;
+
+        let user_root = self.add_idetity_to_path(&spaces_root)?;
+        let space_dir = user_root.join(space_id.to_string());
+        if space_dir.is_dir() {
+            fs::remove_dir_all(&space_dir).await?;
+        }
+        Ok(())
+    }
 
     /// Additionally we need to load the docs
     pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
@@ -325,7 +325,7 @@ impl Node {
                 })?;
 
             space
-                .sync_call_rooms(self, blobs)
+                .sync_call_rooms(blobs)
                 .await
                 .map_err(|error| {
                     anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
@@ -384,7 +384,7 @@ impl Node {
     /// Run the endpoint
     ///
     /// listen for incoming gossip connections
-    /// listen for incoming Voice connections
+    /// listen for incoming mesh call connections
     pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
         self.create_endpoint().await?;
         // run wait online only in tests
@@ -419,26 +419,7 @@ impl Node {
         self.events.subscribe()
     }
 
-    pub async fn call(&self, peer: impl Into<iroh::EndpointAddr>) -> Result<crate::channel::ActiveVoiceCall> {
-        let endpoint = self.endpoint.clone().context("Node not created yet")?;
-        let connection = endpoint.connect(peer, VOICE_ALPN).await.context("failed to connect to voice call")?;
-        let channel = VoiceChannel::new(connection);
-        let handle = tokio::runtime::Handle::current();
-        Ok(crate::channel::ActiveVoiceCall::start(channel, handle))
-    }
-
-    //is optional but i'll leave it here for now
-    /*
-    pub async fn call_member(&self, space_id:Uuid, member_endpoint_id: &str)->Result<crate::channel::ActiveVoiceCall>{
-        let spaces = self.spaces.lock().await;
-        let space = spaces.iter().find(|space| space.id() == space_id).context("space not found")?;
-        let blobs = self.blobs.as_ref().context("blobs not created yet")?;
-        let members = space.list_members(blobs).await?;
-        let member = members.iter().find(|member| member.endpoint_id() == member_endpoint_id).context("member endpoint not found")?;
-        let peer_id: iroh::EndpointAddr = member.endpoint_id().parse().context("invalid endpoint id stored for member")?;
-        self.call(peer_id).await
-    }*/
-
+    /// Dial every known peer in a call room and start the local mesh audio pipeline.
     pub async fn join_mesh(
         &self,
         room_id: Uuid,
@@ -480,6 +461,8 @@ impl Node {
         Ok((call, channel_for_inspection))
     }
 
+    /// Join a call room: dial its current participants over the mesh, then
+    /// publish our own join so future joiners can discover and dial us.
     pub async fn join_call_room(
         &self,
         space_id: Uuid,
@@ -511,8 +494,7 @@ impl Node {
 
         let result = self.join_mesh(room.id, my_id.clone(), peers).await?;
 
-        // record our own join in the synced log, so peers who join after us can discover us
-        room.log_call_started(author, vec![my_id.clone()]).await?;
+        // publish our own join, so peers who join after us can discover and dial us
         room.set_membership(author, my_id.clone(), true).await?;
 
         let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
@@ -525,38 +507,10 @@ impl Node {
     }
 }
 
-async fn diffie_hellman(send: &mut iroh::endpoint::SendStream,recv: &mut iroh::endpoint::RecvStream) -> Result<[u8; 32]> {
-    let my_secret = EphemeralSecret::random_from_rng(rand_core::OsRng);
-    let my_public = PublicKey::from(&my_secret);
-
-    send.write_all(my_public.as_bytes()).await?;
-    send.finish()?;
-
-    let mut their_public_bytes = [0u8; 32];
-    recv.read_exact(&mut their_public_bytes).await?;
-    let their_public = PublicKey::from(their_public_bytes);
-
-    let shared_secret = my_secret.diffie_hellman(&their_public);
-    Ok(*shared_secret.as_bytes())
-}
-
-pub async fn perform_key_exchange_as_initiator(connection: &iroh::endpoint::Connection) -> Result<[u8; 32]> {
-    let (mut send, mut recv) = connection.open_bi().await?;
-    diffie_hellman(&mut send, &mut recv).await
-}
-
-pub async fn perform_key_exchange_as_acceptor(connection: &iroh::endpoint::Connection) -> Result<[u8; 32]> {
-    let (mut send, mut recv) = connection.accept_bi().await?;
-    diffie_hellman(&mut send, &mut recv).await
-}
-
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use crate::channel::VOICE_ALPN;
-    use iroh::endpoint::presets;
-    use iroh::Endpoint;
     use anyhow::Context;
     use tempfile::tempdir;
     
@@ -616,46 +570,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_document_subscribe() {}
+    async fn leaving_space_tombstones_member_and_emits_member_left_event() -> Result<()> {
+        let identity = crate::identity::Identity::new("Alice");
+        let mut node = Node::new(identity);
+        let dir = tempdir().context("failed to create tempdir")?;
+        node.run(dir.path().to_path_buf()).await?;
 
-        
+        let mut events = node.subscribe_events();
+        let space = node.create_space("Test Space").await?;
+        let author = node.author.context("author not created")?;
 
-    #[tokio::test]
-    async fn test_dh_key_exchange_produces_matching_keys() -> Result<()> {
-        let endpoint_a = Endpoint::builder(presets::N0)
-            .alpns(vec![VOICE_ALPN.to_vec()])
-            .bind()
-            .await?;
-        let endpoint_b = Endpoint::builder(presets::N0)
-            .alpns(vec![VOICE_ALPN.to_vec()])
-            .bind()
-            .await?;
+        space.leave(author).await?;
 
-        let addr_b = endpoint_b.addr();
-        let endpoint_b_for_accept = endpoint_b.clone();
-        let accept_task = tokio::spawn(async move {
-            let incoming = endpoint_b_for_accept
-                .accept()
-                .await
-                .context("no incoming connection")?;
-            let connection = incoming.await.context("failed to accept connection")?;
-            Ok::<_, anyhow::Error>(connection)
-        });
+        let found = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Ok(AppEvent::MemberLeft { author_id, .. }) if author_id == author.to_string() => {
+                        return true;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
 
-        let connection_a = endpoint_a
-            .connect(addr_b, VOICE_ALPN)
-            .await
-            .context("A failed to connect to B")?;
-        let connection_b = accept_task.await.context("accept task panicked")??;
+        assert!(found, "expected a MemberLeft event for the departing author");
 
-        let (key_a, key_b) = tokio::try_join!(
-            perform_key_exchange_as_initiator(&connection_a),
-            perform_key_exchange_as_acceptor(&connection_b),
-        )?;
-        assert_eq!(key_a, key_b);
+        let members = space.member_cache.lock().await;
+        assert!(members.iter().all(|m| m.author_id != author.to_string()));
+
         Ok(())
     }
-    
+
+    #[tokio::test]
+    async fn node_leave_space_removes_it_from_spaces_list() -> Result<()> {
+        let identity = crate::identity::Identity::new("Alice");
+        let mut node = Node::new(identity);
+        let dir = tempdir().context("failed to create tempdir")?;
+        node.run(dir.path().to_path_buf()).await?;
+
+        let space = node.create_space("Test Space").await?;
+        let space_id = space.id();
+
+        node.leave_space(space_id, dir.path().join("spaces")).await?;
+
+        let spaces = node.spaces.lock().await;
+        assert!(spaces.iter().all(|s| s.id() != space_id));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_document_subscribe() {}
+
     #[tokio::test]
     async fn test_room_creation_and_message_sync() {
     }

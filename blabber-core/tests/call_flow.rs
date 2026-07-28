@@ -132,7 +132,7 @@ async fn call_room_discovery_syncs_and_connects() -> Result<()> {
     // B discovers the call room via space info doc sync
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
+        space_b.sync_call_rooms(&blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
@@ -143,18 +143,17 @@ async fn call_room_discovery_syncs_and_connects() -> Result<()> {
     }
     let room_b = room_b.expect("B never discovered the call room via doc sync");
 
-    // B sees A's join entry via the call log doc sync
+    // B sees A's membership entry via the call room's doc sync
     let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
-    let mut saw_log = false;
+    let mut saw_membership = false;
     for _ in 0..100 {
-        let log = room_b.list_call_log(blobs_b.clone()).await?;
-        if log.iter().any(|e| e.participants.iter().any(|p| p == &id_a)) {
-            saw_log = true;
+        if room_b.list_active_members(blobs_b.clone()).await?.contains(&id_a) {
+            saw_membership = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(saw_log, "B never saw A's call-log entry via doc sync");
+    assert!(saw_membership, "B never saw A's membership entry via doc sync");
 
     let (_call_b, mesh_b) = node_b.join_call_room(space_b.id(), &room_b).await?;
 
@@ -279,7 +278,7 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
     // B discovers the room and A's membership, then joins
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
+        space_b.sync_call_rooms(&blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
@@ -309,7 +308,7 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
     // C joins afterwards and should discover only A as an active member
     let mut room_c = None;
     for _ in 0..100 {
-        space_c.sync_call_rooms(&node_c, &blobs_c).await?;
+        space_c.sync_call_rooms(&blobs_c).await?;
         let rooms = space_c.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_c = Some(r.clone());
@@ -370,7 +369,7 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
 
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
+        space_b.sync_call_rooms(&blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
