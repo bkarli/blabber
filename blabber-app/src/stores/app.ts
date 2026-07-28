@@ -178,7 +178,7 @@ export const useAppStore = defineStore('app', {
 
     handleNewMember({ space_id, member }: { space_id: string; member: Member }) {
       const list = (this.membersBySpace[space_id] ??= []);
-      const existingIndex = list.findIndex((m) => m.endpoint_id === member.endpoint_id);
+      const existingIndex = list.findIndex((m) => m.author_id === member.author_id);
       if (existingIndex >= 0) {
         list[existingIndex] = member;
       } else {
@@ -305,7 +305,13 @@ export const useAppStore = defineStore('app', {
 
     async loadMembers(spaceId: string) {
       const members = await invoke<Member[]>('list_members', { spaceId });
-      this.membersBySpace[spaceId] = members;
+      const merged = new Map(
+        (this.membersBySpace[spaceId] ?? []).map((m) => [m.author_id, m])
+      );
+      for (const member of members) {
+        merged.set(member.author_id, member);
+      }
+      this.membersBySpace[spaceId] = Array.from(merged.values());
     },
   },
 });
