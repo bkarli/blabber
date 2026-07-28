@@ -272,17 +272,27 @@ impl Space {
         // go through the entries and parse as member
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            // a tombstone (from a member leaving) is an empty entry. skip it
-            if entry.content_len() == 0 {
-                continue;
-            }
             let key = std::str::from_utf8(entry.key())?;
             let claim_auth = key.strip_prefix("member/").unwrap_or_default();
             if claim_auth != entry.author().to_string() {
                 continue;
             }
-            let bytes = blobs.blobs().get_bytes(entry.content_hash()).await?;
-            let member: Member = postcard::from_bytes(&bytes)?;
+            // a tombstone (from a member leaving) is an empty entry. skip it
+            if entry.content_len() == 0 {
+                continue;
+            }
+            // content may not have finished downloading yet if the entry metadata
+            // synced ahead of the blob content. skip it for now, a later sync will pick it up
+            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                continue;
+            };
+            let Ok(member) = postcard::from_bytes::<Member>(&bytes) else {
+                continue;
+            };
+            // the payload's self reported author_id must also match the signer
+            if member.author_id != claim_auth {
+                continue;
+            }
             members.push(member);
         }
 
@@ -384,8 +394,10 @@ impl Space {
         Ok(handles)
     }
 
-    /// initially called when joining a space just to update the in memory info on the call rooms currently on that space
-    pub async fn sync_call_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
+    /// Discover call rooms published in the space's info doc since we last checked,
+    /// and track them locally. Membership within a room is read fresh on demand
+    /// (via `CallRoom::list_active_members`), so no live subscription is needed here.
+    pub async fn sync_call_rooms(&self, blobs: &FsStore) -> Result<()> {
         let entries = self
             .info
             .get_many(Query::single_latest_per_key().key_prefix("callroom/"))
@@ -407,14 +419,9 @@ impl Space {
                 let ticket = DocTicket::from_str(&record.ticket)?;
                 let room = CallRoom::from_ticket(&self.docs, record.id, record.name, ticket).await?;
                 self.call_rooms.lock().await.push(room);
-            }}
-        let call_rooms = self.call_rooms.lock().await;
-        let mut handles = Vec::new();
-        for room in call_rooms.iter() {
-            let label = format!("{}/{}", self.name, room.name);
-            handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
+            }
         }
-        Ok(handles)
+        Ok(())
     }
 
 
@@ -429,14 +436,19 @@ impl Space {
 
         match event_type {
             SpaceEvents::MemberEvent => {
+                // check authenticity
+                let Ok(key) = std::str::from_utf8(entry.key()) else { return false; };
+                let Some(claim_auth) = key.strip_prefix("member/") else { return false; };
+                if claim_auth != entry.author().to_string() {
+                    return false;
+                }
+                let author_id = claim_auth.to_string();
+
                 // `del` on the members doc writes a tombstone: an entry with
                 // the same "member/{author}" key but empty content. Treat
                 // as author leaving rather than trying (and
                 // failing) to decode it as a `Member`.
                 if entry.content_len() == 0 {
-                    let Ok(key) = std::str::from_utf8(entry.key()) else { return false; };
-                    let Some(author_id) = key.strip_prefix("member/") else { return false; };
-                    let author_id = author_id.to_string();
                     self.member_cache.lock().await.retain(|m| m.author_id != author_id);
                     let _ = events.send(AppEvent::MemberLeft { space_id, author_id });
                     return true;
@@ -444,6 +456,10 @@ impl Space {
 
                 if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
                     if let Ok(member) = postcard::from_bytes::<Member>(&bytes) {
+                        // the payload's self-reported author_id must also match the signer
+                        if member.author_id != author_id {
+                            return false;
+                        }
                         let mut cache = self.member_cache.lock().await;
                         match cache.iter_mut().find(|m| m.author_id == member.author_id) {
                             Some(existing) => *existing = member.clone(),

@@ -259,10 +259,6 @@ export const useAppStore = defineStore('app', {
       this.isMuted = muted;
     },
 
-    async loadCallParticipants(roomId: string) {
-      return invoke<string[]>('list_call_participants', { roomId });
-    },
-
     async loadMembers(spaceId: string) {
       const members = await invoke<Member[]>('list_members', { spaceId });
       this.membersBySpace[spaceId] = members;

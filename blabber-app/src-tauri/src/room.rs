@@ -156,3 +156,12 @@ pub async fn get_my_author_id(state: State<'_, AppState>) -> Result<String, Stri
 
     Ok(author.to_string())
 }
+
+#[tauri::command]
+pub async fn my_endpoint_id(state: State<'_, AppState>) -> Result<String, String> {
+    let guard = state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not started yet")?;
+    let endpoint = node.endpoint.as_ref().ok_or("Endpoint not created yet")?;
+
+    Ok(endpoint.id().to_string())
+}
