@@ -29,6 +29,18 @@ pub struct Identity {
     pub author: Option<AuthorId>
 }
 
+pub fn sanitize_path_component(name: &str) -> Option<String> {
+    let sanitized: String = name
+        .chars()
+        .filter(|character| character.is_alphanumeric() || *character == '-' || *character == '_')
+        .collect();
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
+}
+
 impl Identity {
 
     /// Create a new Identity from username and password
@@ -169,15 +181,18 @@ mod tests {
 
     #[test]
     fn store_identity_test() {
-        let id = Identity::new("Alice").store("SecurePassword", "/tmp/test_identity.bin");
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let path = dir.path().join("test_identity.bin");
+        Identity::new("Alice").store("SecurePassword", &path).unwrap();
     }
 
     #[test]
     fn load_identity_test() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let path = dir.path().join("test_identity.bin");
         let id = Identity::new("Alice");
-        let path = "/tmp/test_identity.bin";
-        id.store("SecurePassword", path);
-        let loaded = Identity::load_from_disk(path, "SecurePassword").unwrap();
+        id.store("SecurePassword", &path).unwrap();
+        let loaded = Identity::load_from_disk(&path, "SecurePassword").unwrap();
         assert_eq!(id.displayName, loaded.displayName);
         assert_eq!(id.secret.as_bytes(), loaded.secret.as_bytes());
     }

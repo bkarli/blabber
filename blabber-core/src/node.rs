@@ -10,7 +10,7 @@ use crate::events::AppEvent;
 use crate::space::Space;
 use crate::Identity;
 use crate::invite::Invite;
-use anyhow::{Result};
+use anyhow::{anyhow, Result};
 use iroh::{protocol::Router, Endpoint, SecretKey, EndpointId, endpoint::presets};
 use iroh_blobs::store::fs::FsStore;
 use iroh_docs::AuthorId;
@@ -68,7 +68,8 @@ impl Node {
     }
 
     pub fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
-        let identity_dir = &self.identity.displayName;
+        let identity_dir = crate::identity::sanitize_path_component(&self.identity.displayName)
+            .ok_or_else(|| anyhow!("identity display name has no path-safe characters"))?;
         Ok(path.join(identity_dir))
     }
 

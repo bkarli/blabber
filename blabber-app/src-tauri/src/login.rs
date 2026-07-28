@@ -25,17 +25,8 @@ fn identity_path(
     display_name: &str,
 ) -> Result<PathBuf, String> {
     let directory = identities_dir(app)?;
-    let safe_name: String = display_name
-        .chars()
-        .filter(|character| {
-            character.is_alphanumeric()
-                || *character == '-'
-                || *character == '_'
-        })
-        .collect();
-    if safe_name.is_empty() {
-        return Err("Invalid display name".to_string());
-    }
+    let safe_name = blabber_core::identity::sanitize_path_component(display_name)
+        .ok_or("Invalid display name")?;
     Ok(directory.join(format!("{safe_name}.bin")))
 }
 
