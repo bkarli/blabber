@@ -28,7 +28,6 @@ uuid = { workspace = true }
 zeroize = { workspace = true }
 tauri-plugin-dialog = "2.7.2"
 
-base64 = { workspace = true } 
 mime_guess = { workspace = true }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

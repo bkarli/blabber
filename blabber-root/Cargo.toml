@@ -9,10 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-uuid = { workspace = true }
 serde = { workspace = true }
 zeroize = { workspace = true }
 toml = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }
 
 blabber-core = { path = "../blabber-core", default-features = false }

@@ -15,10 +15,10 @@ symphonia = { version = "0.5", features = ["mp3"], optional = true }
 
 uuid = { workspace = true, features= ["v4", "serde"]}
 
-iroh = { workspace = true}
-iroh-docs = { workspace = true , features = ["fs-store"] }
-iroh-blobs = { workspace = true }
-iroh-gossip = { workspace = true }
+iroh = { workspace = true, features = ["tls-ring"] }
+iroh-docs = { workspace = true, default-features = false, features = ["fs-store"] }
+iroh-blobs = { workspace = true, default-features = false, features = ["fs-store"] }
+iroh-gossip = { workspace = true, default-features = false, features = ["net"] }
 postcard = { workspace = true }
 serde = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
