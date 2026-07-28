@@ -26,3 +26,7 @@ tokio = { version = "1", features = ["full"] }
 blabber-core = { path = "../../blabber-core" }
 uuid = { workspace = true }
 zeroize = { workspace = true }
+tauri-plugin-dialog = "2.7.2"
+
+base64 = "0.22"
+mime_guess = "2"
