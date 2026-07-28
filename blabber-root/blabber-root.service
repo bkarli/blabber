@@ -1,0 +1,34 @@
+[Unit]
+Description=Blabber root node (permanent P2P seed/relay peer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blabber-root
+Group=blabber-root
+WorkingDirectory=/var/lib/blabber-root
+StateDirectory=blabber-root
+StateDirectoryMode=0700
+
+# Preferred: provision the password via systemd's credential store so it
+# never needs to be readable outside the unit. Provision the source file
+# once with:
+#   install -o root -g root -m 0600 password /etc/blabber-root/password.source
+# systemd then exposes it read-only at a fixed path -> see config.toml's
+# password_file, which must hardcode that path: see README.md.
+LoadCredential=password:/etc/blabber-root/password.source
+
+ExecStart=/usr/local/bin/blabber-root --config /etc/blabber-root/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/blabber-root
+
+[Install]
+WantedBy=multi-user.target

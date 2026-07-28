@@ -3,7 +3,16 @@ name = "blabber-root"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[[bin]]
+name = "blabber-root"
+path = "src/main.rs"
 
+[dependencies]
 anyhow = { workspace = true }
-tokio = { version = "1.53.1", features = ["full"] }
+uuid = { workspace = true }
+serde = { workspace = true }
+zeroize = { workspace = true }
+toml = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "time"] }
+
+blabber-core = { path = "../blabber-core", default-features = false }
