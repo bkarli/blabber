@@ -87,9 +87,9 @@ pub struct Space {
 
     pending_room: Arc<Mutex<HashMap<Hash, Entry>>>,
 
-
-
-
+    /// background tasks spawned by `watch_members`/`watch_info`, kept
+    /// so `leave` can stop them instead of leaking them detached forever.
+    watch_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Space {
@@ -128,6 +128,7 @@ impl Space {
             call_room_record_cache: Arc::new(Mutex::new(Vec::new())),
 
             pending_room: Arc::new(Mutex::new(HashMap::new())),
+            watch_handles: Arc::new(Mutex::new(Vec::new())),
         };
 
         space
@@ -162,7 +163,41 @@ impl Space {
         self.members.set_bytes(author, key.into_bytes(), value).await?;
         Ok(())
     }
-    
+
+    /// Remove yourself from the members doc. This writes a "tombstone" entry
+    /// empty value under same key, rather than deleting anything
+    /// locally-only, so the departure replicates to every other peer that's
+    /// syncing this space's `members` doc.
+    async fn remove_self_as_member(&self, author: AuthorId) -> Result<()> {
+        let key = format!("member/{author}");
+        self.members.del(author, key.into_bytes()).await?;
+        Ok(())
+    }
+
+    /// Leave this space definitively: announce the departure to other members by writing tombstone,
+    /// stop syncing, and drop the local document replicas.
+    ///
+    /// Note: the tombstone write above is only queued for replication when
+    /// this returns, not confirmed as received by every peer. We give it a
+    /// short window to go out over any already-connected gossip/sync
+    /// sessions before tearing the local docs down. peers we weren't
+    /// connected to at the moment of leaving may not see the
+    /// departure until they next sync with someone else who did.
+    pub async fn leave(&self, author: AuthorId) -> Result<()> {
+        self.remove_self_as_member(author).await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        for handle in self.watch_handles.lock().await.drain(..) {
+            handle.abort();
+        }
+
+        self.docs.drop_doc(self.members.id()).await.ok();
+        self.docs.drop_doc(self.info.id()).await.ok();
+
+        Ok(())
+    }
+
     /// Create a space from an Invite
     pub async fn from_invite(
         docs: &Docs,
@@ -196,6 +231,7 @@ impl Space {
             call_room_record_cache: Arc::new(Mutex::new(Vec::new())),
 
             pending_room: Arc::new(Mutex::new(HashMap::new())),
+            watch_handles: Arc::new(Mutex::new(Vec::new())),
         };
 
         space
@@ -236,6 +272,10 @@ impl Space {
         // go through the entries and parse as member
         while let Some(entry) = entries.next().await {
             let entry = entry?;
+            // a tombstone (from a member leaving) is an empty entry. skip it
+            if entry.content_len() == 0 {
+                continue;
+            }
             let key = std::str::from_utf8(entry.key())?;
             let claim_auth = key.strip_prefix("member/").unwrap_or_default();
             if claim_auth != entry.author().to_string() {
@@ -389,9 +429,27 @@ impl Space {
 
         match event_type {
             SpaceEvents::MemberEvent => {
+                // `del` on the members doc writes a tombstone: an entry with
+                // the same "member/{author}" key but empty content. Treat
+                // as author leaving rather than trying (and
+                // failing) to decode it as a `Member`.
+                if entry.content_len() == 0 {
+                    let Ok(key) = std::str::from_utf8(entry.key()) else { return false; };
+                    let Some(author_id) = key.strip_prefix("member/") else { return false; };
+                    let author_id = author_id.to_string();
+                    self.member_cache.lock().await.retain(|m| m.author_id != author_id);
+                    let _ = events.send(AppEvent::MemberLeft { space_id, author_id });
+                    return true;
+                }
+
                 if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
                     if let Ok(member) = postcard::from_bytes::<Member>(&bytes) {
-                        self.member_cache.lock().await.push(member.clone());
+                        let mut cache = self.member_cache.lock().await;
+                        match cache.iter_mut().find(|m| m.author_id == member.author_id) {
+                            Some(existing) => *existing = member.clone(),
+                            None => cache.push(member.clone()),
+                        }
+                        drop(cache);
                         let _ = events.send(AppEvent::NewMember { space_id, member });
                         return true;
                     }
@@ -490,7 +548,7 @@ impl Space {
         node: &Node,
         blobs: FsStore,
         label: impl Into<String>,
-    ) -> Result<JoinHandle<()>> {
+    ) -> Result<()> {
         let existing = self.list_members(&blobs).await?;
         *self.member_cache.lock().await = existing;
 
@@ -512,7 +570,8 @@ impl Space {
             }
         }).await?;
 
-        Ok(handle)
+        self.watch_handles.lock().await.push(handle);
+        Ok(())
     }
 
     pub async fn watch_info(
@@ -520,7 +579,7 @@ impl Space {
         node: &Node,
         blobs: FsStore,
         label: impl Into<String>,
-    ) -> Result<JoinHandle<()>> {
+    ) -> Result<()> {
         let doc = self.info.clone();
         let space = self.clone();
         let pending = self.pending_room.clone();
@@ -539,10 +598,10 @@ impl Space {
             }
         }).await?;
 
-        Ok(handle)
-
+        self.watch_handles.lock().await.push(handle);
+        Ok(())
     }
-    
+
     /// subscribe to the info Document
     pub async fn subscribe_info(&self) -> Result<impl Stream<Item = Result<LiveEvent>>> {
         let events = self.info.subscribe().await?;

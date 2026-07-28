@@ -15,7 +15,7 @@ mod event_bridge;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
 use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id};
-use space::{create_server, list_servers, get_invite, join_space,list_members};
+use space::{create_server, list_servers, get_invite, join_space, leave_space, list_members};
 use call_room::{create_call_room, list_call_rooms, join_call_room, leave_call_room, list_call_participants, set_muted};
 
 #[derive(Default)]
@@ -40,6 +40,7 @@ pub fn run() {
             create_server,
             list_servers,
             join_space,
+            leave_space,
             get_invite,
             create_room,
             list_rooms,

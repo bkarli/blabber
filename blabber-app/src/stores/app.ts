@@ -34,6 +34,7 @@ export interface ChannelInfo {
 export type AppEvent =
   | { NewMessage: { space_id: string; room_id: string; message: Message } }
   | { NewMember: { space_id: string; member: Member } }
+  | { type: 'MemberLeft'; space_id: string; author_id: string }
   | { NewRoom: { space_id: string; room_id: string; room_name: string } }
   | { type: 'NewCallRoom'; space_id: string; room_id: string; room_name: string }
  | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
@@ -90,6 +91,8 @@ export const useAppStore = defineStore('app', {
           this.handleNewMessage(payload);
         } else if (payload.type === 'NewMember') {
           this.handleNewMember(payload);
+        } else if (payload.type === 'MemberLeft') {
+          this.handleMemberLeft(payload);
         } else if (payload.type === 'NewRoom') {
           this.handleNewRoom(payload);
         } else if (payload.type === 'NewCallRoom') {
@@ -146,6 +149,13 @@ export const useAppStore = defineStore('app', {
       }
     },
 
+    handleMemberLeft({ space_id, author_id }: { space_id: string; author_id: string }) {
+      const list = this.membersBySpace[space_id];
+      if (list) {
+        this.membersBySpace[space_id] = list.filter((m) => m.author_id !== author_id);
+      }
+    },
+
     handleNewRoom({ space_id, room_id, room_name }: { space_id: string; room_id: string; room_name: string }) {
       const list = (this.roomsBySpace[space_id] ??= []);
       const alreadyExists = list.some((r) => r.id === room_id);
@@ -170,6 +180,14 @@ export const useAppStore = defineStore('app', {
         this.spaces.push(info);
       }
       return info;
+    },
+
+    async leaveSpace(spaceId: string) {
+      await invoke<void>('leave_space', { spaceId });
+      this.spaces = this.spaces.filter((s) => s.id !== spaceId);
+      delete this.roomsBySpace[spaceId];
+      delete this.channelsBySpace[spaceId];
+      delete this.membersBySpace[spaceId];
     },
 
     async loadRooms(spaceId: string) {

@@ -15,6 +15,10 @@ pub enum AppEvent {
         space_id: Uuid,
         member: Member,
     },
+    MemberLeft {
+        space_id: Uuid,
+        author_id: String,
+    },
     NewRoom {
         space_id: Uuid,
         room_id: Uuid,
