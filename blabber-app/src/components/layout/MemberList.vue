@@ -26,7 +26,7 @@ function isYou(authorId: string) {
   <div class="flex h-full w-60 flex-col border-l border-border bg-sidebar">
     <div class="flex h-12 shrink-0 items-center border-b border-border px-4">
       <span class="text-xs font-semibold tracking-wide uppercase text-muted-foreground">
-        Members : {{ members.length }}
+        {{ members.length }} Members
       </span>
     </div>
 
