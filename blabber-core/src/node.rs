@@ -433,7 +433,12 @@ impl Node {
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
         let handle = tokio::runtime::Handle::current();
-        let mesh_channel = crate::channel::MeshVoiceChannel::new(handle.clone());
+        let mesh_channel = crate::channel::MeshVoiceChannel::new(
+            handle.clone(),
+            room_id,
+            self.room_spaces.clone(),
+            self.events.clone(),
+        );
         self.active_call_rooms
             .lock()
             .unwrap()

@@ -51,14 +51,25 @@ pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
     peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
     handle: tokio::runtime::Handle,
+    room_id: Uuid,
+    room_spaces: RoomSpaceMap,
+    events: broadcast::Sender<crate::events::AppEvent>,
 }
 
 impl MeshVoiceChannel {
-    pub fn new(handle: tokio::runtime::Handle) -> Self {
+    pub fn new(
+        handle: tokio::runtime::Handle,
+        room_id: Uuid,
+        room_spaces: RoomSpaceMap,
+        events: broadcast::Sender<crate::events::AppEvent>,
+    ) -> Self {
         Self {
             connections: Arc::new(StdMutex::new(HashMap::new())),
             peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
             handle,
+            room_id,
+            room_spaces,
+            events,
         }
     }
 
@@ -110,7 +121,20 @@ impl MeshVoiceChannel {
             // only clean up if this tasks connection is still the one
             // registered for this peer, a newer connection may have
             // already replaced it.
-            mesh_channel.remove_peer_if_current(&peer_id_for_task, stable_id);
+            let left = mesh_channel.remove_peer_if_current(&peer_id_for_task, stable_id);
+            if left {
+                let space_id = {
+                    let map = mesh_channel.room_spaces.lock().unwrap();
+                    map.get(&mesh_channel.room_id).copied()
+                };
+                if let Some(space_id) = space_id {
+                    let _ = mesh_channel.events.send(crate::events::AppEvent::CallParticipantLeft {
+                        space_id,
+                        room_id: mesh_channel.room_id,
+                        endpoint_id: peer_id_for_task,
+                    });
+                }
+            }
         });
     }
 
@@ -119,7 +143,7 @@ impl MeshVoiceChannel {
         self.peer_buffers.lock().unwrap().remove(peer_id);
     }
 
-    fn remove_peer_if_current(&self, peer_id: &str, stable_id: usize) {
+    fn remove_peer_if_current(&self, peer_id: &str, stable_id: usize) -> bool {
         let mut connections = self.connections.lock().unwrap();
         let is_current = connections.get(peer_id).map(|c| c.stable_id()) == Some(stable_id);
         if is_current {
@@ -127,6 +151,7 @@ impl MeshVoiceChannel {
             drop(connections);
             self.peer_buffers.lock().unwrap().remove(peer_id);
         }
+        is_current
     }
 
     /// Closes every peer connection and clears local state. Called when a

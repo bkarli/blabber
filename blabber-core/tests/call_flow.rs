@@ -413,3 +413,78 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn remote_departure_emits_call_participant_left_event() -> Result<()> {
+    let (node_a, _dir_a) = make_node("DepartAlice").await?;
+    let (node_b, _dir_b) = make_node("DepartBob").await?;
+
+    let blobs_b = node_b.blobs.clone().unwrap();
+
+    let space_a = node_a.create_space("Departure Test Space").await?;
+    let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+
+    let author_a = node_a.author.unwrap();
+    let room_a = space_a.create_call_room(author_a, "Departure Test Call").await?;
+
+    let mut events_a = node_a.events.subscribe();
+
+    let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
+
+    let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
+    let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
+
+    let mut room_b = None;
+    for _ in 0..100 {
+        space_b.sync_call_rooms(&blobs_b).await?;
+        let rooms = space_b.call_rooms.lock().await;
+        if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
+            room_b = Some(r.clone());
+            break;
+        }
+        drop(rooms);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let room_b = room_b.expect("B never discovered the call room");
+
+    // B must see A's membership entry via doc sync before joining, otherwise
+    // it has no known participant to dial and no mesh connection ever forms
+    for _ in 0..100 {
+        if room_b.list_active_members(blobs_b.clone()).await?.contains(&id_a) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let (call_b, _mesh_b) = node_b.join_call_room(space_b.id(), &room_b).await?;
+
+    let connected = wait_until(3000, 100, || mesh_a.connection_count() == 1).await;
+    assert!(connected, "expected A and B to connect before B hangs up");
+
+    // B hangs up (mirrors leave_call_room's `call.hang_up()`, which drops the
+    // MeshActiveCall and closes every peer connection via Drop)
+    call_b.hang_up();
+
+    let saw_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match events_a.recv().await {
+                Ok(blabber_core::AppEvent::CallParticipantLeft { room_id, endpoint_id, .. })
+                    if room_id == room_a.id && endpoint_id == id_b =>
+                {
+                    return true;
+                }
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        saw_event,
+        "A never received a CallParticipantLeft event when B hung up - other peers' UI would never remove B's icon"
+    );
+
+    Ok(())
+}
