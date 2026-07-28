@@ -8,7 +8,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from '@/components/ui/alert-dialog';
-import { Share2, Check, Plus, Hash, Settings, LogOut } from 'lucide-vue-next';
+import { Share2, Check, Plus, Hash, Volume2, Settings, LogOut } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
 import CreateChannelDialog from '@/components/room/CreateChannelDialog.vue';
@@ -157,7 +157,7 @@ watch(
           class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           @click="joinChannel(channel.id)"
         >
-          <Hash class="h-4 w-4 shrink-0" />
+          <Volume2 class="h-4 w-4 shrink-0" />
           <span class="truncate">{{ channel.name }}</span>
         </button>
 
