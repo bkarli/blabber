@@ -10,8 +10,8 @@ rand = { workspace = true }
 zeroize = { workspace = true }
 blake3 = { workspace = true }
 anyhow = { workspace = true }
-cpal = "0.15"
-symphonia = { version = "0.5", features = ["mp3"] }
+cpal = { version = "0.15", optional = true }
+symphonia = { version = "0.5", features = ["mp3"], optional = true }
 
 uuid = { workspace = true, features= ["v4", "serde"]}
 
@@ -28,6 +28,11 @@ data-encoding = { workspace = true }
 memsec = "0.7.0"
 
 base64 = { workspace = true }
+
+[features]
+default = ["audio"]
+audio = ["dep:cpal", "dep:symphonia"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tempfile = "3.27.0"

@@ -7,6 +7,12 @@ mod crypto;
 mod secret;
 pub mod events;
 pub mod channel;
+
+#[cfg(feature = "audio")]
+#[path = "sound.rs"]
+pub mod sound;
+#[cfg(not(feature = "audio"))]
+#[path = "sound_stub.rs"]
 pub mod sound;
 
 

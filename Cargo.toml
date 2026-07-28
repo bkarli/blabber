@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
   "blabber-core",
-  "blabber-app/src-tauri"]
+  "blabber-app/src-tauri",
+  "blabber-root"]
 
 
 [workspace.dependencies]
@@ -29,4 +30,5 @@ n0-future = "0.3.2"
 
 base64 = "0.22"
 mime_guess = "2"
+toml = "0.8"
 

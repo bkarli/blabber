@@ -14,6 +14,8 @@ blabber/
 │   ├── src/               Vue 3 + TypeScript frontend (Vite, Pinia, Tailwind)
 │   └── src-tauri/         Tauri backend connecting the frontend with
 │                          blabber-core through Tauri commands and events
+├── blabber-root/          Headless root node for permanently seeding/relaying
+│                          spaces from a server: see blabber-root/README.md
 ├── Cargo.toml             Workspace manifest
 └── flake.nix              Optional Nix development shell
 ```
