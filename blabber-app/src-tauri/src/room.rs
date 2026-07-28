@@ -1,7 +1,6 @@
 use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
-use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 
 use crate::AppState;
 
