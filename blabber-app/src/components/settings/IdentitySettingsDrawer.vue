@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, watch, nextTick } from 'vue';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter, SheetClose,
 } from '@/components/ui/sheet';
@@ -11,8 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
-import { Mic, Volume2, Trash2 } from 'lucide-vue-next';
-import { api } from '@/lib/tauri';
+import { Mic, Volume2, Trash2, PlayCircle } from 'lucide-vue-next';
+import { api, type AudioDeviceInfo } from '@/lib/tauri';
 import { useAuthStore } from '@/stores/auth';
 
 const open = defineModel<boolean>('open', { default: false });
@@ -22,11 +22,19 @@ const auth = useAuthStore();
 const endpointId = ref<string | null>(null);
 const loadingEndpointId = ref(false);
 
-const inputDevices = ref<MediaDeviceInfo[]>([]);
-const outputDevices = ref<MediaDeviceInfo[]>([]);
-const selectedInput = ref<string>('');
-const selectedOutput = ref<string>('');
-const devicePermissionError = ref<string | null>(null);
+const DEFAULT_DEVICE_VALUE = '__default__';
+
+const inputDevices = ref<AudioDeviceInfo[]>([]);
+const outputDevices = ref<AudioDeviceInfo[]>([]);
+const selectedInput = ref<string>(DEFAULT_DEVICE_VALUE);
+const selectedOutput = ref<string>(DEFAULT_DEVICE_VALUE);
+const audioError = ref<string | null>(null);
+const soundTestError = ref<string | null>(null);
+const testingSound = ref(false);
+
+// true while loadAudioDevices() is setting selectedInput/
+// selectedOutput, so those watchers below don't re-send the value we just loaded
+let suppressDeviceWatch = false;
 
 const confirmDeleteOpen = ref(false);
 const deleting = ref(false);
@@ -44,24 +52,19 @@ async function loadEndpointId() {
 }
 
 async function loadAudioDevices() {
-  devicePermissionError.value = null;
+  audioError.value = null;
+  suppressDeviceWatch = true;
   try {
-    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    tempStream.getTracks().forEach((track) => track.stop());
-
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    inputDevices.value = devices.filter((d) => d.kind === 'audioinput');
-    outputDevices.value = devices.filter((d) => d.kind === 'audiooutput');
-
-    if (inputDevices.value.length > 0 && !selectedInput.value) {
-      selectedInput.value = inputDevices.value[0].deviceId;
-    }
-    if (outputDevices.value.length > 0 && !selectedOutput.value) {
-      selectedOutput.value = outputDevices.value[0].deviceId;
-    }
+    const devices = await api.listAudioDevices();
+    inputDevices.value = devices.inputs;
+    outputDevices.value = devices.outputs;
+    selectedInput.value = devices.selected_input ?? DEFAULT_DEVICE_VALUE;
+    selectedOutput.value = devices.selected_output ?? DEFAULT_DEVICE_VALUE;
   } catch (e) {
-    devicePermissionError.value = 'Microphone access is required to list audio devices.';
+    audioError.value = 'Failed to load audio devices.';
   }
+  await nextTick();
+  suppressDeviceWatch = false;
 }
 
 watch(open, (isOpen) => {
@@ -70,6 +73,36 @@ watch(open, (isOpen) => {
     loadAudioDevices();
   }
 });
+
+watch(selectedInput, async (name) => {
+  if (suppressDeviceWatch) return;
+  try {
+    await api.setInputDevice(name === DEFAULT_DEVICE_VALUE ? null : name);
+  } catch (e) {
+    audioError.value = 'Failed to set input device.';
+  }
+});
+
+watch(selectedOutput, async (name) => {
+  if (suppressDeviceWatch) return;
+  try {
+    await api.setOutputDevice(name === DEFAULT_DEVICE_VALUE ? null : name);
+  } catch (e) {
+    audioError.value = 'Failed to set output device.';
+  }
+});
+
+async function testSound() {
+  soundTestError.value = null;
+  testingSound.value = true;
+  try {
+    await api.playSoundEffect('test');
+  } catch (e) {
+    soundTestError.value = String(e);
+  } finally {
+    testingSound.value = false;
+  }
+}
 
 async function handleDelete() {
   if (!auth.displayName) return;
@@ -110,12 +143,13 @@ async function handleDelete() {
                 <SelectValue placeholder="Select microphone" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem :value="DEFAULT_DEVICE_VALUE">System default</SelectItem>
                 <SelectItem
                   v-for="device in inputDevices"
-                  :key="device.deviceId"
-                  :value="device.deviceId"
+                  :key="device.name"
+                  :value="device.name"
                 >
-                  {{ device.label || 'Unknown microphone' }}
+                  {{ device.name }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -125,24 +159,33 @@ async function handleDelete() {
             <Label class="flex items-center gap-2">
               <Volume2 class="h-4 w-4" /> Output device
             </Label>
-            <Select v-model="selectedOutput">
-              <SelectTrigger>
-                <SelectValue placeholder="Select speaker" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="device in outputDevices"
-                  :key="device.deviceId"
-                  :value="device.deviceId"
-                >
-                  {{ device.label || 'Unknown speaker' }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            <div class="flex gap-2">
+              <Select v-model="selectedOutput">
+                <SelectTrigger class="flex-1">
+                  <SelectValue placeholder="Select speaker" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem :value="DEFAULT_DEVICE_VALUE">System default</SelectItem>
+                  <SelectItem
+                    v-for="device in outputDevices"
+                    :key="device.name"
+                    :value="device.name"
+                  >
+                    {{ device.name }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="icon" :disabled="testingSound" @click="testSound">
+                <PlayCircle class="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
-          <p v-if="devicePermissionError" class="text-sm text-destructive">
-            {{ devicePermissionError }}
+          <p v-if="audioError" class="text-sm text-destructive">
+            {{ audioError }}
+          </p>
+          <p v-if="soundTestError" class="text-sm text-destructive">
+            {{ soundTestError }}
           </p>
         </div>
 

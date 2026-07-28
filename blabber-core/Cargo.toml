@@ -11,6 +11,7 @@ zeroize = { workspace = true }
 blake3 = { workspace = true }
 anyhow = { workspace = true }
 cpal = "0.15"
+symphonia = { version = "0.5", features = ["mp3"] }
 
 uuid = { workspace = true, features= ["v4", "serde"]}
 

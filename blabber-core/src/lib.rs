@@ -7,6 +7,7 @@ mod crypto;
 mod secret;
 pub mod events;
 pub mod channel;
+pub mod sound;
 
 
 pub use events::AppEvent;

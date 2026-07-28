@@ -144,13 +144,13 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Mutes or unmutes this client's mic in its currently active call, if any.
+/// Mutes or unmutes this client's mic. an engine wide setting, since only
+/// one call can be active at a time.
 #[tauri::command]
 pub async fn set_muted(state: State<'_, AppState>, muted: bool) -> Result<(), String> {
-    let guard = state.active_call_room.lock().unwrap();
-    if let Some((_, call)) = guard.as_ref() {
-        call.set_muted(muted);
-    }
+    let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
+    node.sound.set_muted(muted);
     Ok(())
 }
 

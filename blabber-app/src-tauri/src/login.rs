@@ -77,6 +77,17 @@ async fn start_node_for_identity(
     let mut node = Node::new(identity);
     node.run(blobs_path).await.map_err(|e| e.to_string())?;
 
+    // apply any previously saved audio device preference. a device that no
+    // longer exists shouldnt block login, fall back to the OS default
+    if let Ok(audio_settings) = crate::audio::load_audio_settings(app) {
+        if let Err(e) = node.sound.set_input_device(audio_settings.input_device) {
+            eprintln!("failed to apply saved input device: {e:#}");
+        }
+        if let Err(e) = node.sound.set_output_device(audio_settings.output_device) {
+            eprintln!("failed to apply saved output device: {e:#}");
+        }
+    }
+
     if let Some(updated_identity) = node.identity_with_author() {
         updated_identity
             .store(password, identity_path)

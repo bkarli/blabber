@@ -42,6 +42,9 @@ pub struct Node {
     /// maps a call room id back to the space it belongs to, so an inbound
     /// mesh connection can be attributed to the right space
     pub room_spaces: crate::channel::RoomSpaceMap,
+    /// shared audio engine: owns device selection and mixes call audio and
+    /// sound effects into one output stream
+    pub sound: Arc<crate::sound::SoundHandler>,
 }
 
 impl Node {
@@ -60,6 +63,7 @@ impl Node {
             spaces: Arc::new(Mutex::new(Vec::new())),
             active_call_rooms: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             room_spaces: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            sound: Arc::new(crate::sound::SoundHandler::new()),
         }
     }
 
@@ -457,7 +461,7 @@ impl Node {
             }
         }
         let channel_for_inspection = mesh_channel.clone();
-        let call = crate::channel::MeshActiveCall::start(mesh_channel, handle);
+        let call = crate::channel::MeshActiveCall::start(mesh_channel, self.sound.clone());
         Ok((call, channel_for_inspection))
     }
 

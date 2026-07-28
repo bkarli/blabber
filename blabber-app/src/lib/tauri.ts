@@ -13,8 +13,17 @@ export interface RoomInfo {
   name: string;
 }
 
+export interface AudioDeviceInfo {
+  name: string;
+  is_default: boolean;
+}
 
-
+export interface AudioDevicesResponse {
+  inputs: AudioDeviceInfo[];
+  outputs: AudioDeviceInfo[];
+  selected_input: string | null;
+  selected_output: string | null;
+}
 
 
 export const api = {
@@ -38,4 +47,9 @@ export const api = {
 
   listRooms: (spaceId: string) => invoke<RoomInfo[]>('list_rooms', { spaceId }),
   createRoom: (spaceId: string, name: string) => invoke<RoomInfo>('create_room', { spaceId, name }),
+
+  listAudioDevices: () => invoke<AudioDevicesResponse>('list_audio_devices'),
+  setInputDevice: (deviceName: string | null) => invoke<void>('set_input_device', { deviceName }),
+  setOutputDevice: (deviceName: string | null) => invoke<void>('set_output_device', { deviceName }),
+  playSoundEffect: (name: string) => invoke<void>('play_sound_effect', { name }),
 };

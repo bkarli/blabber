@@ -1,13 +1,12 @@
-use anyhow::{anyhow, Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, StreamConfig};
+use anyhow::Result;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tokio::sync::broadcast;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use uuid::Uuid;
+
+use crate::sound::{MixSource, SoundHandler, VoiceHandle};
 
 /// ALPN mesh call rooms use to dial each other for the group-call audio mesh.
 pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
@@ -15,14 +14,6 @@ pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
 const SAFE_DATAGRAM_CEILING: usize = 1200;
 const SAFETY_MARGIN: usize = 32;
-const WIRE_SAMPLE_RATE: u32 = 48000;
-const MIX_CHUNK_MS: u64 = 10;
-const MIX_CHUNK_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * (MIX_CHUNK_MS as usize);
-const LEVELER_TARGET_RMS: f32 = 0.15;
-const LEVELER_NOISE_GATE_RMS: f32 = 0.004;
-const LEVELER_MAX_GAIN: f32 = 8.0;
-const LEVELER_ATTACK_MS: f32 = 15.0;
-const LEVELER_RELEASE_MS: f32 = 300.0;
 
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
@@ -31,175 +22,6 @@ fn samples_per_packet(connection: &Connection) -> usize {
         .min(SAFE_DATAGRAM_CEILING);
     let safe_bytes = max_datagram.saturating_sub(SAFETY_MARGIN).max(4);
     (safe_bytes / 4).max(1)
-}
-
-fn downmix_to_mono(data: &[f32], channels: u16) -> Vec<f32> {
-    if channels <= 1 {
-        return data.to_vec();
-    }
-    let channels = channels as usize;
-    data.chunks(channels)
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect()
-}
-
-fn upmix_from_mono(data: &[f32], channels: u16) -> Vec<f32> {
-    if channels <= 1 {
-        return data.to_vec();
-    }
-    let channels = channels as usize;
-    let mut out = Vec::with_capacity(data.len() * channels);
-    for &sample in data {
-        for _ in 0..channels {
-            out.push(sample);
-        }
-    }
-    out
-}
-/// RMS-based level control with a noise gate.
-struct RmsLeveler {
-    gain: f32,
-}
-
-impl RmsLeveler {
-    fn new() -> Self {
-        Self { gain: 0.0 }
-    }
-
-    fn process(&mut self, input: &[f32], sample_rate: u32) -> Vec<f32> {
-        if input.is_empty() {
-            return Vec::new();
-        }
-
-        let sum_sq: f32 = input.iter().map(|&s| s * s).sum();
-        let rms = (sum_sq / input.len() as f32).sqrt();
-
-        let desired_gain = if rms < LEVELER_NOISE_GATE_RMS {
-            0.0
-        } else {
-            (LEVELER_TARGET_RMS / rms).min(LEVELER_MAX_GAIN)
-        };
-
-        let time_constant_ms = if desired_gain < self.gain {
-            LEVELER_ATTACK_MS
-        } else {
-            LEVELER_RELEASE_MS
-        };
-        let block_duration_s = input.len() as f32 / sample_rate as f32;
-        let coeff = 1.0 - (-block_duration_s / (time_constant_ms / 1000.0)).exp();
-        self.gain += (desired_gain - self.gain) * coeff;
-
-        input.iter()
-            .map(|&sample| (sample * self.gain).clamp(-1.0, 1.0))
-            .collect()
-    }
-}
-
-fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || input.is_empty() {
-        return input.to_vec();
-    }
-
-    let ratio = to_rate as f64 / from_rate as f64;
-    let out_len = ((input.len() as f64) * ratio).round() as usize;
-    let mut output = Vec::with_capacity(out_len);
-
-    for i in 0..out_len {
-        let src_pos = i as f64 / ratio;
-        let idx = src_pos.floor() as usize;
-        let frac = (src_pos - idx as f64) as f32;
-
-        let s0 = input[idx.min(input.len() - 1)];
-        let s1 = input[(idx + 1).min(input.len() - 1)];
-        output.push(s0 + (s1 - s0) * frac);
-    }
-
-    output
-}
-
-/// Opens input stream regardless of the devices native sample format.
-fn open_input_stream(
-    device: &cpal::Device,
-    config: cpal::SupportedStreamConfig,
-    mut process: impl FnMut(&[f32]) + Send + 'static,
-    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<cpal::Stream> {
-    let format = config.sample_format();
-    let stream_config: StreamConfig = config.into();
-
-    macro_rules! build {
-        ($sample_ty:ty) => {
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[$sample_ty], _: &cpal::InputCallbackInfo| {
-                    let converted: Vec<f32> = data.iter().map(|&s| s.to_sample::<f32>()).collect();
-                    process(&converted);
-                },
-                err_fn,
-                None,
-            )
-        };
-    }
-
-    let stream = match format {
-        SampleFormat::F32 => build!(f32),
-        SampleFormat::F64 => build!(f64),
-        SampleFormat::I8 => build!(i8),
-        SampleFormat::I16 => build!(i16),
-        SampleFormat::I32 => build!(i32),
-        SampleFormat::U8 => build!(u8),
-        SampleFormat::U16 => build!(u16),
-        SampleFormat::U32 => build!(u32),
-        other => return Err(anyhow!("unsupported input sample format: {other}")),
-    }
-    .context("failed to build input stream")?;
-
-    Ok(stream)
-}
-/// Opens an output stream regardless of the device's native sample format.
-/// Mirrors `open_input_stream`: the caller fills an f32 scratch buffer and
-/// this converts it into whatever the device actually wants.
-fn open_output_stream(
-    device: &cpal::Device,
-    config: cpal::SupportedStreamConfig,
-    mut supply: impl FnMut(&mut [f32]) + Send + 'static,
-    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<cpal::Stream> {
-    let format = config.sample_format();
-    let stream_config: StreamConfig = config.into();
-
-    macro_rules! build {
-        ($sample_ty:ty) => {{
-            let mut scratch: Vec<f32> = Vec::new();
-            device.build_output_stream(
-                &stream_config,
-                move |data: &mut [$sample_ty], _: &cpal::OutputCallbackInfo| {
-                    scratch.resize(data.len(), 0.0);
-                    supply(&mut scratch);
-                    for (out, &s) in data.iter_mut().zip(scratch.iter()) {
-                        *out = s.to_sample::<$sample_ty>();
-                    }
-                },
-                err_fn,
-                None,
-            )
-        }};
-    }
-
-    let stream = match format {
-        SampleFormat::F32 => build!(f32),
-        SampleFormat::F64 => build!(f64),
-        SampleFormat::I8 => build!(i8),
-        SampleFormat::I16 => build!(i16),
-        SampleFormat::I32 => build!(i32),
-        SampleFormat::U8 => build!(u8),
-        SampleFormat::U16 => build!(u16),
-        SampleFormat::U32 => build!(u32),
-        other => return Err(anyhow!("unsupported output sample format: {other}")),
-    }
-    .context("failed to build output stream")?;
-
-    Ok(stream)
 }
 
 /// Splits an outgoing audio chunk into datagram-sized pieces and sends each over the connection.
@@ -229,7 +51,6 @@ pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
     peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
     handle: tokio::runtime::Handle,
-    muted: Arc<AtomicBool>,
 }
 
 impl MeshVoiceChannel {
@@ -238,12 +59,16 @@ impl MeshVoiceChannel {
             connections: Arc::new(StdMutex::new(HashMap::new())),
             peer_buffers: Arc::new(StdMutex::new(HashMap::new())),
             handle,
-            muted: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn set_muted(&self, muted: bool) {
-        self.muted.store(muted, Ordering::Relaxed);
+    /// Sends processed mic audio to every connected peer.
+    pub(crate) fn broadcast_samples(&self, samples: &[f32]) {
+        let conns = self.connections.lock().unwrap();
+        for connection in conns.values() {
+            let max_samples = samples_per_packet(connection);
+            send_audio_chunk(connection, samples, max_samples);
+        }
     }
 
     pub fn add_peer(&self, peer_id: String, connection: Connection) {
@@ -300,154 +125,74 @@ impl MeshVoiceChannel {
     pub fn connection_count(&self)->usize{
         self.connections.lock().unwrap().len()
     }
+}
 
-    pub fn start_capture(&self) -> Result<cpal::Stream> {
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or_else(|| anyhow!("no input device available"))?;
-        let supported_config = device.default_input_config().context("no supported input config")?;
-        let native_rate = supported_config.sample_rate().0;
-        let channels = supported_config.channels();
+/// Wraps a call's peer buffers as one mixer voice. averages every currently
+/// talking peer together,
+/// then that average is added into the shared output mix as a single source.
+struct CallVoiceSource(MeshVoiceChannel);
 
-        let connections = self.connections.clone();
-        let muted = self.muted.clone();
-        let mut leveler = RmsLeveler::new();
-        let stream = open_input_stream(
-            &device,
-            supported_config,
-            move |data: &[f32]| {
-                if muted.load(Ordering::Relaxed) {
-                    return;
+impl MixSource for CallVoiceSource {
+    fn mix_into(&mut self, out: &mut [f32]) {
+        let mut scratch = vec![0.0f32; out.len()];
+        let mut active = 0u32;
+        {
+            let mut buffers = self.0.peer_buffers.lock().unwrap();
+            for buf in buffers.values_mut() {
+                if buf.is_empty() {
+                    continue;
                 }
-
-                let mono = downmix_to_mono(data, channels);
-                let leveled = leveler.process(&mono, native_rate);
-                let resampled = resample_linear(&leveled, native_rate, WIRE_SAMPLE_RATE);
-
-                let conns = connections.lock().unwrap();
-                for connection in conns.values() {
-                    let max_samples = samples_per_packet(connection);
-                    send_audio_chunk(connection, &resampled, max_samples);
-                }
-            },
-            |err| eprintln!("audio capture error: {err}"),
-        )?;
-        stream.play().context("failed to start capture stream")?;
-        Ok(stream)
-    }
-    pub fn start_playback(&self, handle: &tokio::runtime::Handle) -> Result<cpal::Stream> {
-        let host = cpal::default_host();
-        let device = host.default_output_device().ok_or_else(|| anyhow!("no output device available"))?;
-        let config = device.default_output_config().context("no default output config")?;
-        let native_rate = config.sample_rate().0;
-        let channels = config.channels();
-
-        let (mixed_tx, mixed_rx) = std::sync::mpsc::channel::<Vec<f32>>();
-        let peer_buffers = self.peer_buffers.clone();
-
-        handle.spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(MIX_CHUNK_MS));
-            loop {
-                interval.tick().await;
-                let mut mixed = vec![0.0f32; MIX_CHUNK_SAMPLES];
-                let mut active = 0u32;
-                {
-                    let mut buffers = peer_buffers.lock().unwrap();
-                    for buf in buffers.values_mut() {
-                        if buf.is_empty() {
-                            continue;
-                        }
-                        active += 1;
-                        for slot in mixed.iter_mut() {
-                            if let Some(sample) = buf.pop_front() {
-                                *slot += sample;
-                            }
-                        }
+                active += 1;
+                for slot in scratch.iter_mut() {
+                    if let Some(sample) = buf.pop_front() {
+                        *slot += sample;
                     }
-                }
-                if active > 0 {
-                    for s in mixed.iter_mut() {
-                        *s /= active as f32;
-                    }
-                    let _ = mixed_tx.send(mixed);
                 }
             }
-        });
-
-        let mut pending: Vec<f32> = Vec::new();
-
-        let stream = open_output_stream(
-            &device,
-            config,
-            move |output: &mut [f32]| {
-                while pending.len() < output.len() {
-                    match mixed_rx.try_recv() {
-                        Ok(mono_chunk) => {
-                            let resampled = resample_linear(&mono_chunk, WIRE_SAMPLE_RATE, native_rate);
-                            let upmixed = upmix_from_mono(&resampled, channels);
-                            pending.extend(upmixed);
-                        }
-                        Err(_) => break,
-                    }
-                }
-                let n = output.len().min(pending.len());
-                output[..n].copy_from_slice(&pending[..n]);
-                for s in &mut output[n..] {
-                    *s = 0.0;
-                }
-                pending.drain(..n);
-            },
-            |err| eprintln!("audio playback error: {err}"),
-        )?;
-        stream.play().context("failed to start playback stream")?;
-        Ok(stream)
+        }
+        if active > 0 {
+            let inv = 1.0 / active as f32;
+            for (o, s) in out.iter_mut().zip(scratch.iter()) {
+                *o += s * inv;
+            }
+        }
     }
 }
 
+/// An active mesh call: registers this call mic capture and its mixed
+/// peer audio with the shared `SoundHandler`, and unregisters both on drop.
 pub struct MeshActiveCall {
-    stop_tx: std::sync::mpsc::Sender<()>,
-    thread: Option<std::thread::JoinHandle<Result<()>>>,
-    channel: MeshVoiceChannel,
+    sound: Arc<SoundHandler>,
+    voice_handle: Option<VoiceHandle>,
 }
 
 impl MeshActiveCall {
-    pub fn start(channel: MeshVoiceChannel, handle: tokio::runtime::Handle) -> Self {
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-        let channel_handle = channel.clone();
+    pub fn start(channel: MeshVoiceChannel, sound: Arc<SoundHandler>) -> Self {
+        let capture_channel = channel.clone();
+        if let Err(e) = sound.set_capture_listener(Some(Box::new(move |samples: &[f32]| {
+            capture_channel.broadcast_samples(samples);
+        }))) {
+            eprintln!("[mesh voice] failed to start capture: {e:#}");
+        }
 
-        let thread = std::thread::spawn(move || -> Result<()> {
-            let _capture = channel.start_capture().inspect_err(|e| {
-                eprintln!("[mesh voice] failed to start capture: {e:#}");
-            })?;
-            let _playback = channel.start_playback(&handle).inspect_err(|e| {
+        let voice_handle = match sound.register_call_voice(CallVoiceSource(channel)) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
                 eprintln!("[mesh voice] failed to start playback: {e:#}");
-            })?;
-            let _ = stop_rx.recv();
-            Ok(())
-        });
+                None
+            }
+        };
 
-        Self {
-            stop_tx,
-            thread: Some(thread),
-            channel: channel_handle,
-        }
-    }
-    pub fn hang_up(mut self) {
-        let _ = self.stop_tx.send(());
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        Self { sound, voice_handle }
     }
 
-    pub fn set_muted(&self, muted: bool) {
-        self.channel.set_muted(muted);
-    }
+    pub fn hang_up(self) {}
 }
+
 impl Drop for MeshActiveCall {
     fn drop(&mut self) {
-        let _ = self.stop_tx.send(());
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        let _ = self.sound.set_capture_listener(None);
+        self.voice_handle = None;
     }
 }
 pub type RoomSpaceMap = Arc<StdMutex<HashMap<Uuid, Uuid>>>;
