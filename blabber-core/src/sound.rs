@@ -229,8 +229,7 @@ fn find_output_device(host: &cpal::Host, name: &Option<String>) -> Result<cpal::
     }
 }
 
-/// A single contributor to the output mix (a live call, a one-shot sound
-/// effect, ...). Implementations must ADD their contribution onto `out`
+/// A single contributor to the output mix. Implementations must ADD their contribution onto `out`
 /// never overwrite it, since other voices may already have written into it
 /// this tick.
 pub trait MixSource: Send {
