@@ -193,7 +193,7 @@ watch(
         <AlertDialogFooter>
           <AlertDialogCancel :disabled="leaving">Cancel</AlertDialogCancel>
           <AlertDialogAction
-            class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            class="bg-destructive text-white hover:bg-destructive/90"
             :disabled="leaving"
             @click.prevent="handleLeave"
           >

@@ -11,7 +11,7 @@ case "$(uname -s)" in
         base_dir="$HOME/Library/Application Support"
         ;;
     *)
-        echo "error: unsupported OS '$(uname -s)' — this script only handles Linux and macOS" >&2
+        echo "error: unsupported OS '$(uname -s)' this script only handles Linux and macOS" >&2
         exit 1
         ;;
 esac
@@ -22,7 +22,7 @@ spaces_dir="$app_data_dir/spaces"
 blobs_dir="$app_data_dir/blobs"
 
 if [[ ! -d "$app_data_dir" ]]; then
-    echo "no app data found at $app_data_dir — nothing to delete"
+    echo "no app data found at $app_data_dir. nothing to delete"
     exit 0
 fi
 
@@ -36,7 +36,7 @@ for dir in "$identities_dir" "$spaces_dir" "$blobs_dir"; do
 done
 
 if [[ "$found_any" -eq 0 ]]; then
-    echo "nothing to delete — no identities/spaces/blobs directories found under $app_data_dir"
+    echo "nothing to delete no identities/spaces/blobs directories found under $app_data_dir"
     exit 0
 fi
 

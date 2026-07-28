@@ -7,7 +7,7 @@ use zeroize::Zeroize;
 ///
 /// Uses `Box<[u8; 32]>` rather than an inline array so the underlying address
 /// stays stable even if the owning struct itself is moved (moving a `Box`
-/// only moves the pointer, not the heap allocation it points to) — a plain
+/// only moves the pointer, not the heap allocation it points to) a plain
 /// `[u8; 32]` field would silently invalidate its `mlock` on every move.
 pub struct LockedSecret {
     bytes: Box<[u8; 32]>,
