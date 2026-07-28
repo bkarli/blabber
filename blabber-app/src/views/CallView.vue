@@ -29,6 +29,7 @@ async function refreshParticipants() {
 
 async function join() {
   try {
+    await store.loadMembers(spaceId);
     await store.joinCallRoom(roomId);
     await refreshParticipants();
   } catch (e) {
@@ -66,8 +67,11 @@ async function toggleMute() {
   }
 }
 
-function initials(id: string) {
-  return id.slice(0, 2).toUpperCase();
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '??';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 </script>
 
@@ -84,10 +88,10 @@ function initials(id: string) {
           class="flex flex-col items-center gap-2"
         >
           <Avatar class="h-20 w-20">
-            <AvatarFallback class="text-lg">{{ initials(participant) }}</AvatarFallback>
+            <AvatarFallback class="text-lg">{{ initials(store.displayNameForEndpoint(spaceId, participant)) }}</AvatarFallback>
           </Avatar>
           <span class="max-w-[100px] truncate text-xs text-muted-foreground">
-            {{ participant.slice(0, 8) }}
+            {{ store.displayNameForEndpoint(spaceId, participant) }}
           </span>
         </div>
 

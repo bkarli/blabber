@@ -65,6 +65,11 @@ export const useAppStore = defineStore('app', {
       const member = (state.membersBySpace[spaceId] ?? []).find((m) => m.author_id === authorId);
       return member?.display_name ?? authorId.slice(0,8);
     },
+
+    displayNameForEndpoint: (state) => (spaceId: string, endpointId: string) => {
+      const member = (state.membersBySpace[spaceId] ?? []).find((m) => m.endpoint_id === endpointId);
+      return member?.display_name ?? endpointId.slice(0, 8);
+    },
   },
 
   actions: {

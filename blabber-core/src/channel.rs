@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::StreamConfig;
+use cpal::{Sample, SampleFormat, StreamConfig};
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tokio::sync::broadcast;
@@ -118,6 +118,91 @@ fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     output
 }
 
+/// Opens input stream regardless of the devices native sample format.
+fn open_input_stream(
+    device: &cpal::Device,
+    config: cpal::SupportedStreamConfig,
+    mut process: impl FnMut(&[f32]) + Send + 'static,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream> {
+    let format = config.sample_format();
+    let stream_config: StreamConfig = config.into();
+
+    macro_rules! build {
+        ($sample_ty:ty) => {
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[$sample_ty], _: &cpal::InputCallbackInfo| {
+                    let converted: Vec<f32> = data.iter().map(|&s| s.to_sample::<f32>()).collect();
+                    process(&converted);
+                },
+                err_fn,
+                None,
+            )
+        };
+    }
+
+    let stream = match format {
+        SampleFormat::F32 => build!(f32),
+        SampleFormat::F64 => build!(f64),
+        SampleFormat::I8 => build!(i8),
+        SampleFormat::I16 => build!(i16),
+        SampleFormat::I32 => build!(i32),
+        SampleFormat::U8 => build!(u8),
+        SampleFormat::U16 => build!(u16),
+        SampleFormat::U32 => build!(u32),
+        other => return Err(anyhow!("unsupported input sample format: {other}")),
+    }
+    .context("failed to build input stream")?;
+
+    Ok(stream)
+}
+/// Opens an output stream regardless of the device's native sample format.
+/// Mirrors `open_input_stream`: the caller fills an f32 scratch buffer and
+/// this converts it into whatever the device actually wants.
+fn open_output_stream(
+    device: &cpal::Device,
+    config: cpal::SupportedStreamConfig,
+    mut supply: impl FnMut(&mut [f32]) + Send + 'static,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream> {
+    let format = config.sample_format();
+    let stream_config: StreamConfig = config.into();
+
+    macro_rules! build {
+        ($sample_ty:ty) => {{
+            let mut scratch: Vec<f32> = Vec::new();
+            device.build_output_stream(
+                &stream_config,
+                move |data: &mut [$sample_ty], _: &cpal::OutputCallbackInfo| {
+                    scratch.resize(data.len(), 0.0);
+                    supply(&mut scratch);
+                    for (out, &s) in data.iter_mut().zip(scratch.iter()) {
+                        *out = s.to_sample::<$sample_ty>();
+                    }
+                },
+                err_fn,
+                None,
+            )
+        }};
+    }
+
+    let stream = match format {
+        SampleFormat::F32 => build!(f32),
+        SampleFormat::F64 => build!(f64),
+        SampleFormat::I8 => build!(i8),
+        SampleFormat::I16 => build!(i16),
+        SampleFormat::I32 => build!(i32),
+        SampleFormat::U8 => build!(u8),
+        SampleFormat::U16 => build!(u16),
+        SampleFormat::U32 => build!(u32),
+        other => return Err(anyhow!("unsupported output sample format: {other}")),
+    }
+    .context("failed to build output stream")?;
+
+    Ok(stream)
+}
+
 pub struct VoiceChannel {
     connection: Connection,
 }
@@ -133,21 +218,21 @@ impl VoiceChannel {
         let supported_config = device.default_input_config().context("no supported input config")?;
         let native_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels();
-        let stream_config: StreamConfig = supported_config.into();
 
         let connection = self.connection.clone();
         let max_samples = samples_per_packet(&connection);
         let mut leveler = RmsLeveler::new();
-        let stream = device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        let stream = open_input_stream(
+            &device,
+            supported_config,
+            move |data: &[f32]| {
                 let mono = downmix_to_mono(data, channels);
                 let leveled = leveler.process(&mono, native_rate);
                 let resampled = resample_linear(&leveled, native_rate, WIRE_SAMPLE_RATE);
                 send_audio_chunk(&connection, &resampled, max_samples);
             },
-            move |err| { eprintln!("audio capture error: {err}");},
-            None,)?;
+            |err| eprintln!("audio capture error: {err}"),
+        )?;
         stream.play().context("failed to start capture stream")?;
         Ok(stream)
     }
@@ -158,7 +243,6 @@ impl VoiceChannel {
         let config = device.default_output_config().context("no default output config")?;
         let native_rate = config.sample_rate().0;
         let channels = config.channels();
-        let stream_config: StreamConfig = config.into();
 
         let (tx, rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = channel();
         let connection = self.connection.clone();
@@ -178,11 +262,11 @@ impl VoiceChannel {
                     }}}});
 
         let mut pending: Vec<f32> = Vec::new();
-        let err_fn = |err| eprintln!("audio playback error: {err}");
 
-        let stream = device.build_output_stream(
-            &stream_config,
-            move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let stream = open_output_stream(
+            &device,
+            config,
+            move |output: &mut [f32]| {
                 while pending.len() < output.len() {
                     match rx.try_recv() {
                         Ok(samples) => pending.extend(samples),
@@ -193,8 +277,7 @@ impl VoiceChannel {
                     *s = 0.0;}
                 pending.drain(..n);
             },
-            err_fn,
-            None,
+            |err| eprintln!("audio playback error: {err}"),
         )?;
         stream.play().context("failed to start playback stream")?;
         Ok(stream)
@@ -438,14 +521,14 @@ impl MeshVoiceChannel {
         let supported_config = device.default_input_config().context("no supported input config")?;
         let native_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels();
-        let stream_config: StreamConfig = supported_config.into();
 
         let connections = self.connections.clone();
         let muted = self.muted.clone();
         let mut leveler = RmsLeveler::new();
-        let stream = device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        let stream = open_input_stream(
+            &device,
+            supported_config,
+            move |data: &[f32]| {
                 if muted.load(Ordering::Relaxed) {
                     return;
                 }
@@ -460,8 +543,7 @@ impl MeshVoiceChannel {
                     send_audio_chunk(connection, &resampled, max_samples);
                 }
             },
-            move |err| { eprintln!("audio capture error: {err}"); },
-            None,
+            |err| eprintln!("audio capture error: {err}"),
         )?;
         stream.play().context("failed to start capture stream")?;
         Ok(stream)
@@ -472,7 +554,6 @@ impl MeshVoiceChannel {
         let config = device.default_output_config().context("no default output config")?;
         let native_rate = config.sample_rate().0;
         let channels = config.channels();
-        let stream_config: StreamConfig = config.into();
 
         let (mixed_tx, mixed_rx) = std::sync::mpsc::channel::<Vec<f32>>();
         let peer_buffers = self.peer_buffers.clone();
@@ -507,11 +588,11 @@ impl MeshVoiceChannel {
         });
 
         let mut pending: Vec<f32> = Vec::new();
-        let err_fn = |err| eprintln!("audio playback error: {err}");
 
-        let stream = device.build_output_stream(
-            &stream_config,
-            move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let stream = open_output_stream(
+            &device,
+            config,
+            move |output: &mut [f32]| {
                 while pending.len() < output.len() {
                     match mixed_rx.try_recv() {
                         Ok(mono_chunk) => {
@@ -529,8 +610,7 @@ impl MeshVoiceChannel {
                 }
                 pending.drain(..n);
             },
-            err_fn,
-            None,
+            |err| eprintln!("audio playback error: {err}"),
         )?;
         stream.play().context("failed to start playback stream")?;
         Ok(stream)
