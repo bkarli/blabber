@@ -11,9 +11,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
-import { Mic, Volume2, Trash2, PlayCircle } from 'lucide-vue-next';
+import { Switch } from '@/components/ui/switch';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Mic, Volume2, Trash2, PlayCircle, ChevronDown } from 'lucide-vue-next';
 import { api, type AudioDeviceInfo } from '@/lib/tauri';
 import { useAuthStore } from '@/stores/auth';
+import { useSoundEffectsStore } from '@/stores/soundEffects';
+import type { SoundEffectId } from '@/lib/soundEffects';
+
+const soundEffects = useSoundEffectsStore();
+const soundEffectsOpen = ref(false);
 
 const open = defineModel<boolean>('open', { default: false });
 
@@ -188,6 +195,29 @@ async function handleDelete() {
             {{ soundTestError }}
           </p>
         </div>
+
+        <Separator />
+
+        <Collapsible v-model:open="soundEffectsOpen">
+          <CollapsibleTrigger class="flex w-full items-center justify-between text-sm font-semibold text-muted-foreground">
+            Sound Effects
+            <ChevronDown class="h-4 w-4 transition-transform" :class="{ 'rotate-180': soundEffectsOpen }" />
+          </CollapsibleTrigger>
+          <CollapsibleContent class="space-y-3 pt-3">
+            <div
+              v-for="effect in soundEffects.effects"
+              :key="effect.id"
+              class="flex items-center justify-between gap-4"
+            >
+              <Label :for="`sfx-${effect.id}`">{{ effect.label }}</Label>
+              <Switch
+                :id="`sfx-${effect.id}`"
+                :model-value="effect.enabled"
+                @update:model-value="(value) => soundEffects.setEnabled(effect.id as SoundEffectId, value)"
+              />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         <Separator />
 

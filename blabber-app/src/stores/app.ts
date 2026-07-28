@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { useSoundEffectsStore } from '@/stores/soundEffects';
 
 export interface SpaceInfo {
   id: string;
@@ -47,6 +48,7 @@ export const useAppStore = defineStore('app', {
   state: () => ({
     spaces: [] as SpaceInfo[],
     myAuthorId: null as string | null,
+    myEndpointId: null as string | null,
     roomsBySpace: {} as Record<string, RoomInfo[]>,
     channelsBySpace: {} as Record<string, ChannelInfo[]>,
     membersBySpace: {} as Record<string, Member[]>,
@@ -84,6 +86,12 @@ export const useAppStore = defineStore('app', {
         this.myAuthorId = await invoke<string>('get_my_author_id');
       } catch (e) {
         console.error('failed to load own author id', e);
+      }
+
+      try {
+        this.myEndpointId = await invoke<string>('my_endpoint_id');
+      } catch (e) {
+        console.error('failed to load own endpoint id', e);
       }
 
       try {
@@ -132,6 +140,10 @@ export const useAppStore = defineStore('app', {
     handleCallParticipantLeft({ room_id, endpoint_id }: { space_id: string; room_id: string; endpoint_id: string }) {
       if (room_id === this.activeCallRoomId) {
         this.callParticipants = this.callParticipants.filter((id) => id !== endpoint_id);
+        // our own leave already plays the sound from leaveCallRoom() directly
+        if (endpoint_id !== this.myEndpointId) {
+          useSoundEffectsStore().play('call-leave');
+        }
       }
     },
 
@@ -143,6 +155,10 @@ export const useAppStore = defineStore('app', {
       if (!alreadyExists) {
         list.push(message);
         list.sort((a, b) => a.sent_at - b.sent_at);
+        // our own message already played 'message-send' from sendMessage() directly
+        if (message.author !== this.myAuthorId) {
+          useSoundEffectsStore().play('message-receive');
+        }
       }
     },
 
@@ -240,16 +256,19 @@ export const useAppStore = defineStore('app', {
 
     async sendMessage(spaceId: string, roomId: string, content: string) {
       await invoke<void>('send_message', { spaceId, roomId, content });
+      useSoundEffectsStore().play('message-send');
     },
 
     async sendImage(spaceId: string, roomId: string, path: string) {
       await invoke<void>('send_image', { spaceId, roomId, path });
+      useSoundEffectsStore().play('message-send');
     },
 
     async joinCallRoom(roomId: string) {
       await invoke<void>('join_call_room', { roomId });
       this.activeCallRoomId = roomId;
       this.callParticipants = await invoke<string[]>('list_call_participants', { roomId });
+      useSoundEffectsStore().play('call-join');
     },
 
     async leaveCallRoom() {
@@ -257,11 +276,13 @@ export const useAppStore = defineStore('app', {
       this.activeCallRoomId = null;
       this.callParticipants = [];
       this.isMuted = false;
+      useSoundEffectsStore().play('call-leave');
     },
 
     async setMuted(muted: boolean) {
       await invoke<void>('set_muted', { muted });
       this.isMuted = muted;
+      useSoundEffectsStore().play(muted ? 'mute' : 'unmute');
     },
 
     async loadCallParticipants(roomId: string) {
