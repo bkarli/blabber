@@ -129,6 +129,10 @@ watch(
         >
           <Hash class="h-4 w-4 shrink-0" />
           <span class="truncate">{{ room.name }}</span>
+          <span
+            v-if="store.isRoomUnread(room.id)"
+            class="ml-auto h-2 w-2 shrink-0 rounded-full bg-green-500"
+          />
         </button>
 
         <p v-if="rooms.length === 0" class="px-2 py-1.5 text-sm text-muted-foreground">

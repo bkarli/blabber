@@ -53,6 +53,8 @@ export const useAppStore = defineStore('app', {
     channelsBySpace: {} as Record<string, ChannelInfo[]>,
     membersBySpace: {} as Record<string, Member[]>,
     messagesByRoom: {} as Record<string, Message[]>,
+    activeRoomId: null as string | null,
+    unreadRoomIds: {} as Record<string, boolean>,
     activeCallRoomId: null as string | null,
     callParticipants: [] as string[],
     isMuted: false,
@@ -64,6 +66,7 @@ export const useAppStore = defineStore('app', {
     channelsFor: (state) => (spaceId: string) => state.channelsBySpace[spaceId] ?? [],
     membersFor: (state) => (spaceId: string) => state.membersBySpace[spaceId] ?? [],
     messagesFor: (state) => (roomId: string) => state.messagesByRoom[roomId] ?? [],
+    isRoomUnread: (state) => (roomId: string) => !!state.unreadRoomIds[roomId],
 
     displayNameFor: (state) => (spaceId: string, authorId: string) => {
       if (authorId === state.myAuthorId) return 'You';
@@ -158,7 +161,18 @@ export const useAppStore = defineStore('app', {
         // our own message already played 'message-send' from sendMessage() directly
         if (message.author !== this.myAuthorId) {
           useSoundEffectsStore().play('message-receive');
+          if (room_id !== this.activeRoomId) {
+            this.unreadRoomIds[room_id] = true;
+          }
         }
+      }
+    },
+
+    /** Call when the user opens (or navigates away from) a room, so the unread dot tracks what's actually been seen. */
+    setActiveRoom(roomId: string | null) {
+      this.activeRoomId = roomId;
+      if (roomId) {
+        delete this.unreadRoomIds[roomId];
       }
     },
 

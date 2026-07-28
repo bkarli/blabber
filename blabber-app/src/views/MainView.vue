@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import SpaceSidebar from '@/components/layout/SpaceSidebar.vue';
 import RoomSidebar from '@/components/layout/RoomSidebar.vue';
@@ -8,12 +8,16 @@ import ChatHeader from '@/components/chat/ChatHeader.vue';
 import MessageList from '@/components/chat/MessageList.vue';
 import MessageInput from '@/components/chat/MessageInput.vue';
 import { MessageSquare } from 'lucide-vue-next';
+import { useAppStore } from '@/stores/app';
 
 const route = useRoute();
+const store = useAppStore();
 const spaceId = computed(() => route.params.spaceId as string | undefined);
 const roomId = computed(() => route.params.roomId as string | undefined);
 
 const membersOpen = ref(true);
+
+watch(roomId, (id) => store.setActiveRoom(id ?? null), { immediate: true });
 </script>
 
 <template>
