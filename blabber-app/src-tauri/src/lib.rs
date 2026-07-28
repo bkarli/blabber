@@ -12,7 +12,7 @@ mod call_room;
 mod event_bridge;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
-use room::{create_room, list_rooms, send_message, list_messages, get_my_author_id, my_endpoint_id};
+use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id,send_image,my_endpoint_id};
 use space::{create_server, list_servers, get_invite, join_space, leave_space, list_members};
 use call_room::{create_call_room, list_call_rooms, join_call_room, leave_call_room, list_call_participants, set_muted};
 
@@ -28,6 +28,7 @@ pub struct AppState {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             create_identity,
@@ -43,6 +44,7 @@ pub fn run() {
             create_room,
             list_rooms,
             send_message,
+            send_image,
             list_messages,
             get_my_author_id,
             my_endpoint_id,

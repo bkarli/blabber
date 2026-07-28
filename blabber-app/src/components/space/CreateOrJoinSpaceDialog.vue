@@ -93,12 +93,12 @@ async function handleJoin() {
         <TabsContent value="join" class="space-y-4 pt-4">
           <div class="space-y-2">
             <Label for="invite-ticket">Invite code</Label>
-            <Textarea
-              id="invite-ticket"
-              v-model="inviteTicket"
-              placeholder="Paste an invite code..."
-              rows="4"
-            />
+          <Textarea
+            id="invite-ticket"
+            v-model="inviteTicket"
+            placeholder="Paste an invite code..."
+            class="h-24 resize-none whitespace-pre-wrap break-all font-mono text-xs"
+          />
           </div>
           <p v-if="joinError" class="text-sm text-destructive">{{ joinError }}</p>
           <Button class="w-full" :disabled="joining" @click="handleJoin">

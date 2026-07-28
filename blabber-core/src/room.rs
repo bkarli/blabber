@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::format, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 
 use anyhow::Result;
 use iroh_blobs::store::fs::FsStore;
@@ -14,8 +14,18 @@ use crate::{Node, crypto, events::AppEvent};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
     pub author: String,
-    pub content: String,
+    pub content: MessageContent,
     pub sent_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum MessageContent {
+    Text(String),
+    Image {
+        filename: String,
+        mime: String,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Clone)]
@@ -31,7 +41,11 @@ pub struct Room {
 
 impl Room {
     /// Create a new room
-    pub async fn new(docs: &Docs, name: impl Into<String>, key: Arc<Zeroizing<[u8; 32]>>) -> Result<Self> {
+    pub async fn new(
+        docs: &Docs,
+        name: impl Into<String>,
+        key: Arc<Zeroizing<[u8; 32]>>
+    )-> Result<Self> {
         let messages = docs.create().await?;
 
         Ok(Self {
@@ -45,7 +59,13 @@ impl Room {
     }
 
     /// Construct the Room from the ticket
-    pub async fn from_ticket(docs: &Docs, id: Uuid, name: impl Into<String>, ticket: DocTicket, key: Arc<Zeroizing<[u8; 32]>>) -> Result<Self> {
+    pub async fn from_ticket(
+        docs: &Docs,
+        id: Uuid,
+        name: impl Into<String>,
+        ticket: DocTicket,
+        key: Arc<Zeroizing<[u8; 32]>>
+    ) -> Result<Self> {
         let messages = docs.import(ticket).await?;
 
         Ok(Self {
@@ -58,7 +78,13 @@ impl Room {
         })
     }
 
-    pub async fn send_message(&self, author: AuthorId, content: impl Into<String>) -> Result<()> {
+    /// Generic function to send content in a room
+    pub async fn send_content(
+        &self,
+        author: AuthorId,
+        content: MessageContent)
+    -> Result<()> {
+
         let sent_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -66,18 +92,42 @@ impl Room {
 
         let message = Message {
             author: author.to_string(),
-            content: content.into(),
-            sent_at,
-
+            content,
+            sent_at
         };
-        
-        let doc_key = format!("msg/{sent_at:020}-{author}");
 
+        let doc_key = format!("msg/{sent_at}-{author}");
         let plaintext = postcard::to_allocvec(&message)?;
         let value = crypto::encrypt(&self.key, &plaintext, self.id.as_bytes())?;
         self.messages.set_bytes(author, doc_key.into_bytes(), value).await?;
 
         Ok(())
+
+    }
+    
+    /// Send just a plain text message
+    pub async fn send_message(
+        &self,
+        author: AuthorId,
+        content: impl Into<String>
+    ) -> Result<()> {
+        self.send_content(author, MessageContent::Text(content.into())).await
+    }
+    
+    /// Send an image with correct filename
+    /// and meta data
+    pub async fn send_image(
+        &self,
+        author: AuthorId,
+        filename: impl Into<String>,
+        mime: impl Into<String>,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        self.send_content(author, MessageContent::Image {
+            filename: filename.into(),
+            mime: mime.into(),
+            data 
+        }).await
     }
 
     pub async fn list_messages(&self, blobs: FsStore) -> Result<Vec<Message>> {
@@ -145,7 +195,14 @@ impl Room {
             LiveEvent::ContentReady { hash } => {
                 let stashed = pending.lock().await.remove(&hash);
                 if let Some(entry) = stashed {
-                    Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id, key).await;
+                    Self::try_apply_entry(
+                        &cache,
+                        &entry,
+                        blobs,
+                        events,
+                        space_id,
+                        room_id,
+                        key).await;
                     println!("Hash ready")
                 }
             }
@@ -179,7 +236,15 @@ impl Room {
             let key = key.clone();
 
             async move {
-                Room::apply_event(cache, pending, event, &blobs, &events, space_id, room_id, key).await;
+                Room::apply_event(
+                    cache,
+                    pending,
+                    event,
+                    &blobs,
+                    &events,
+                    space_id,
+                    room_id,
+                    key).await;
             }
         }).await?;
         Ok(handle)

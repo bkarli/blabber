@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   "blabber-core",
   "blabber-app/src-tauri"
-]
+, "blabber-root"]
 
 
 [workspace.dependencies]

@@ -7,12 +7,6 @@ export interface SpaceInfo {
   name: string;
 }
 
-export interface Message {
-  author: string;
-  content: string;
-  sent_at: number;
-}
-
 export interface Member {
   author_id: string;
   endpoint_id: string;
@@ -25,19 +19,28 @@ export interface RoomInfo {
   name: string;
 }
 
-
 export interface ChannelInfo {
   id: string;
   name: string;
 }
 
+export type MessageContent =
+  | { kind: 'Text'; text: string }
+  | { kind: 'Image'; filename: string; mime: string; data_base64: string };
+
+export interface Message {
+  author: string;
+  content: MessageContent;
+  sent_at: number;
+}
+
 export type AppEvent =
-  | { NewMessage: { space_id: string; room_id: string; message: Message } }
-  | { NewMember: { space_id: string; member: Member } }
+  | { type: 'NewMessage'; space_id: string; room_id: string; message: Message }
+  | { type: 'NewMember'; space_id: string; member: Member }
   | { type: 'MemberLeft'; space_id: string; author_id: string }
-  | { NewRoom: { space_id: string; room_id: string; room_name: string } }
+  | { type: 'NewRoom'; space_id: string; room_id: string; room_name: string }
   | { type: 'NewCallRoom'; space_id: string; room_id: string; room_name: string }
- | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
+  | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
   | { type: 'CallParticipantLeft'; space_id: string; room_id: string; endpoint_id: string };
 
 export const useAppStore = defineStore('app', {
@@ -63,7 +66,7 @@ export const useAppStore = defineStore('app', {
     displayNameFor: (state) => (spaceId: string, authorId: string) => {
       if (authorId === state.myAuthorId) return 'You';
       const member = (state.membersBySpace[spaceId] ?? []).find((m) => m.author_id === authorId);
-      return member?.display_name ?? authorId.slice(0,8);
+      return member?.display_name ?? authorId.slice(0, 8);
     },
 
     displayNameForEndpoint: (state) => (spaceId: string, endpointId: string) => {
@@ -108,8 +111,8 @@ export const useAppStore = defineStore('app', {
           this.handleCallParticipantLeft(payload);
         }
       });
-
     },
+
     handleNewCallRoom({ space_id, room_id, room_name }: { space_id: string; room_id: string; room_name: string }) {
       const list = (this.channelsBySpace[space_id] ??= []);
       const alreadyExists = list.some((c) => c.id === room_id);
@@ -134,7 +137,6 @@ export const useAppStore = defineStore('app', {
 
     handleNewMessage({ room_id, message }: { space_id: string; room_id: string; message: Message }) {
       const list = (this.messagesByRoom[room_id] ??= []);
-      console.log(message.content);
       const alreadyExists = list.some(
         (m) => m.author === message.author && m.sent_at === message.sent_at
       );
@@ -202,11 +204,10 @@ export const useAppStore = defineStore('app', {
 
     async loadChannels(spaceId: string) {
       try {
-        const channels = await invoke<ChannelInfo[]>('list_call_rooms', {spaceId});
-        
+        const channels = await invoke<ChannelInfo[]>('list_call_rooms', { spaceId });
         this.channelsBySpace[spaceId] = channels;
       } catch (e) {
-        console.log("failed to load channels", e);
+        console.log('failed to load channels', e);
       }
     },
 
@@ -218,7 +219,6 @@ export const useAppStore = defineStore('app', {
       }
       return room;
     },
-
 
     async createChannel(spaceId: string, name: string) {
       const channel = await invoke<RoomInfo>('create_call_room', { spaceId, name });
@@ -232,6 +232,7 @@ export const useAppStore = defineStore('app', {
     async getInvite(spaceId: string) {
       return invoke<string>('get_invite', { spaceId });
     },
+
     async loadMessages(spaceId: string, roomId: string) {
       const messages = await invoke<Message[]>('list_messages', { spaceId, roomId });
       this.messagesByRoom[roomId] = messages.sort((a, b) => a.sent_at - b.sent_at);
@@ -239,6 +240,10 @@ export const useAppStore = defineStore('app', {
 
     async sendMessage(spaceId: string, roomId: string, content: string) {
       await invoke<void>('send_message', { spaceId, roomId, content });
+    },
+
+    async sendImage(spaceId: string, roomId: string, path: string) {
+      await invoke<void>('send_image', { spaceId, roomId, path });
     },
 
     async joinCallRoom(roomId: string) {
@@ -257,6 +262,10 @@ export const useAppStore = defineStore('app', {
     async setMuted(muted: boolean) {
       await invoke<void>('set_muted', { muted });
       this.isMuted = muted;
+    },
+
+    async loadCallParticipants(roomId: string) {
+      return invoke<string[]>('list_call_participants', { roomId });
     },
 
     async loadMembers(spaceId: string) {
