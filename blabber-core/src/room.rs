@@ -10,7 +10,7 @@ use uuid::Uuid;
 use serde::{Serialize,Deserialize};
 use zeroize::Zeroizing;
 
-use crate::{Node, crypto, events::AppEvent};
+use crate::{crypto, events::AppEvent};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
@@ -203,7 +203,7 @@ impl Room {
 
     pub async fn watch(
         &self,
-        node: &Node,
+        events: broadcast::Sender<AppEvent>,
         blobs: FsStore,
         label: impl Into<String>,
         space_id: Uuid,
@@ -215,11 +215,10 @@ impl Room {
         let cache = self.cache.clone();
         let pending = self.pending.clone();
         let label = label.into();
-        let events = node.events.clone();
         let room_id = self.id;
         let key = self.key.clone();
 
-        let handle = node.watch_doc(doc, label, move |event| {
+        let handle = crate::node::watch_doc(doc, label, move |event| {
             let cache = cache.clone();
             let pending = pending.clone();
             let blobs = blobs.clone();

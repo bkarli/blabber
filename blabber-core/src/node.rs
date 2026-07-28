@@ -354,25 +354,12 @@ impl Node {
     
 
     /// Generic function on watching a Document
-    pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
+    pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, on_event: F) -> Result<JoinHandle<()>>
     where
         F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
-
     {
-        let label = label.into();
-        let events = doc.subscribe().await?;
-        let handle = tokio::spawn(async move {
-            let mut events = std::pin::pin!(events);
-            while let Some(event) = events.next().await {
-                match event {
-                    Ok(event) => on_event(event).await,
-                    Err(e) => eprintln!("[{label}] event error: {e}"),
-                }
-            }
-        });
-
-        Ok(handle)
+        watch_doc(doc, label, on_event).await
     }
     pub async fn shutdown(self) -> Result<()> {
         if let Some(router) = self.router {
@@ -515,6 +502,26 @@ impl Node {
 
         Ok(result)
     }
+}
+
+pub async fn watch_doc<F, Fut>(doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
+where
+    F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let label = label.into();
+    let events = doc.subscribe().await?;
+    let handle = tokio::spawn(async move {
+        let mut events = std::pin::pin!(events);
+        while let Some(event) = events.next().await {
+            match event {
+                Ok(event) => on_event(event).await,
+                Err(e) => eprintln!("[{label}] event error: {e}"),
+            }
+        }
+    });
+
+    Ok(handle)
 }
 
 #[cfg(test)]

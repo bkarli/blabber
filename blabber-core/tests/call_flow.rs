@@ -6,35 +6,10 @@
 //! conditions (NAT traversal, path MTU, etc. can't be reproduced on one machine).
 
 use anyhow::Result;
-use blabber_core::{Identity, Node};
-use tempfile::TempDir;
 use uuid::Uuid;
 
-async fn make_node(name: &str) -> Result<(Node, TempDir)> {
-    let dir = tempfile::tempdir()?;
-    let mut node = Node::new(Identity::new(name));
-    node.create_endpoint().await?;
-    node.create_blobs(&dir.path().to_path_buf()).await?;
-    node.create_gossip().await?;
-    node.create_docs_engine(&dir.path().to_path_buf()).await?;
-    node.create_router().await?;
-    node.create_author().await?;
-    Ok((node, dir))
-}
-
-async fn wait_until<F>(timeout_ms: u64, step_ms: u64, mut check: F) -> bool
-where
-    F: FnMut() -> bool,
-{
-    let attempts = timeout_ms / step_ms;
-    for _ in 0..attempts {
-        if check() {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(step_ms)).await;
-    }
-    check()
-}
+mod common;
+use common::{make_node, wait_until};
 
 #[tokio::test]
 async fn two_peer_mesh_connects_both_directions() -> Result<()> {

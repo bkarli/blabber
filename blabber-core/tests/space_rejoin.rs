@@ -3,20 +3,9 @@
 //! `Node`s in-process over real local Iroh endpoints.
 
 use anyhow::Result;
-use blabber_core::{Identity, Node};
-use tempfile::TempDir;
 
-async fn make_node(name: &str) -> Result<(Node, TempDir)> {
-    let dir = tempfile::tempdir()?;
-    let mut node = Node::new(Identity::new(name));
-    node.create_endpoint().await?;
-    node.create_blobs(&dir.path().to_path_buf()).await?;
-    node.create_gossip().await?;
-    node.create_docs_engine(&dir.path().to_path_buf()).await?;
-    node.create_router().await?;
-    node.create_author().await?;
-    Ok((node, dir))
-}
+mod common;
+use common::make_node;
 
 #[tokio::test]
 async fn rejoin_after_leaving_resyncs_rooms_and_membership() -> Result<()> {

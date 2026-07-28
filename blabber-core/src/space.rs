@@ -323,7 +323,7 @@ impl Space {
         let blobs = node.blobs.clone().context("blobs not created yet")?;
 
         let label = format!("{}/{}", self.name, room.name);
-        room.watch(node, blobs, label, self.id).await?;
+        room.watch(node.events.clone(), blobs, label, self.id).await?;
 
         let _ = node.events.send(events::AppEvent::NewRoom {
             space_id: self.id,
@@ -389,7 +389,7 @@ impl Space {
         let mut handles = Vec::new();
         for room in rooms.iter() {
             let label = format!("{}/{}", self.name, room.name);
-            handles.push(room.watch(node, blobs.clone(), label, self.id).await?);
+            handles.push(room.watch(node.events.clone(), blobs.clone(), label, self.id).await?);
         }
         Ok(handles)
     }
@@ -487,6 +487,15 @@ impl Space {
                                 if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
                                     if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key.clone()).await {
                                         self.rooms.lock().await.push(room.clone());
+                                        let label = format!("{}/{}", self.name, room.name);
+                                        match room.watch(events.clone(), blobs.clone(), label, space_id).await {
+                                            Ok(handle) => self.watch_handles.lock().await.push(handle),
+                                            Err(e) => eprintln!(
+                                                "failed to watch newly discovered room {}: {e:#}",
+                                                room.id
+                                            ),
+                                        }
+
                                         let _ = events.send(AppEvent::NewRoom {
                                             space_id,
                                             room_id: room.id,
