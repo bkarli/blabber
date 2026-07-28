@@ -229,13 +229,25 @@ export const useAppStore = defineStore('app', {
 
     async loadRooms(spaceId: string) {
       const rooms = await invoke<RoomInfo[]>('list_rooms', { spaceId });
-      this.roomsBySpace[spaceId] = rooms;
+      // merge rather than replace: a NewRoom event from the live watcher can
+      // land while this fetch is still in flight, and a stale/incomplete
+      // snapshot resolving afterwards must not erase a room that was just
+      // correctly added - same race as loadMembers below.
+      const merged = new Map((this.roomsBySpace[spaceId] ?? []).map((r) => [r.id, r]));
+      for (const room of rooms) {
+        merged.set(room.id, room);
+      }
+      this.roomsBySpace[spaceId] = Array.from(merged.values());
     },
 
     async loadChannels(spaceId: string) {
       try {
         const channels = await invoke<ChannelInfo[]>('list_call_rooms', { spaceId });
-        this.channelsBySpace[spaceId] = channels;
+        const merged = new Map((this.channelsBySpace[spaceId] ?? []).map((c) => [c.id, c]));
+        for (const channel of channels) {
+          merged.set(channel.id, channel);
+        }
+        this.channelsBySpace[spaceId] = Array.from(merged.values());
       } catch (e) {
         console.log('failed to load channels', e);
       }
@@ -265,7 +277,17 @@ export const useAppStore = defineStore('app', {
 
     async loadMessages(spaceId: string, roomId: string) {
       const messages = await invoke<Message[]>('list_messages', { spaceId, roomId });
-      this.messagesByRoom[roomId] = messages.sort((a, b) => a.sent_at - b.sent_at);
+      // merge rather than replace: list_messages can skip a message whose
+      // content blob hasn't finished syncing locally yet (blabber-core's
+      // Room::list_messages), and a NewMessage event can also land while
+      // this fetch is still in flight - same race as loadMembers/loadRooms.
+      // Keyed the same way handleNewMessage's own dedup check is.
+      const key = (m: Message) => `${m.author}:${m.sent_at}`;
+      const merged = new Map((this.messagesByRoom[roomId] ?? []).map((m) => [key(m), m]));
+      for (const message of messages) {
+        merged.set(key(message), message);
+      }
+      this.messagesByRoom[roomId] = Array.from(merged.values()).sort((a, b) => a.sent_at - b.sent_at);
     },
 
     async sendMessage(spaceId: string, roomId: string, content: string) {
@@ -280,8 +302,19 @@ export const useAppStore = defineStore('app', {
 
     async joinCallRoom(roomId: string) {
       await invoke<void>('join_call_room', { roomId });
+      // reset first (clears any stale participants from a previous room),
+      // then set activeCallRoomId so NewCallParticipant events for this
+      // room start accumulating into a clean array before the fetch below
+      // resolves.
+      this.callParticipants = [];
       this.activeCallRoomId = roomId;
-      this.callParticipants = await invoke<string[]>('list_call_participants', { roomId });
+      const participants = await invoke<string[]>('list_call_participants', { roomId });
+      // merge rather than replace: someone else's NewCallParticipant event
+      // can land while this fetch is in flight, and a stale snapshot
+      // resolving afterwards must not erase them - same race as
+      // loadMembers/loadRooms/loadMessages. Removal stays exclusively
+      // handled by handleCallParticipantLeft.
+      this.callParticipants = Array.from(new Set([...this.callParticipants, ...participants]));
       useSoundEffectsStore().play('call-join');
     },
 
