@@ -6,6 +6,7 @@ import { Bubble, BubbleContent, BubbleGroup } from '@/components/ui/bubble';
 import { Message, MessageAvatar, MessageContent } from '@/components/ui/message';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { useAppStore, type MessageContent as MsgContent } from '@/stores/app';
+import { File } from 'lucide-vue-next';
 
 const props = defineProps<{ spaceId: string; roomId: string }>();
 const store = useAppStore();
@@ -56,6 +57,27 @@ async function openFullImage(mediaKey: string, mime: string) {
   if (base64) {
     lightboxSrc.value = `data:${mime};base64,${base64}`;
     lightboxOpen.value = true;
+  }
+}
+
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
+
+async function downloadFile(mediaKey: string, filename: string, mime: string) {
+  try {
+    const base64 = await store.getMedia(props.spaceId, props.roomId, mediaKey);
+    if (!base64) {
+      console.error('file content not available');
+      return;
+    }
+
+    const savePath = await save({ defaultPath: filename });
+    if (!savePath) return; // user cancelled
+
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    await writeFile(savePath, bytes);
+  } catch (e) {
+    console.error('failed to download file', e);
   }
 }
 
@@ -138,7 +160,7 @@ function initials(name: string) {
                 class="flex items-center gap-2 rounded-lg border border-border p-3 cursor-pointer"
                 @click="downloadFile(item.content.File.media_key, item.content.File.filename, item.content.File.mime)"
               >
-                <FileIcon class="h-6 w-6 text-muted-foreground" />
+                <File class="h-6 w-6 text-muted-foreground" />
                 <div class="min-w-0">
                   <p class="truncate text-sm font-medium">{{ item.content.File.filename }}</p>
                   <p class="text-xs text-muted-foreground">{{ (item.content.File.size / 1024).toFixed(1) }} KB</p>

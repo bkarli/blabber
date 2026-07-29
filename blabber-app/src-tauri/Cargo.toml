@@ -30,6 +30,7 @@ tauri-plugin-dialog = "2.7.2"
 
 mime_guess = { workspace = true }
 base64 = "0.23.0"
+tauri-plugin-fs = "2.5.1"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
