@@ -18,7 +18,7 @@ function initials(name: string) {
 }
 
 function isYou(authorId: string) {
-  return authorId === store.myAuthorId;
+  return authorId === store.myAuthorIdFor(props.spaceId);
 }
 </script>
 

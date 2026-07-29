@@ -16,7 +16,7 @@ async fn room_existing_before_join_syncs_messages() -> Result<()> {
     let (node_b, _dir_b) = make_node("PreexistingBob").await?;
 
     let space_a = node_a.create_space("Preexisting Room Space").await?;
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "general").await?;
     room_a.send_message(author_a, "hello before B joins").await?;
 
@@ -87,7 +87,7 @@ async fn room_created_after_join_syncs_messages() -> Result<()> {
     let mut events_b = node_b.subscribe_events();
 
     // NOW A creates a room, after B already joined
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "late-room").await?;
 
     // B should discover the room via the live info-doc watcher

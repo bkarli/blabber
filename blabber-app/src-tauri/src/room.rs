@@ -54,16 +54,16 @@ pub async fn create_room(
         .as_ref()
         .ok_or("Node not started yet")?;
 
-    let author = node
-        .author
-        .ok_or("Author not created yet")?;
-
     let spaces = state.spaces.lock().await;
 
     let space = spaces
         .iter()
         .find(|space| space.id().to_string() == space_id)
         .ok_or("Space not found")?;
+
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
 
     let room = space
         .create_room(&node, author, name)
@@ -96,14 +96,17 @@ pub async fn create_room(
         }
 
         let node_guard = state.node.lock().await;
-        let node = node_guard.as_ref().ok_or("Node not started yet")?;
-        let author = node.author.ok_or("Author not created yet")?;
+        node_guard.as_ref().ok_or("Node not started yet")?;
 
         let spaces = state.spaces.lock().await;
         let space = spaces
             .iter()
             .find(|s| s.id().to_string() == space_id)
             .ok_or("Space not found")?;
+
+        let author = space
+            .author()
+            .ok_or("this space has no writable author (blind relay?)")?;
 
         let room_uuid = Uuid::parse_str(&room_id).map_err(|e| e.to_string())?;
         let rooms = space.rooms.lock().await;
@@ -121,11 +124,14 @@ pub async fn send_image(
     path: String,
 ) -> Result<(), String> {
     let node_guard = state.node.lock().await;
-    let node = node_guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("Author not created yet")?;
+    node_guard.as_ref().ok_or("Node not started yet")?;
 
     let spaces = state.spaces.lock().await;
     let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
+
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
 
     let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
     let rooms = space.rooms.lock().await;
@@ -165,10 +171,15 @@ pub async fn list_messages(
 
 
 #[tauri::command]
-pub async fn get_my_author_id(state: State<'_, AppState>) -> Result<String, String> {
-    let guard = state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("Author not created yet")?;
+pub async fn get_my_author_id(state: State<'_, AppState>, space_id: String) -> Result<String, String> {
+    let spaces = state.spaces.lock().await;
+    let space = spaces
+        .iter()
+        .find(|s| s.id().to_string() == space_id)
+        .ok_or("Space not found")?;
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
 
     Ok(author.to_string())
 }

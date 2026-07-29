@@ -5,7 +5,9 @@ use serde::Deserialize;
 
 const TEMPLATE_TOML: &str = r#"# blabber-root config -- edit before starting the service.
 
-# How this node appears as a Member of every space it joins.
+# Display name for this node's identity. blabber-root never joins a space as
+# a Member (it's a blind, read-only relay - see README.md), so this is only
+# used locally, e.g. in log output.
 display_name = "blabber-root"
 
 # Root directory for identity.bin, blobs/, and spaces/.
@@ -16,8 +18,10 @@ data_dir = "/var/lib/blabber-root"
 # See blabber-root/README.md for the options.
 password_file = "/etc/blabber-root/password"
 
-# Invite ticket strings to auto-join at startup and on SIGHUP reload. Get one
-# from the desktop apps "Get invite" action.
+# Relay invite ticket strings to auto-join at startup and on SIGHUP reload.
+# Get one from the desktop app's "Get relay invite" action - NOT the regular
+# "Get invite" action, whose ticket carries the space's decryption key and
+# will be rejected here.
 invites = []
 "#;
 

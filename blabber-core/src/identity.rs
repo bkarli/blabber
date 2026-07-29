@@ -1,4 +1,3 @@
-use iroh_docs::{Author, AuthorId};
 // Create store and manage Identities
 use rand::prelude::*;
 use anyhow::{anyhow, Context, Result};
@@ -26,7 +25,6 @@ const KEY_LEN: usize = 32;
 pub struct Identity {
     pub displayName: String,
     pub secret: LockedSecret,
-    pub author: Option<AuthorId>
 }
 
 pub fn sanitize_path_component(name: &str) -> Option<String> {
@@ -48,19 +46,8 @@ impl Identity {
         Self {
             displayName: displayName.into(),
             secret: LockedSecret::generate_random(),
-            author: None,
         }
 
-    }
-
-    /// Rebuilds this identity with a newly-known author, reusing the same
-    /// underlying secret bytes rather than regenerating them.
-    pub fn with_author(&self, author: AuthorId) -> Self {
-        Self {
-            displayName: self.displayName.clone(),
-            secret: LockedSecret::from_bytes(self.secret.as_bytes()),
-            author: Some(author),
-        }
     }
 
     fn derive_key(password: &[u8], salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>> {
@@ -87,19 +74,6 @@ impl Identity {
         plaintext.push(name_bytes.len() as u8);
         plaintext.extend_from_slice(name_bytes);
         plaintext.extend_from_slice(self.secret.as_bytes());
-
-        // Add author to the file
-        match &self.author {
-            Some(author) => {
-                let author_bytes = author.to_bytes();
-                plaintext.push(1u8); // signal that an author is present
-                plaintext.extend_from_slice(&author_bytes);
-            }
-            None => {
-                plaintext.push(0u8); // signal that no author present
-            }
-
-        }
 
         let ciphertext = cipher
             .encrypt(nonce, plaintext.as_slice())
@@ -136,28 +110,16 @@ impl Identity {
 
 
 
-        let mut offset = 1 + name_len;
+        let offset = 1 + name_len;
         let mut secret_bytes = [0u8; 32];
         secret_bytes.copy_from_slice(&plaintext[offset..offset + 32]);
         let secret = LockedSecret::from_bytes(&secret_bytes);
         secret_bytes.zeroize();
 
-        offset += 32;
-
-        let author = match plaintext.get(offset) {
-            Some(1) => {
-                offset += 1;
-                let mut author_bytes = [0u8; 32];
-                author_bytes.copy_from_slice(&plaintext[offset..offset + 32]);
-                Some(AuthorId::from(author_bytes))
-            }
-            _ => None,
-        };
 
         Ok( Self{
             displayName,
             secret,
-            author: author
         })
     }
 }

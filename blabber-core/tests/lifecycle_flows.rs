@@ -23,15 +23,15 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
 
     let blobs_a = node_a.blobs.clone().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     // --- join ---
     let space_a = node_a.create_space("Cycle Space").await?;
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "general").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let author_b = space_b.author().unwrap();
 
     assert!(
         wait_until_async(3000, 100, || async {
@@ -213,15 +213,15 @@ async fn three_peers_interleaved_join_chat_leave_rejoin() -> Result<()> {
     let blobs_a = node_a.blobs.clone().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
     let blobs_c = node_c.blobs.clone().unwrap();
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     let space_a = node_a.create_space("Tri Space").await?;
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "general").await?;
     room_a.send_message(author_a, "msg1 from A").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let author_b = space_b.author().unwrap();
     let mut room_b = None;
     for _ in 0..50 {
         space_b.sync_rooms(&node_b, &blobs_b).await?;
@@ -365,8 +365,8 @@ async fn image_blob_content_syncs_correctly_to_late_joiners() -> Result<()> {
     let (node_b, _dir_b) = make_node("BlobBob").await?;
     let (node_c, _dir_c) = make_node("BlobCarol").await?;
 
-    let author_a = node_a.author.unwrap();
     let space_a = node_a.create_space("Blob Space").await?;
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "images").await?;
 
     // a few KB of deterministic pseudo-random bytes, big enough to be a
@@ -472,14 +472,14 @@ async fn call_room_reconnects_after_leaving_and_rejoining_same_call() -> Result<
     let (node_a, _dir_a) = make_node("ReconnectAlice").await?;
     let (node_b, _dir_b) = make_node("ReconnectBob").await?;
 
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     let space_a = node_a.create_space("Reconnect Space").await?;
+    let author_a = space_a.author().unwrap();
     let call_room_a = space_a.create_call_room(author_a, "voice").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let author_b = space_b.author().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
     let mut call_room_b = None;
     for _ in 0..50 {
@@ -548,11 +548,11 @@ async fn full_component_state_audit_after_complex_flow() -> Result<()> {
     let (node_a, _dir_a) = make_node("AuditAlice").await?;
     let (node_b, _dir_b) = make_node("AuditBob").await?;
 
-    let author_a = node_a.author.unwrap();
     let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     let space_a = node_a.create_space("Audit Space").await?;
+    let author_a = space_a.author().unwrap();
     let general_a = space_a.create_room(&node_a, author_a, "general").await?;
     let random_a = space_a.create_room(&node_a, author_a, "random").await?;
     let voice_a = space_a.create_call_room(author_a, "voice").await?;
@@ -659,9 +659,8 @@ async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<(
     let (node_a, _dir_a) = make_node("MultiAlice").await?;
     let (node_b, dir_b) = make_node("MultiBob").await?;
 
-    let author_a = node_a.author.unwrap();
-
     let space_a = node_a.create_space("Multi Space").await?;
+    let author_a = space_a.author().unwrap();
     let room1_a = space_a.create_room(&node_a, author_a, "room-one").await?;
     let room2_a = space_a.create_room(&node_a, author_a, "room-two").await?;
     let call1_a = space_a.create_call_room(author_a, "call-one").await?;

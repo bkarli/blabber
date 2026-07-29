@@ -80,6 +80,28 @@ pub async fn get_invite(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub async fn get_relay_invite(
+    state: State<'_, AppState>,
+    space_id: String,
+) -> Result<String, String> {
+    let spaces = state.spaces.lock().await;
+
+    let space = spaces
+        .iter()
+        .find(|space| space.id().to_string() == space_id)
+        .ok_or("Space not found")?;
+
+    let invite = space
+        .create_relay_invite()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    invite
+        .serialize_invite()
+        .map_err(|error| error.to_string())
+}
+
 
 #[tauri::command]
 pub async fn list_servers(state: State<'_, AppState>) -> Result<Vec<SpaceInfo>, String> {

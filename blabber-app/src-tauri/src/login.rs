@@ -55,8 +55,6 @@ async fn start_node_for_identity(
     app: &AppHandle,
     state: &State<'_, AppState>,
     identity: Identity,
-    password: &str,
-    identity_path: &std::path::Path,
 ) -> Result<(), String> {
     let blobs_path = app
         .path()
@@ -77,12 +75,6 @@ async fn start_node_for_identity(
         if let Err(e) = node.sound.set_output_device(audio_settings.output_device) {
             eprintln!("failed to apply saved output device: {e:#}");
         }
-    }
-
-    if let Some(updated_identity) = node.identity_with_author() {
-        updated_identity
-            .store(password, identity_path)
-            .map_err(|error| error.to_string())?;
     }
 
     crate::event_bridge::spawn_event_bridge(app.clone(), &node);
@@ -125,7 +117,7 @@ pub async fn create_identity(
 
     let display_name_for_return = identity.displayName.clone();
 
-    start_node_for_identity(&app, &state, identity, &password, &path).await?;
+    start_node_for_identity(&app, &state, identity).await?;
 
     Ok(display_name_for_return)
 }
@@ -147,7 +139,7 @@ pub async fn login(
 
     let display_name_for_return = identity.displayName.clone();
 
-    start_node_for_identity(&app, &state, identity, &password, &path).await?;
+    start_node_for_identity(&app, &state, identity).await?;
 
     Ok(display_name_for_return)
 }

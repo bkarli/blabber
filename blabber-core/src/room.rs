@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iroh_blobs::store::fs::FsStore;
 use iroh_docs::{AuthorId, DocTicket, Entry, api::Doc, engine::LiveEvent, protocol::Docs, store::Query};
 use n0_future::StreamExt;
@@ -31,7 +31,7 @@ pub struct Room {
     pub name: String,
     pub messages: Doc,
     pub cache: Arc<Mutex<Vec<Message>>>,
-    key: Arc<Zeroizing<[u8; 32]>>,
+    key: Option<Arc<Zeroizing<[u8; 32]>>>,
 
     pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
 }
@@ -41,7 +41,7 @@ impl Room {
     pub async fn new(
         docs: &Docs,
         name: impl Into<String>,
-        key: Arc<Zeroizing<[u8; 32]>>
+        key: Option<Arc<Zeroizing<[u8; 32]>>>
     )-> Result<Self> {
         let messages = docs.create().await?;
 
@@ -61,7 +61,7 @@ impl Room {
         id: Uuid,
         name: impl Into<String>,
         ticket: DocTicket,
-        key: Arc<Zeroizing<[u8; 32]>>
+        key: Option<Arc<Zeroizing<[u8; 32]>>>
     ) -> Result<Self> {
         let messages = docs.import(ticket).await?;
 
@@ -81,6 +81,10 @@ impl Room {
         author: AuthorId,
         content: MessageContent)
     -> Result<()> {
+        let key = self
+            .key
+            .as_ref()
+            .context("cannot send a message: no decryption key (blind relay?)")?;
 
         let sent_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -92,10 +96,9 @@ impl Room {
             content,
             sent_at
         };
-
-        let doc_key = format!("msg/{sent_at}-{author}");
+        let doc_key = format!("msg/{}", Uuid::new_v4());
         let plaintext = postcard::to_allocvec(&message)?;
-        let value = crypto::encrypt(&self.key, &plaintext, self.id.as_bytes())?;
+        let value = crypto::encrypt(key, &plaintext, self.id.as_bytes())?;
         self.messages.set_bytes(author, doc_key.into_bytes(), value).await?;
 
         Ok(())
@@ -122,6 +125,11 @@ impl Room {
     }
 
     pub async fn list_messages(&self, blobs: FsStore) -> Result<Vec<Message>> {
+        // a blind relay has no key, so it never learns message content
+        let Some(key) = self.key.as_ref() else {
+            return Ok(Vec::new());
+        };
+
         let entries = self
             .messages
             .get_many(Query::single_latest_per_key().key_prefix("msg/"))
@@ -134,7 +142,7 @@ impl Room {
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { continue };
-            let Ok(plaintext) = crypto::decrypt(&self.key, &bytes, self.id.as_bytes()) else { continue };
+            let Ok(plaintext) = crypto::decrypt(key, &bytes, self.id.as_bytes()) else { continue };
             let Ok(message) = postcard::from_bytes::<Message>(&plaintext) else { continue };
             messages.push(message);
         }
@@ -150,8 +158,9 @@ impl Room {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
-        key: Arc<Zeroizing<[u8; 32]>>,
+        key: Option<Arc<Zeroizing<[u8; 32]>>>,
     ) -> bool {
+        let Some(key) = key else { return false; };
         if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
             if let Ok(plaintext) = crypto::decrypt(&key, &bytes, room_id.as_bytes()) {
                 if let Ok(message) = postcard::from_bytes::<Message>(&plaintext) {
@@ -173,7 +182,7 @@ impl Room {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
-        key: Arc<Zeroizing<[u8; 32]>>,
+        key: Option<Arc<Zeroizing<[u8; 32]>>>,
     ) {
         match event {
             LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } => {

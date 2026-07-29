@@ -32,8 +32,7 @@ pub struct Node {
     pub router: Option<Router>,
     pub blobs: Option<FsStore>,
     pub docs: Option<Docs>,
-    pub author: Option<AuthorId>,
-    
+
     // Node can produce App Events and GUI can subscribe to these events
     pub events: broadcast::Sender<AppEvent>,
     pub spaces: Arc<Mutex<Vec<Space>>>,
@@ -58,7 +57,6 @@ impl Node {
             router: None,
             blobs: None,
             docs: None,
-            author: None,
             events,
             spaces: Arc::new(Mutex::new(Vec::new())),
             active_call_rooms: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -170,39 +168,31 @@ impl Node {
         Ok(())
     }
 
-    pub async fn create_author(&mut self) -> Result<()> {
-        let docs = self.docs.as_ref().context("Docs engine not created yet")?;
-        
-        // create the author only if there is None in the identity
-        let author = match self.identity.author {
-            Some(existing) => existing,
-            None => {
-                let new_author = docs.author_create().await?;
-                // set the newly created author in the identity
-                self.identity.author = Some(new_author);
-                new_author
-            }
-        };
-        self.author = Some(author);
-        Ok(())
-    }
-
-    /// Rebuilds a copy of this node's identity with the now-known author, for
-    /// re-persisting to disk. Keeps `LockedSecret` construction internal to
-    /// `blabber-core` rather than exposing raw secret bytes to callers.
-    /// Returns `None` if no author has been created yet.
-    pub fn identity_with_author(&self) -> Option<Identity> {
-        self.author.map(|author| self.identity.with_author(author))
+    /// Derive this identity's signing author for specific space
+    /// from the identity secret and the space id, then
+    /// register it with the docs engine so it can sign entries.
+    pub async fn space_author(&self, space_id: Uuid) -> Result<AuthorId> {
+        let docs = self.docs.as_ref().context("docs engine not created yet")?;
+        let seed = blake3::derive_key(
+            "blabber space author v1",
+            &[self.identity.secret.as_bytes().as_slice(), space_id.as_bytes()].concat(),
+        );
+        let author = iroh_docs::Author::from_bytes(&seed);
+        let author_id = author.id();
+        docs.author_import(author).await?;
+        Ok(author_id)
     }
 
     pub async fn create_space(&self, name: impl Into<String>) -> Result<Space> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        
+
         let endpoint_id = endpoint.id().to_string();
 
-        let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
+        let space_id = Uuid::new_v4();
+        let author = self.space_author(space_id).await?;
+
+        let space = Space::new(docs, space_id, author, endpoint_id, self.identity.displayName.clone(), name).await?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
         let label = format!("{}/members", space.name());
         space.watch_members(self, blobs.clone(), label).await?;
@@ -217,10 +207,10 @@ impl Node {
 
     pub async fn join_space(&self, invite: Invite) -> Result<Space> {
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         let endpoint_id = endpoint.id().to_string();
 
+        let author = self.space_author(invite.space_id).await?;
         let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
         let label = format!("{}/members", space.name());
@@ -232,13 +222,27 @@ impl Node {
         Ok(space)
         }
 
+    /// Join a space as a blind relay: read-only sync/seed access
+    /// Intended for `blabber-root`, not the desktop app.
+    pub async fn join_space_relay(&self, invite: crate::invite::RelayInvite) -> Result<Space> {
+        let docs = self.docs.as_ref().context("docs engine not created yet")?;
+
+        let space = Space::from_relay_invite(docs, invite).await?;
+        let blobs = self.blobs.clone().context("blobs not created yet")?;
+        let label = format!("{}/members", space.name());
+        space.watch_members(self, blobs.clone(), label).await?;
+        let label = format!("{}/info", space.name());
+        space.watch_info(self, blobs, label).await?;
+
+        self.spaces.lock().await.push(space.clone());
+        Ok(space)
+    }
+
     /// Leave a space for good! remove identity from the space member
     /// list, stop syncing it, drop the local
     /// document replicas, and delete the invite/meta directory so
     /// `load_spaces` won't load it on next launch.
     pub async fn leave_space(&self, space_id: Uuid, spaces_root: PathBuf) -> Result<()> {
-        let author = self.author.context("author not created yet")?;
-
         let space = {
             let mut spaces = self.spaces.lock().await;
             let index = spaces
@@ -248,6 +252,9 @@ impl Node {
             spaces.remove(index)
         };
 
+        let author = space
+            .author()
+            .context("this space has no writable author (blind relay?)")?;
         space.leave(author).await?;
 
         let user_root = self.add_idetity_to_path(&spaces_root)?;
@@ -274,7 +281,6 @@ impl Node {
         let root_path = self.add_idetity_to_path(&root_path)?;
         tokio::fs::create_dir_all(&root_path).await?;
         let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
         let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
         let endpoint_id = endpoint.id().to_string();
         let display_name = self.identity.displayName.clone();
@@ -306,20 +312,31 @@ impl Node {
             }
             
             let encrypted = fs::read(&invite_path).await?;
-            let invite = match Invite::deserialize_invite_encrypted(&encrypted, &self.local_storage_key()){
-                Ok(i) => i,
-                Err(e) =>{
-                    eprintln!("skipping unreadable space {dir_name}: {e}");
-                    continue;
+            let storage_key = self.local_storage_key();
+            let space = if let Ok(invite) = Invite::deserialize_invite_encrypted(&encrypted, &storage_key) {
+                let author = match self.space_author(invite.space_id).await {
+                    Ok(author) => author,
+                    Err(e) => {
+                        eprintln!("skipping space {dir_name}: failed to derive author: {e:#}");
+                        continue;
+                    }
+                };
+                Space::from_invite(
+                    docs,
+                    invite,
+                    author,
+                    endpoint_id.clone(),
+                    display_name.clone(),
+                ).await?
+            } else {
+                match crate::invite::RelayInvite::deserialize_invite_encrypted(&encrypted, &storage_key) {
+                    Ok(invite) => Space::from_relay_invite(docs, invite).await?,
+                    Err(e) => {
+                        eprintln!("skipping unreadable space {dir_name}: {e}");
+                        continue;
+                    }
                 }
             };
-            let space = Space::from_invite(
-                docs,
-                invite,
-                author,
-                endpoint_id.clone(),
-                display_name.clone(),
-            ).await?;
 
 
             space
@@ -387,7 +404,6 @@ impl Node {
         self.create_gossip().await?;
         self.create_blobs(&blobs_path).await?;
         self.create_docs_engine(&blobs_path).await?;
-        self.create_author().await?;
         self.create_router().await?;
         Ok(())
     }
@@ -467,7 +483,7 @@ impl Node {
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
         let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
         let my_id = endpoint.id().to_string();
-        let author = self.author.context("author not created yet")?;
+        let author = self.space_author(space_id).await?;
         let blobs = self.blobs.clone().context("blobs not created yet")?;
 
         // let CallRoomProtocol::accept find our space when someone else dials into us later
@@ -562,7 +578,10 @@ mod tests {
             joined_at: 0,
         };
         let key = format!("member/{bob_author}");
-        let value = postcard::to_allocvec(&bob).context("failed to encode member")?;
+        let space_key = space.key().context("space has no key")?;
+        let plaintext = postcard::to_allocvec(&bob).context("failed to encode member")?;
+        let value = crate::crypto::encrypt(&space_key, &plaintext, space.id().as_bytes())
+            .context("failed to encrypt member")?;
         space
             .members
             .set_bytes(bob_author, key.into_bytes(), value)
@@ -595,7 +614,7 @@ mod tests {
 
         let mut events = node.subscribe_events();
         let space = node.create_space("Test Space").await?;
-        let author = node.author.context("author not created")?;
+        let author = space.author().context("author not created")?;
 
         space.leave(author).await?;
 

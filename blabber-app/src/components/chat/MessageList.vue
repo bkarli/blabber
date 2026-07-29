@@ -21,7 +21,7 @@ interface MessageGroup {
 const grouped = computed(() => {
   const groups: MessageGroup[] = [];
   for (const msg of messages.value) {
-    const isOwn = msg.author === store.myAuthorId;
+    const isOwn = msg.author === store.myAuthorIdFor(props.spaceId);
     const last = groups[groups.length - 1];
     if (last && last.author === msg.author) {
       last.contents.push(msg.content);

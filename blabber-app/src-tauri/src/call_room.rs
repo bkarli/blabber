@@ -35,13 +35,15 @@ pub async fn create_call_room(
     }
     let space_uuid: Uuid = space_id.parse().map_err(|e| format!("invalid space id: {e}"))?;
     let node_guard = state.node.lock().await;
-    let node = node_guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("author not created yet")?;
+    node_guard.as_ref().ok_or("Node not started yet")?;
     let spaces = state.spaces.lock().await;
     let space = spaces
         .iter()
         .find(|s| s.id() == space_uuid)
         .ok_or("space not found")?;
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
     let room = space
         .create_call_room(author, name)
         .await
@@ -133,7 +135,8 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
     let Some((space_id, room)) = find_call_room(&spaces, room_uuid).await else {
         return Ok(());
     };
-    if let Some(author) = node.author {
+    let author = spaces.iter().find(|s| s.id() == space_id).and_then(|s| s.author());
+    if let Some(author) = author {
         let _ = room.set_membership(author, my_id.clone(), false).await;
     }
     let _ = node.events.send(blabber_core::events::AppEvent::CallParticipantLeft {

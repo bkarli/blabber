@@ -1,9 +1,16 @@
 # blabber-root
 
 A headless, GUI-free build of the Blabber node, meant to run permanently on
-a server. It joins the spaces you configure and stays online as a normal
- Member, so those spaces keep syncing and message/room history
-stays reachable.
+a server. It joins the spaces you configure as a **blind relay**, not a
+Member: it syncs and seeds ciphertext (messages, room/call metadata) so
+those spaces stay reachable even when every human member is offline, but it
+never receives the space's decryption key, never appears in the member
+list, and is structurally unable to decrypt anything or write content -
+enforced by `iroh-docs`' own read-only capability, not just app-level policy.
+This matters because this is the one component meant to run unattended and
+exposed on the public internet, so it's the most likely single point of
+compromise; a compromised relay under this design still can't read your
+messages.
 
 It reuses `blabber-core::node::Node` as the desktop app
 (`blabber-app`) does.
@@ -30,19 +37,26 @@ exits with instructions, it never boots with guessed defaults.
 
 | Field           | Meaning                                                                                      |
 |-----------------|----------------------------------------------------------------------------------------------|
-| `display_name`  | How this node appears as a Member of every space it joins. Default: `"blabber-root"`.        |
+| `display_name`  | Local-only label for this node's identity (e.g. in log output) - it's never shown as a space Member. Default: `"blabber-root"`. |
 | `data_dir`      | Root directory for `identity.bin`, `blobs/`, and `spaces/`.                                  |
 | `password_file` | Path to a file whose trimmed contents is the identity password. See below.                   |
-| `invites`       | List of invite ticket strings to auto-join at startup and on `SIGHUP` reload. Default: `[]`. |
+| `invites`       | List of **relay** invite ticket strings to auto-join at startup and on `SIGHUP` reload. Default: `[]`. |
 
 On first run, an identity is created
 automatically using `display_name` and encrypted with the password from
 `password_file`.
 
-### Getting an invite ticket
+### Getting a relay invite ticket
 
-In the desktop app, use the existing "Get invite" / "Copy invite" action for
-a space, and paste the resulting code into the `invites` array.
+In the desktop app, use the "Get relay invite" action for a space (distinct
+from the regular "Get invite" action used to invite human members), and
+paste the resulting code into the `invites` array.
+
+A regular member invite ticket carries the space's decryption key and is
+deliberately rejected here rather than silently accepted: `blabber-root`
+only ever parses the relay-invite format, so pasting the wrong kind of
+ticket fails loudly (logged and skipped) instead of quietly handing this
+internet-facing process a key it should never hold.
 
 ## Password file
 
