@@ -13,7 +13,7 @@ mod audio;
 mod event_bridge;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
-use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id,send_image,my_endpoint_id};
+use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id,send_image,my_endpoint_id,send_file,get_media};
 use space::{create_server, list_servers, get_invite, join_space, leave_space, list_members};
 use call_room::{create_call_room, list_call_rooms, join_call_room, leave_call_room, list_call_participants, set_muted};
 use audio::{list_audio_devices, set_input_device, set_output_device, play_sound_effect};
@@ -48,6 +48,8 @@ pub fn run() {
             list_rooms,
             send_message,
             send_image,
+            send_file,
+            get_media,
             list_messages,
             get_my_author_id,
             my_endpoint_id,

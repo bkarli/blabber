@@ -1,6 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
+use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 
 use crate::AppState;
 
@@ -143,6 +144,57 @@ pub async fn send_image(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn send_file(
+    state: State<'_, AppState>,
+    space_id: String,
+    room_id: String,
+    path: String,
+) -> Result<(), String> {
+    let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
+    let author = node.author.ok_or("Author not created yet")?;
+
+    let spaces = state.spaces.lock().await;
+    let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
+
+    let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
+    let rooms = space.rooms.lock().await;
+    let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
+
+    let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    let filename = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+
+    room.send_file(author, filename, mime, data).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_media(
+    state: State<'_, AppState>,
+    space_id: String,
+    room_id: String,
+    media_key: String,
+) -> Result<Option<String>, String> { // returns base64, or None
+    let node_guard = state.node.lock().await;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
+    let blobs = node.blobs.clone().ok_or("Blobs not created yet")?;
+
+    let spaces = state.spaces.lock().await;
+    let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
+
+    let room_uuid = Uuid::parse_str(&room_id).map_err(|e| e.to_string())?;
+    let rooms = space.rooms.lock().await;
+    let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
+
+    let bytes = room.get_media(&media_key, blobs).await.map_err(|e| e.to_string())?;
+    Ok(bytes.map(|b| base64_engine.encode(b)))
+}
 #[tauri::command]
 pub async fn list_messages(
     state: State<'_, AppState>,

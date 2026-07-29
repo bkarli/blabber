@@ -31,7 +31,8 @@ pub struct Member {
 pub struct RoomRecord {
     id: Uuid,
     name: String,
-    ticket: String,
+    messages_ticket: String,
+    media_ticket: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -304,12 +305,14 @@ impl Space {
         let name = name.into();
         let room = Room::new(&self.docs, name.clone(), self.key.clone()).await?;
 
-        let ticket = room.messages.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+        let messages_ticket = room.messages.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+        let media_ticket = room.media.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
 
         let record = RoomRecord {
             id: room.id,
             name: name.clone(),
-            ticket: ticket.to_string(),
+            messages_ticket: messages_ticket.to_string(),
+            media_ticket: media_ticket.to_string(),
         };
 
         let key = format!("room/{}", room.id);
@@ -379,8 +382,9 @@ impl Space {
             };
 
             if !already_known {
-                let ticket = DocTicket::from_str(&record.ticket)?;
-                let room = Room::from_ticket(&self.docs, record.id, record.name, ticket, self.key.clone()).await?;
+                let messages_ticket = DocTicket::from_str(&record.messages_ticket)?;
+                let media_ticket = DocTicket::from_str(&record.media_ticket)?;
+                let room = Room::from_ticket(&self.docs, record.id, record.name, messages_ticket, media_ticket, self.key.clone()).await?;
                 self.rooms.lock().await.push(room);
             }
         }
@@ -484,8 +488,11 @@ impl Space {
                                 rooms.iter().any(|r| r.id == record.id)
                             };
                             if !already_known {
-                                if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
-                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key.clone()).await {
+                                if let Ok(messages_ticket) = DocTicket::from_str(&record.messages_ticket) {
+                                    let Ok(media_ticket) = DocTicket::from_str(&record.media_ticket) else {
+                                        return false;
+                                    };
+                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), messages_ticket, media_ticket, self.key.clone()).await {
                                         self.rooms.lock().await.push(room.clone());
                                         let label = format!("{}/{}", self.name, room.name);
                                         match room.watch(events.clone(), blobs.clone(), label, space_id).await {

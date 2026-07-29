@@ -26,6 +26,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 n0-future = { workspace = true }
 data-encoding = { workspace = true }
 memsec = "0.7.0"
+image = "0.25.10"
 
 base64 = { workspace = true }
 

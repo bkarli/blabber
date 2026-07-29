@@ -27,7 +27,8 @@ export interface ChannelInfo {
 
 export type MessageContent =
   | { Text: { text: string } }
-  | { Image: { filename: string; mime: string; data_base64: string } };
+  | { Image: { filename: string; mime: string; thumbnail_base64: string; media_key: string } }
+  | { File: { filename: string; mime: string; size: number; media_key: string } };
 
 export interface Message {
   author: string;
@@ -290,6 +291,10 @@ export const useAppStore = defineStore('app', {
       this.messagesByRoom[roomId] = Array.from(merged.values()).sort((a, b) => a.sent_at - b.sent_at);
     },
 
+    async loadFullImage(spaceId: string, roomId: string, messageKey: string) {
+      return invoke<Message>('get_exact_message', { spaceId, roomId, messageKey });
+    },
+
     async sendMessage(spaceId: string, roomId: string, content: string) {
       await invoke<void>('send_message', { spaceId, roomId, content });
       useSoundEffectsStore().play('message-send');
@@ -298,6 +303,14 @@ export const useAppStore = defineStore('app', {
     async sendImage(spaceId: string, roomId: string, path: string) {
       await invoke<void>('send_image', { spaceId, roomId, path });
       useSoundEffectsStore().play('message-send');
+    },
+
+    async sendFile(spaceId: string, roomId: string, path: string) {
+      await invoke<void>('send_file', { spaceId, roomId, path });
+    },
+
+    async getMedia(spaceId: string, roomId: string, mediaKey: string) {
+      return invoke<string | null>('get_media', { spaceId, roomId, mediaKey });
     },
 
     async joinCallRoom(roomId: string) {

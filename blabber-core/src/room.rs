@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
+use image::imageops::FilterType;
 
 use anyhow::Result;
 use iroh_blobs::store::fs::FsStore;
@@ -22,7 +23,18 @@ pub struct Message {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum MessageContent {
     Text { text: String },
-    Image { filename: String, mime: String, data_base64: String },
+    Image {
+        filename: String,
+        mime: String,
+        thumbnail_base64: String,
+        media_key: String,
+    },
+    File {
+        filename: String,
+        mime: String,
+        size: u64,
+        media_key: String
+    },
 }
 
 #[derive(Clone)]
@@ -30,9 +42,10 @@ pub struct Room {
     pub id: Uuid,
     pub name: String,
     pub messages: Doc,
+    pub media: Doc,
+
     pub cache: Arc<Mutex<Vec<Message>>>,
     key: Arc<Zeroizing<[u8; 32]>>,
-
     pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
 }
 
@@ -44,11 +57,13 @@ impl Room {
         key: Arc<Zeroizing<[u8; 32]>>
     )-> Result<Self> {
         let messages = docs.create().await?;
+        let media = docs.create().await?;
 
         Ok(Self {
             id: Uuid::new_v4(),
             name: name.into(),
             messages,
+            media,
             cache: Arc::new(Mutex::new(Vec::new())),
             key,
             pending: Arc::new(Mutex::new(HashMap::new()))
@@ -61,14 +76,16 @@ impl Room {
         id: Uuid,
         name: impl Into<String>,
         ticket: DocTicket,
+        media_ticket: DocTicket,
         key: Arc<Zeroizing<[u8; 32]>>
     ) -> Result<Self> {
         let messages = docs.import(ticket).await?;
-
+        let media = docs.import(media_ticket).await?;
         Ok(Self {
             id: id,
             name: name.into(),
             messages,
+            media,
             cache: Arc::new(Mutex::new(Vec::new())),
             key,
             pending: Arc::new(Mutex::new(HashMap::new()))
@@ -79,8 +96,8 @@ impl Room {
     pub async fn send_content(
         &self,
         author: AuthorId,
-        content: MessageContent)
-    -> Result<()> {
+        content: MessageContent
+    ) -> Result<()> {
 
         let sent_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -107,6 +124,32 @@ impl Room {
         self.send_content(author, MessageContent::Text { text: content.into() }).await
     }
 
+    /// create a thumbail base64 encoded
+    fn generate_thumbnail(data: &[u8]) -> Result<String> {
+        let img = image::load_from_memory(data)?;
+        let thumb = img.resize(240, 240, FilterType::Triangle);
+
+        let mut buf = Vec::new();
+        thumb.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)?;
+        Ok(base64_engine.encode(&buf))
+    }
+
+    // store the media in the doc
+    pub async fn store_media(
+        &self,
+        author: AuthorId,
+        data: &[u8],
+    ) -> Result<String> {
+        // create a new media key
+        let media_key = format!("media/{}", Uuid::new_v4());
+        let encrypted = crypto::encrypt(&self.key, data, self.id.as_bytes())?;
+
+        // store the media in the doc
+        self.media.set_bytes(author, media_key.clone().into_bytes(), encrypted).await?;
+        Ok(media_key)
+    }
+
+    /// send an image
     pub async fn send_image(
         &self,
         author: AuthorId,
@@ -114,12 +157,63 @@ impl Room {
         mime: impl Into<String>,
         data: Vec<u8>,
     ) -> Result<()> {
+        let thumbnail_base64 = Room::generate_thumbnail(&data)?;
+        let media_key = self.store_media(author, &data).await?;
+
         self.send_content(author, MessageContent::Image {
             filename: filename.into(),
             mime: mime.into(),
-            data_base64: base64_engine.encode(data),
+            thumbnail_base64,
+            media_key,
         }).await
     }
+    
+    /// send a file
+    pub async fn send_file(
+        &self,
+        author: AuthorId,
+        filename: impl Into<String>,
+        mime: impl Into<String>,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        let size = data.len() as u64;
+        let media_key = self.store_media(author, &data).await?;
+        
+        self.send_content(author, MessageContent::File {
+            filename: filename.into(), 
+            mime: mime.into(), 
+            size,
+            media_key,
+        }).await
+    }
+
+    
+    /// get the media from the media store
+    /// Returns nothing if the media not in the store
+    pub async fn get_media(
+        &self,
+        media_key: &str,
+        blobs: FsStore,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(entry) = self
+            .media
+            .get_one(Query::single_latest_per_key().key_exact(media_key))
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else {
+            return Ok(None);
+        };
+
+        let Ok(plaintext) = crypto::decrypt(&self.key, &bytes, self.id.as_bytes()) else {
+            return Ok(None);
+        };
+
+        Ok(Some(plaintext.to_vec()))
+    }
+
 
     pub async fn list_messages(&self, blobs: FsStore) -> Result<Vec<Message>> {
         let entries = self
@@ -139,6 +233,42 @@ impl Room {
             messages.push(message);
         }
         Ok(messages)
+    }
+
+    /// get an exact message
+    pub async fn get_exact_message(
+        &self,
+        key: impl Into<String>,
+        blobs: FsStore,
+    ) -> Result<Option<Message>> {
+        let key = key.into();
+        
+        // get the entry
+        let Some(entry) = self
+            .messages
+            .get_one(Query::single_latest_per_key().key_exact(key))
+            .await? 
+        else { // key not found
+            return Ok(None)
+        };
+        
+        // get the bytes
+        let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else {
+            return Ok(None);
+        };
+
+        // decrypt the bytes
+        let Ok(plaintext) = crypto::decrypt(&self.key, &bytes, self.id.as_bytes()) else {
+            return Ok(None);
+        };
+
+        // try parse the message
+        let Ok(message) = postcard::from_bytes::<Message>(&plaintext) else {
+            return Ok(None);
+        };
+
+        Ok(Some(message))
+
     }
 
     /// If a new message event comes in apply the message to the in memory
