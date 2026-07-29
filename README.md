@@ -9,10 +9,16 @@ Blabber is a peer-to-peer chat and voice application developed as for the course
 - voice channel list include members that are in call
 - File sharing
 - Updater/CICD
+
+- Wordle
+
 - Identity customization (profile picture)
-- Sounds
-- notifications
-- rejoining
+- Different sounds
+- Notifications -> (push?)
+- Member permissions
+- Associated roles
+- mute rooms
+- potentially encrypt files at rest
 
 - Mobile APP
 
