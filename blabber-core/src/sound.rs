@@ -329,13 +329,12 @@ pub fn decode_mp3_to_wire_rate(bytes: &[u8]) -> Result<DecodedSound> {
 }
 
 /// Length of the linear fade applied to the start/end of a sound effect, to
-/// avoid the audible click a hard start/stop discontinuity would otherwise
+/// avoid the audible click a hard start/stop would
 /// produce mid-waveform.
 const SFX_FADE_MS: usize = 5;
 const SFX_FADE_SAMPLES: usize = (WIRE_SAMPLE_RATE as usize) / 1000 * SFX_FADE_MS;
 
-/// A one-shot sound-effect voice: plays its samples once (fading in/out at
-/// the edges to avoid clicks), then reports finished so the mixer removes it.
+/// A one-shot sound-effect voice: plays its samples once, then reports finished so the mixer removes it.
 struct SfxVoice {
     samples: Arc<Vec<f32>>,
     cursor: usize,
@@ -421,7 +420,7 @@ fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamS
 
 /// Owns the output streams thread: builds a stream for the
 /// current device, then alternates between waiting for a control command and
-/// running a mix tick every MIX_CHUNK_MS. Only this thread ever touches the
+/// running a mix tick every MIX_CHUNK_MS. Only this thread touches the
 /// `cpal::Stream`/`Device`, because they aren't `Send`.
 fn output_thread_main(
     voices: VoiceList,
@@ -441,13 +440,6 @@ fn output_thread_main(
         }
     };
 
-    // Ordinary OS thread scheduling gives no real-time guarantee on how
-    // promptly `recv_timeout` actually wakes up. Producing a fixed-size
-    // chunk per wake-up regardless of how late it was would let the mixer's
-    // output supply drift behind the device's steady consumption rate,
-    // periodically starving `pending` in the audio callback and zero-filling
-    // gaps - audible as clicking/crackling. Sizing each chunk to the actual
-    // elapsed time keeps supply matched to real time even under jitter.
     let mut last_tick = std::time::Instant::now();
 
     loop {

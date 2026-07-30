@@ -28,11 +28,7 @@ pub struct Member {
     pub endpoint_id: String,
     pub display_name: String,
     pub joined_at: u64,
-    /// True for a blind relay's own presence entry (written in cleartext
-    /// under the `relay/` key prefix, never `member/`), false for a real
-    /// member. A relay is still never able to decrypt or forge a real
-    /// member's encrypted record - this only lets it announce its own
-    /// presence.
+    /// True for a blind relays own presence entry.
     #[serde(default)]
     pub is_relay: bool,
 }
@@ -46,7 +42,7 @@ pub struct RoomRecord {
 }
 
 /// Cleartext discovery pointer for a room: no name, and both tickets are read only, a blind relay
-/// can sync/seed both the messages and media docs without ever being able
+/// can sync/seed both the messages and media docs without being able
 /// to write to them or decrypt their content.
 #[derive(Serialize, Deserialize)]
 pub struct RoomRelayRecord {
@@ -74,11 +70,11 @@ enum SpaceEvents {
     MemberEvent,
 }
 
-/// A shared space: an `info` doc (room/call-room directory) and a `members`
-/// doc (roster), synced peer-to-peer via `iroh-docs`. Every entry is
+/// A shared space: an `info` doc and a `members`
+/// doc, synced peer-to-peer through iroh-docs. Every entry is
 /// encrypted with `key` except the `blind relay` discovery pointers
-/// (`room-relay/`, `callroom-relay/`, `relay/`), which are deliberately
-/// cleartext so a keyless relay can still find and seed them. `key` and
+/// (`room-relay/`, `callroom-relay/`, `relay/`), which are
+/// cleartext so a keyless relay can still find and distribute them. `key` and
 /// `author` are `None` for a blind relay: it can sync and seed every doc,
 /// but never decrypt or write real content.
 #[derive(Clone)]
@@ -101,12 +97,12 @@ pub struct Space {
     pending_room: Arc<Mutex<HashMap<Hash, Entry>>>,
 
     /// background tasks spawned by `watch_members`/`watch_info`, kept
-    /// so `leave` can stop them instead of leaking them detached forever.
+    /// so `leave` can stop them instead of leaking them detached.
     watch_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Space {
-    /// Creates a brand-new space with a freshly generated key. `id` comes
+    /// Creates a new space with a freshly generated key. `id` comes
     /// from the caller rather than being generated here, since
     /// `Node::create_space` needs it up front to derive `author` before it
     /// can build this `Space` at all.
@@ -180,13 +176,9 @@ impl Space {
         Ok(())
     }
 
-    /// Announce this blind relay's own presence in the members doc, so a
+    /// Announce this relay's own presence in the members doc, so a
     /// real member's member list shows "there's a relay attached to this
-    /// space" - clearly marked, never mistaken for a human. Written in
-    /// cleartext under a `relay/` key prefix, distinct from the encrypted
-    /// `member/` records real members write: a relay never holds the space
-    /// key to encrypt with, and this record carries nothing sensitive,
-    /// only its own presence.
+    /// space"
     async fn insert_self_as_relay(
         &self,
         author: AuthorId,
@@ -214,7 +206,7 @@ impl Space {
 
     /// Remove yourself from the members doc. This writes a "tombstone" entry
     /// empty value under same key, rather than deleting anything
-    /// locally-only, so the departure replicates to every other peer that's
+    /// locally-only, so the departure distributes to every other peer that's
     /// syncing this space's `members` doc.
     async fn remove_self_as_member(&self, author: AuthorId) -> Result<()> {
         let key = format!("member/{author}");
@@ -226,7 +218,7 @@ impl Space {
     /// stop syncing, and drop the local document replicas.
     ///
     /// Note: the tombstone write above is only queued for replication when
-    /// this returns, not confirmed as received by every peer. We give it a
+    /// this returns, not confirmed by every peer. We give it a
     /// short window to go out over any already-connected gossip/sync
     /// sessions before tearing the local docs down. peers we weren't
     /// connected to at the moment of leaving may not see the
@@ -286,7 +278,7 @@ impl Space {
 
     /// Create a space from a RelayInvite: a keyless blind relay. It can
     /// sync/seed the space's docs but never decrypt or write real content.
-    /// It does get its own (locally-derived) author, used for exactly one
+    /// It does get its own author, used for one
     /// thing: signing its own cleartext presence entry in the members doc.
     pub async fn from_relay_invite(
         docs: &Docs,
@@ -334,7 +326,7 @@ impl Space {
         RelayInvite::from_space(self).await
     }
 
-    /// Persists this space's invite (encrypted for local storage) under
+    /// Persists this space's invite under
     /// `root_path/<space-id>/meta/invite.txt`, so `Node::load_spaces` can
     /// reload it later. Picks a real `Invite` or a keyless `RelayInvite`
     /// depending on whether this space has a key.
@@ -353,10 +345,8 @@ impl Space {
     pub async fn list_members(&self, blobs: &FsStore) -> Result<Vec<Member>> {
         let mut members = Vec::new();
 
-        // real, encrypted members - a blind relay has no key, so it never
-        // learns these records, but any peer that does have the space key
-        // can decrypt them regardless of who else (e.g. a relay) also
-        // happens to be syncing this doc.
+        // real, encrypted members, a blind relay has no key, so it never
+        // learns these records.
         if let Some(space_key) = self.key.as_ref() {
             let space_id = self.id;
             members.extend(
@@ -368,8 +358,7 @@ impl Space {
             );
         }
 
-        // blind relay presence - cleartext, no space key needed to read
-        // (or to have written it), readable by anyone syncing this doc,
+        // blind relay presence, cleartext, no space key needed to read , readable by anyone syncing this doc,
         // including another relay.
         members.extend(
             self.collect_member_entries(blobs, "relay/", |bytes| postcard::from_bytes(bytes).ok())
@@ -380,10 +369,9 @@ impl Space {
     }
 
     /// Walks every latest entry under `prefix` in the members doc, decoding
-    /// each with `decode` (which owns whatever decryption `prefix` needs, or
-    /// none at all for the cleartext relay/ prefix). A tombstone, a signer
+    /// each with `decode`. A tombstone, a signer
     /// mismatch, a self-reported `author_id` mismatch, or a `decode` failure
-    /// all just skip that entry rather than failing the whole scan - doc
+    /// all skip that entry rather than failing the whole scan. doc
     /// entries are untrusted and often mid-sync.
     async fn collect_member_entries(
         &self,

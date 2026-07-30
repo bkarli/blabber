@@ -92,6 +92,7 @@ impl Room {
         })
     }
 
+    /// the write path for all message sent in the room. Adds the metadata to the message.
     pub async fn send_content(
         &self,
         author: AuthorId,
@@ -122,10 +123,12 @@ impl Room {
         Ok(())
     }
 
+    /// wrapper to give plaintext messages better signature.
     pub async fn send_message(&self, author: AuthorId, content: impl Into<String>) -> Result<()> {
         self.send_content(author, MessageContent::Text { text: content.into() }).await
     }
 
+    /// generates the preview of an image without having to get the full sized file.
     fn generate_thumbnail(data: &[u8]) -> Result<String> {
         let img = image::load_from_memory(data)?;
         let thumb = img.resize(240, 240, FilterType::Triangle);
@@ -135,6 +138,7 @@ impl Room {
         Ok(base64_engine.encode(&buf))
     }
 
+    /// downloads the before sent media from separate media doc
     pub async fn store_media(
         &self,
         author: AuthorId,
@@ -152,6 +156,7 @@ impl Room {
         Ok(media_key)
     }
 
+    /// used for sending images of any format and generating the preview.
     pub async fn send_image(
         &self,
         author: AuthorId,
@@ -169,7 +174,8 @@ impl Room {
             media_key,
         }).await
     }
-    
+
+    /// same as send image but for arbitrary file content.
     pub async fn send_file(
         &self,
         author: AuthorId,
@@ -189,6 +195,7 @@ impl Room {
     }
 
     /// `None` if the media isn't in the store yet (not synced) or this room has no key.
+    /// counterpart to store_media. Given a media key, fetches decrypts and returns raw file.
     pub async fn get_media(
         &self,
         media_key: &str,
@@ -217,15 +224,14 @@ impl Room {
         Ok(Some(plaintext.to_vec()))
     }
 
-    /// Decrypts and decodes a stored message, discarding it (returning
-    /// `None`) rather than erroring on any corruption or key mismatch -
-    /// callers iterate over untrusted/partially-synced doc entries and treat
+    /// Decrypts and decodes a stored message, iterate over untrusted/partially-synced doc entries and treat
     /// a bad one as simply absent.
     fn decode_message(key: &[u8; 32], aad: &[u8], ciphertext: &[u8]) -> Option<Message> {
         let plaintext = crypto::decrypt(key, ciphertext, aad).ok()?;
         postcard::from_bytes(&plaintext).ok()
     }
 
+    /// returns all the messages in a specific room in no defined order.
     pub async fn list_messages(&self, blobs: FsStore) -> Result<Vec<Message>> {
         // a blind relay has no key, so it never learns message content
         let Some(key) = self.key.as_ref() else {
@@ -249,6 +255,7 @@ impl Room {
         Ok(messages)
     }
 
+    /// fetches a specific doc entry
     pub async fn get_exact_message(
         &self,
         doc_key: impl Into<String>,
@@ -273,6 +280,7 @@ impl Room {
         Ok(Self::decode_message(key, self.id.as_bytes(), &bytes))
     }
 
+    /// the live sync entry handler. Turns incoming iroh-docs entry into cached Message and UI event.
     async fn try_apply_entry(
         cache: &Arc<Mutex<Vec<Message>>>,
         entry: &Entry,
@@ -286,11 +294,15 @@ impl Room {
         let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
         let Some(message) = Self::decode_message(&key, room_id.as_bytes(), &bytes) else { return false };
 
+        /// on success: lock shared cache and push a message clone then send original into appevent newmessage payload
+        /// over the broadcast channel. Value has to end up in two places: cache and the event.
+        /// constructing an event takes ownership of anything passed to it.
         cache.lock().await.push(message.clone());
         let _ = events.send(AppEvent::NewMessage { space_id, room_id, message });
         true
     }
 
+    /// Decider for raw live events if a try_apply_entry is needed. Maintains the "pending" map for the retry mechanism.
     async fn apply_event(
         cache: Arc<Mutex<Vec<Message>>>,
         pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
@@ -317,6 +329,7 @@ impl Room {
         }
     }
 
+    /// starts self.cache with a bulk read and sets up live sync for calling apply_event or try_apply_entry as long as room exists.
     pub async fn watch(
         &self,
         events: broadcast::Sender<AppEvent>,
@@ -341,6 +354,7 @@ impl Room {
             let events = events.clone();
             let key = key.clone();
 
+            // every invocation is self-contained unit of work wit nothing to hand back.
             async move {
                 Room::apply_event(
                     cache,
