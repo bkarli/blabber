@@ -1,4 +1,5 @@
 mod config;
+mod setup;
 
 use std::path::{Path, PathBuf};
 
@@ -11,9 +12,17 @@ use zeroize::Zeroizing;
 
 use config::{Config, LoadOutcome};
 
+const DEFAULT_CONFIG_PATH: &str = "/etc/blabber-root/config.toml";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config_path = config_path_from_args();
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("setup") {
+        args.next();
+        let config_path = parse_config_flag(args);
+        return setup::run(&config_path);
+    }
+    let config_path = parse_config_flag(args);
 
     let config = match Config::load_or_init(&config_path)? {
         LoadOutcome::TemplateWritten(path) => {
@@ -67,8 +76,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn config_path_from_args() -> PathBuf {
-    let mut args = std::env::args().skip(1);
+fn parse_config_flag(mut args: impl Iterator<Item = String>) -> PathBuf {
     match args.next().as_deref() {
         Some("--config") => args.next().map(PathBuf::from).unwrap_or_else(|| {
             eprintln!("--config requires a path");
@@ -78,7 +86,7 @@ fn config_path_from_args() -> PathBuf {
             eprintln!("unknown argument: {other}");
             std::process::exit(2);
         }
-        None => PathBuf::from("/etc/blabber-root/config.toml"),
+        None => PathBuf::from(DEFAULT_CONFIG_PATH),
     }
 }
 

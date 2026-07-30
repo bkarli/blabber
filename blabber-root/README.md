@@ -1,149 +1,76 @@
 # blabber-root
 
-A headless, GUI-free build of the Blabber node, meant to run permanently on
-a server. It joins the spaces you configure as a **blind relay**, not a
-Member: it syncs and seeds ciphertext (messages, room/call metadata) so
-those spaces stay reachable even when every human member is offline, but it
-never receives the space's decryption key and is structurally unable to
-decrypt anything or write real content - enforced by `iroh-docs`' own
-read-only capability on every content doc, not just app-level policy.
+Headless, GUI-free build of the Blabber node, meant to run permanently on a
+server as a **blind relay**: it propagates ciphertext for the spaces it joins but
+never holds a decryption key and cannot read or write real content.
 
-It does show up in the member list - clearly labeled as a relay, never as
-a human - by publishing a small, cleartext presence entry (its display
-name and endpoint id, nothing else) that carries no space secrets. This is
-the one write grant it holds: on the members doc only, and only for that
-one entry. It cannot write, forge, or decrypt anyone else's member record,
-any message, room, or call content. This matters because this is the one
-component meant to run unattended and exposed on the public internet, so
-it's the most likely single point of compromise; a compromised relay under
-this design still can't read your messages.
+## Setup
 
-It reuses `blabber-core::node::Node` as the desktop app
-(`blabber-app`) does.
-
-## Building
-
-```bash
-cargo build -p blabber-root --release
-```
-
-Unlike `blabber-app`, this does **not** need `libasound2-dev`/ALSA or any
-other audio system library installed: `blabber-core`'s `cpal`/`symphonia`
-dependencies are gated behind a Cargo feature (`audio`, default-on) that
-`blabber-root` opts out of.
-
-The binary is produced at `target/release/blabber-root`.
-
-## Configuration
-
-`blabber-root` reads a TOML config file, by default at
-`/etc/blabber-root/config.toml` (override with `--config <path>`). If the
-file doesn't exist, a commented out template is written there and the process
-exits with instructions, it never boots with guessed defaults.
-
-| Field           | Meaning                                                                                                                        |
-|-----------------|--------------------------------------------------------------------------------------------------------------------------------|
-| `display_name`  | This node's identity label - used locally (e.g. in log output) and shown in each space's member list as this relay's presence, clearly marked as a relay, never as a Member. Default: `"blabber-root"`. |
-| `data_dir`      | Root directory for `identity.bin`, `blobs/`, and `spaces/`.                                                                    |
-| `password_file` | Path to a file whose trimmed contents is the identity password. See below.                                                     |
-| `invites`       | List of **relay** invite ticket strings to auto-join at startup and on `SIGHUP` reload. Default: `[]`.                         |
-
-On first run, an identity is created
-automatically using `display_name` and encrypted with the password from
-`password_file`.
-
-### Getting a relay invite ticket
-
-In the desktop app, use the "Get relay invite" action for a space (distinct
-from the regular "Get invite" action used to invite human members), and
-paste the resulting code into the `invites` array.
-
-A regular member invite ticket carries the space's decryption key and is
-deliberately rejected here rather than silently accepted: `blabber-root`
-only ever parses the relay-invite format, so pasting the wrong kind of
-ticket fails loudly (logged and skipped) instead of quietly handing this
-internet-facing process a key it should never hold.
-
-## Password file
-
-The identity is encrypted at rest the same way the desktop app encrypts it
-(Argon2 + ChaCha20Poly1305), `password_file` just supplies that password
-without interaction. Two ways to provision it:
-
-**Option A: systemd credential:**
-Provision a root-only-readable source file once:
-```bash
-install -o root -g root -m 0600 /path/to/password /etc/blabber-root/password.source
-```
-The unit's `LoadCredential=password:/etc/blabber-root/password.source` line
-makes systemd expose it read-only, only to this service, at:
-```
-/run/credentials/blabber-root.service/password
-```
-`config.toml`'s `password_file` must be set to that literal path, systemd
-credential specifiers only expand inside unit-file directives, not inside
-files a program reads at runtime, so this path has to be hardcoded in the
-config.
-
-**Option B: plain file:** skip
-`LoadCredential=` entirely, provision the password directly:
-```bash
-mkdir -p /etc/blabber-root
-echo -n "your-password" > /etc/blabber-root/password
-chown blabber-root:blabber-root /etc/blabber-root/password
-chmod 600 /etc/blabber-root/password
-```
-and point `password_file` at `/etc/blabber-root/password`.
-
-## Running as a systemd service
-
-1. Create a dedicated user and the data directory:
-   ```bash
-   useradd --system --home-dir /var/lib/blabber-root --shell /usr/sbin/nologin blabber-root
-   ```
-2. Build and install the binary:
+1. Build:
    ```bash
    cargo build -p blabber-root --release
-   install -m 0755 target/release/blabber-root /usr/local/bin/blabber-root
    ```
-3. Provision the password (Option A or B above) and write
-   `/etc/blabber-root/config.toml` (or run the service once to get a
-   template written, then edit it).
-4. Install and start the unit:
+2. Install the binary and create the service user:
    ```bash
-   install -m 0644 blabber-root/blabber-root.service /etc/systemd/system/
-   systemctl daemon-reload
-   systemctl enable --now blabber-root
+   sudo install -m 0755 target/release/blabber-root /usr/local/bin/blabber-root
+   sudo useradd --system --home-dir /var/lib/blabber-root --shell /usr/sbin/nologin blabber-root
    ```
-5. Watch it come up:
+3. Run the setup wizard:
+   ```bash
+   sudo blabber-root setup
+   ```
+   Answer its prompts for display name, data directory, password, and
+   (optionally) a relay invite ticket - get one from the desktop app's "Get
+   relay invite" action on the space you want this relay to join. This
+   writes `/etc/blabber-root/config.toml` and the password file.
+4. Install and start the systemd unit:
+   ```bash
+   sudo install -m 0644 blabber/blabber-root/blabber-root.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now blabber-root
+   ```
+5. Confirm it's running:
    ```bash
    journalctl -u blabber-root -f
    ```
 
-### Adding a space without restarting
+## Operating
 
-Append an invite ticket to `invites` in `config.toml`, then:
-```bash
-systemctl reload blabber-root
-```
-This sends `SIGHUP`, which re-reads the config and joins all invites not
-already known, existing spaces and connections are untouched.
-`display_name` and `password_file` changes are only applied on a full
-restart (`systemctl restart blabber-root`), not on reload.
+- Add a space without restarting: append an invite ticket to `invites` in
+  `config.toml`, then `sudo systemctl reload blabber-root`.
+- Restart (required after changing `display_name` or `password_file`):
+  `sudo systemctl restart blabber-root`.
+- Stop: `sudo systemctl stop blabber-root`.
+- Re-run `sudo blabber-root setup` any time to change settings; it detects
+  an existing `identity.bin` and won't let you silently break it with a
+  mismatched password.
 
-### Stopping
+## Reference
 
-```bash
-systemctl stop blabber-root
-```
-Sends `SIGTERM` the node shuts down its router cleanly before exiting.
+`config.toml` fields (`--config <path>` to use a non-default location):
+`display_name`, `data_dir`, `password_file`, `invites` - see the comments
+`blabber-root setup` writes into the file itself.
 
-## Data layout
+Manual password provisioning, if not using `blabber-root setup`:
+- **systemd credential:**
+  ```bash
+  sudo install -o root -g root -m 0600 /path/to/password /etc/blabber-root/password.source
+  ```
+  Set `password_file` to `/run/credentials/blabber-root.service/password`
+  (the unit's `LoadCredential=` line exposes it there. This exact path must
+  be hardcoded in the config).
+- **plain file:**
+  ```bash
+  sudo mkdir -p /etc/blabber-root
+  echo -n "your-password" | sudo tee /etc/blabber-root/password > /dev/null
+  sudo chown blabber-root:blabber-root /etc/blabber-root/password
+  sudo chmod 600 /etc/blabber-root/password
+  ```
+  Set `password_file` to `/etc/blabber-root/password`.
 
-Under `data_dir`:
+Data layout under `data_dir`:
 ```
 identity.bin                              encrypted identity
 blobs/<display_name>/                     Iroh blob storage
 spaces/<display_name>/<space-uuid>/       synchronized space and room data
 ```
-Mirrors the layout the desktop app uses under its own app-data directory.
