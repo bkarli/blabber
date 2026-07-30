@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use blabber_core::identity::Identity;
-use blabber_core::invite::Invite;
+use blabber_core::invite::RelayInvite;
 use blabber_core::node::Node;
 use tokio::signal::unix::{signal, SignalKind};
 use zeroize::Zeroizing;
@@ -47,14 +47,6 @@ async fn main() -> Result<()> {
     node.run(config.data_dir.join("blobs"))
         .await
         .context("failed to start node (endpoint/gossip/blobs/docs/router)")?;
-
-    // re-persist now that create_author() assigned an AuthorId, mirroring
-    // blabber-app/src-tauri/src/login.rs's start_node_for_identity
-    if let Some(updated) = node.identity_with_author() {
-        updated
-            .store(&password, &identity_path)
-            .context("failed to re-persist identity with author id")?;
-    }
 
     let spaces_root = config.data_dir.join("spaces");
     tokio::fs::create_dir_all(&spaces_root).await?;
@@ -105,7 +97,7 @@ async fn join_new_invites(node: &Node, spaces_root: &Path, invites: &[String]) {
 }
 
 async fn try_join_invite(node: &Node, spaces_root: &Path, ticket: &str) -> Result<()> {
-    let invite = Invite::deserialize_invite(ticket.trim().to_string())?;
+    let invite = RelayInvite::deserialize_invite(ticket.trim().to_string())?;
 
     {
         let spaces = node.spaces.lock().await;
@@ -114,9 +106,9 @@ async fn try_join_invite(node: &Node, spaces_root: &Path, ticket: &str) -> Resul
         }
     }
 
-    let space = node.join_space(invite).await?;
+    let space = node.join_space_relay(invite).await?;
 
-    let user_root = node.add_idetity_to_path(&spaces_root.to_path_buf())?;
+    let user_root = node.identity_scoped_path(&spaces_root.to_path_buf())?;
     space
         .create_directory(&user_root, &node.local_storage_key())
         .await?;

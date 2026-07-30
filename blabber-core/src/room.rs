@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 use image::imageops::FilterType;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iroh_blobs::store::fs::FsStore;
 use iroh_docs::{AuthorId, DocTicket, Entry, api::Doc, engine::LiveEvent, protocol::Docs, store::Query};
 use n0_future::StreamExt;
 use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
 use uuid::Uuid;
-use serde::{Serialize,Deserialize};
+use serde::{Serialize, Deserialize};
 use zeroize::Zeroizing;
 
 use crate::{crypto, events::AppEvent};
@@ -45,16 +45,16 @@ pub struct Room {
     pub media: Doc,
 
     pub cache: Arc<Mutex<Vec<Message>>>,
-    key: Arc<Zeroizing<[u8; 32]>>,
+    /// `None` for a blind relay
+    key: Option<Arc<Zeroizing<[u8; 32]>>>,
     pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
 }
 
 impl Room {
-    /// Create a new room
     pub async fn new(
         docs: &Docs,
         name: impl Into<String>,
-        key: Arc<Zeroizing<[u8; 32]>>
+        key: Option<Arc<Zeroizing<[u8; 32]>>>
     )-> Result<Self> {
         let messages = docs.create().await?;
         let media = docs.create().await?;
@@ -70,19 +70,19 @@ impl Room {
         })
     }
 
-    /// Construct the Room from the ticket
+    /// Attach to a room another peer already created, via its shared doc tickets.
     pub async fn from_ticket(
         docs: &Docs,
         id: Uuid,
         name: impl Into<String>,
         ticket: DocTicket,
         media_ticket: DocTicket,
-        key: Arc<Zeroizing<[u8; 32]>>
+        key: Option<Arc<Zeroizing<[u8; 32]>>>
     ) -> Result<Self> {
         let messages = docs.import(ticket).await?;
         let media = docs.import(media_ticket).await?;
         Ok(Self {
-            id: id,
+            id,
             name: name.into(),
             messages,
             media,
@@ -92,12 +92,15 @@ impl Room {
         })
     }
 
-    /// Generic function to send content in a room
     pub async fn send_content(
         &self,
         author: AuthorId,
         content: MessageContent
     ) -> Result<()> {
+        let key = self
+            .key
+            .as_ref()
+            .context("cannot send a message: no decryption key (blind relay?)")?;
 
         let sent_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -110,21 +113,19 @@ impl Room {
             sent_at
         };
 
-        let doc_key = format!("msg/{sent_at}-{author}");
+        // opaque doc key: timestamp/author only live inside the encrypted payload
+        let doc_key = format!("msg/{}", Uuid::new_v4());
         let plaintext = postcard::to_allocvec(&message)?;
-        let value = crypto::encrypt(&self.key, &plaintext, self.id.as_bytes())?;
+        let value = crypto::encrypt(key, &plaintext, self.id.as_bytes())?;
         self.messages.set_bytes(author, doc_key.into_bytes(), value).await?;
 
         Ok(())
-
     }
-    
-    /// Send just a plain text message
+
     pub async fn send_message(&self, author: AuthorId, content: impl Into<String>) -> Result<()> {
         self.send_content(author, MessageContent::Text { text: content.into() }).await
     }
 
-    /// create a thumbail base64 encoded
     fn generate_thumbnail(data: &[u8]) -> Result<String> {
         let img = image::load_from_memory(data)?;
         let thumb = img.resize(240, 240, FilterType::Triangle);
@@ -134,22 +135,23 @@ impl Room {
         Ok(base64_engine.encode(&buf))
     }
 
-    // store the media in the doc
     pub async fn store_media(
         &self,
         author: AuthorId,
         data: &[u8],
     ) -> Result<String> {
-        // create a new media key
-        let media_key = format!("media/{}", Uuid::new_v4());
-        let encrypted = crypto::encrypt(&self.key, data, self.id.as_bytes())?;
+        let key = self
+            .key
+            .as_ref()
+            .context("cannot store media: no encryption key (blind relay?)")?;
 
-        // store the media in the doc
+        let media_key = format!("media/{}", Uuid::new_v4());
+        let encrypted = crypto::encrypt(key, data, self.id.as_bytes())?;
+
         self.media.set_bytes(author, media_key.clone().into_bytes(), encrypted).await?;
         Ok(media_key)
     }
 
-    /// send an image
     pub async fn send_image(
         &self,
         author: AuthorId,
@@ -168,7 +170,6 @@ impl Room {
         }).await
     }
     
-    /// send a file
     pub async fn send_file(
         &self,
         author: AuthorId,
@@ -178,23 +179,25 @@ impl Room {
     ) -> Result<()> {
         let size = data.len() as u64;
         let media_key = self.store_media(author, &data).await?;
-        
+
         self.send_content(author, MessageContent::File {
-            filename: filename.into(), 
-            mime: mime.into(), 
+            filename: filename.into(),
+            mime: mime.into(),
             size,
             media_key,
         }).await
     }
 
-    
-    /// get the media from the media store
-    /// Returns nothing if the media not in the store
+    /// `None` if the media isn't in the store yet (not synced) or this room has no key.
     pub async fn get_media(
         &self,
         media_key: &str,
         blobs: FsStore,
     ) -> Result<Option<Vec<u8>>> {
+        let Some(key) = self.key.as_ref() else {
+            return Ok(None);
+        };
+
         let Some(entry) = self
             .media
             .get_one(Query::single_latest_per_key().key_exact(media_key))
@@ -207,20 +210,32 @@ impl Room {
             return Ok(None);
         };
 
-        let Ok(plaintext) = crypto::decrypt(&self.key, &bytes, self.id.as_bytes()) else {
+        let Ok(plaintext) = crypto::decrypt(key, &bytes, self.id.as_bytes()) else {
             return Ok(None);
         };
 
         Ok(Some(plaintext.to_vec()))
     }
 
+    /// Decrypts and decodes a stored message, discarding it (returning
+    /// `None`) rather than erroring on any corruption or key mismatch -
+    /// callers iterate over untrusted/partially-synced doc entries and treat
+    /// a bad one as simply absent.
+    fn decode_message(key: &[u8; 32], aad: &[u8], ciphertext: &[u8]) -> Option<Message> {
+        let plaintext = crypto::decrypt(key, ciphertext, aad).ok()?;
+        postcard::from_bytes(&plaintext).ok()
+    }
 
     pub async fn list_messages(&self, blobs: FsStore) -> Result<Vec<Message>> {
+        // a blind relay has no key, so it never learns message content
+        let Some(key) = self.key.as_ref() else {
+            return Ok(Vec::new());
+        };
+
         let entries = self
             .messages
             .get_many(Query::single_latest_per_key().key_prefix("msg/"))
             .await?;
-
 
         let mut entries = std::pin::pin!(entries);
         let mut messages = Vec::new();
@@ -228,51 +243,36 @@ impl Room {
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { continue };
-            let Ok(plaintext) = crypto::decrypt(&self.key, &bytes, self.id.as_bytes()) else { continue };
-            let Ok(message) = postcard::from_bytes::<Message>(&plaintext) else { continue };
+            let Some(message) = Self::decode_message(key, self.id.as_bytes(), &bytes) else { continue };
             messages.push(message);
         }
         Ok(messages)
     }
 
-    /// get an exact message
     pub async fn get_exact_message(
         &self,
-        key: impl Into<String>,
+        doc_key: impl Into<String>,
         blobs: FsStore,
     ) -> Result<Option<Message>> {
-        let key = key.into();
-        
-        // get the entry
+        let Some(key) = self.key.as_ref() else {
+            return Ok(None);
+        };
+
         let Some(entry) = self
             .messages
-            .get_one(Query::single_latest_per_key().key_exact(key))
-            .await? 
-        else { // key not found
-            return Ok(None)
+            .get_one(Query::single_latest_per_key().key_exact(doc_key.into()))
+            .await?
+        else {
+            return Ok(None);
         };
-        
-        // get the bytes
+
         let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else {
             return Ok(None);
         };
 
-        // decrypt the bytes
-        let Ok(plaintext) = crypto::decrypt(&self.key, &bytes, self.id.as_bytes()) else {
-            return Ok(None);
-        };
-
-        // try parse the message
-        let Ok(message) = postcard::from_bytes::<Message>(&plaintext) else {
-            return Ok(None);
-        };
-
-        Ok(Some(message))
-
+        Ok(Self::decode_message(key, self.id.as_bytes(), &bytes))
     }
 
-    /// If a new message event comes in apply the message to the in memory
-    /// cache
     async fn try_apply_entry(
         cache: &Arc<Mutex<Vec<Message>>>,
         entry: &Entry,
@@ -280,19 +280,15 @@ impl Room {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
-        key: Arc<Zeroizing<[u8; 32]>>,
+        key: Option<Arc<Zeroizing<[u8; 32]>>>,
     ) -> bool {
-        if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
-            if let Ok(plaintext) = crypto::decrypt(&key, &bytes, room_id.as_bytes()) {
-                if let Ok(message) = postcard::from_bytes::<Message>(&plaintext) {
-                    cache.lock().await.push(message.clone());
-                    let a = events.send(AppEvent::NewMessage { space_id, room_id, message });
-                    println!("{:?}", a);
-                    return true;
-                }
-            }
-        }
-        false
+        let Some(key) = key else { return false };
+        let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+        let Some(message) = Self::decode_message(&key, room_id.as_bytes(), &bytes) else { return false };
+
+        cache.lock().await.push(message.clone());
+        let _ = events.send(AppEvent::NewMessage { space_id, room_id, message });
+        true
     }
 
     async fn apply_event(
@@ -303,28 +299,18 @@ impl Room {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
         room_id: Uuid,
-        key: Arc<Zeroizing<[u8; 32]>>,
+        key: Option<Arc<Zeroizing<[u8; 32]>>>,
     ) {
         match event {
             LiveEvent::InsertRemote { entry, .. } | LiveEvent::InsertLocal { entry, .. } => {
                 let applied = Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id, key).await;
                 if !applied {
-                    println!("not appliable");
                     pending.lock().await.insert(entry.content_hash(), entry);
                 }
             }
             LiveEvent::ContentReady { hash } => {
-                let stashed = pending.lock().await.remove(&hash);
-                if let Some(entry) = stashed {
-                    Self::try_apply_entry(
-                        &cache,
-                        &entry,
-                        blobs,
-                        events,
-                        space_id,
-                        room_id,
-                        key).await;
-                    println!("Hash ready")
+                if let Some(entry) = pending.lock().await.remove(&hash) {
+                    Self::try_apply_entry(&cache, &entry, blobs, events, space_id, room_id, key).await;
                 }
             }
             _ => {}

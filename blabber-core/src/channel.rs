@@ -15,6 +15,7 @@ const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
 const SAFE_DATAGRAM_CEILING: usize = 1200;
 const SAFETY_MARGIN: usize = 32;
 
+/// computes safe amount of audio samples to send in one datagram.
 fn samples_per_packet(connection: &Connection) -> usize {
     let max_datagram = connection
         .max_datagram_size()
@@ -35,6 +36,7 @@ fn send_audio_chunk(connection: &Connection, data: &[f32], max_samples: usize) {
     }
 }
 
+/// converts received audio datagrams into f32 samples to play,
 fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
     if bytes.len() % 4 != 0 {
         return None;
@@ -46,6 +48,13 @@ fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
             .collect(),
     )
 }
+
+/// checks what space a given call room belongs to.
+fn space_id_for_room(room_spaces: &RoomSpaceMap, room_id: Uuid) -> Option<Uuid> {
+    room_spaces.lock().unwrap().get(&room_id).copied()
+}
+
+///
 #[derive(Clone)]
 pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
@@ -57,6 +66,7 @@ pub struct MeshVoiceChannel {
 }
 
 impl MeshVoiceChannel {
+    /// creates shared state the call needs. (used once per new call join)
     pub fn new(
         handle: tokio::runtime::Handle,
         room_id: Uuid,
@@ -82,12 +92,15 @@ impl MeshVoiceChannel {
         }
     }
 
+    /// add a new peer to mesh and spawns background task that consumes the incoming audio from this peer.
     pub fn add_peer(&self, peer_id: String, connection: Connection) {
+        // create fresh jitter buffer for peer in map peer_buffers
         self.peer_buffers
             .lock()
             .unwrap()
             .insert(peer_id.clone(), VecDeque::new());
 
+        //connection is registered under peer_id. Checks for old connections under this id and replaces them.
         let previous = self
             .connections
             .lock()
@@ -97,11 +110,13 @@ impl MeshVoiceChannel {
             old.close(0u32.into(), b"superseded by a newer connection to the same peer");
         }
 
+        //takes ownership of the needed handles througgh clone to prepare for the task creation.
         let stable_id = connection.stable_id();
         let peer_buffers = self.peer_buffers.clone();
         let peer_id_for_task = peer_id.clone();
         let mesh_channel = self.clone();
         self.handle.spawn(async move {
+            //the spawned tasks life cycle
             loop {
                 match connection.read_datagram().await {
                     Ok(bytes) => {
@@ -118,15 +133,10 @@ impl MeshVoiceChannel {
                     }
                 }
             }
-            // only clean up if this tasks connection is still the one
-            // registered for this peer, a newer connection may have
-            // already replaced it.
+            // when loop exits, a newer connection might already exist. Check for a race below.
             let left = mesh_channel.remove_peer_if_current(&peer_id_for_task, stable_id);
             if left {
-                let space_id = {
-                    let map = mesh_channel.room_spaces.lock().unwrap();
-                    map.get(&mesh_channel.room_id).copied()
-                };
+                let space_id = space_id_for_room(&mesh_channel.room_spaces, mesh_channel.room_id);
                 if let Some(space_id) = space_id {
                     let _ = mesh_channel.events.send(crate::events::AppEvent::CallParticipantLeft {
                         space_id,
@@ -138,11 +148,13 @@ impl MeshVoiceChannel {
         });
     }
 
+    /// remove a peer from the active mesh voice call on this clients side.
     pub fn remove_peer(&self, peer_id: &str) {
         self.connections.lock().unwrap().remove(peer_id);
         self.peer_buffers.lock().unwrap().remove(peer_id);
     }
 
+    /// removes the peers connection only if it hasnt been superseded by a new (reconect) connection.
     fn remove_peer_if_current(&self, peer_id: &str, stable_id: usize) -> bool {
         let mut connections = self.connections.lock().unwrap();
         let is_current = connections.get(peer_id).map(|c| c.stable_id()) == Some(stable_id);
@@ -164,31 +176,38 @@ impl MeshVoiceChannel {
         }
     }
 
+    /// returns list of all currently connected peers
     pub fn peer_ids(&self) -> Vec<String> {
         self.connections.lock().unwrap().keys().cloned().collect()
     }
 
+    /// looks for a specific peers registered connection and returns it if there.
     pub fn connection_for(&self, peer_id: &str) -> Option<Connection> {
         self.connections.lock().unwrap().get(peer_id).cloned()
     }
 
+    /// returns the amount of audio samples that havent been processed in the jitter buffer.
     pub fn buffered_sample_count(&self, peer_id: &str) -> Option<usize> {
         self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.len())
     }
 
-    pub fn connection_count(&self)->usize{
+    /// returns the amount of currently registered connections
+    pub fn connection_count(&self) -> usize {
         self.connections.lock().unwrap().len()
     }
 }
 
-/// Wraps a call's peer buffers as one mixer voice. averages every currently
-/// talking peer together,
-/// then that average is added into the shared output mix as a single source.
+/// Wraps a call's peer buffers as one mixer voice: averages every
+/// currently-talking peer together, then adds that average into the
+/// shared output mix as a single source.
 struct CallVoiceSource(MeshVoiceChannel);
 
 impl MixSource for CallVoiceSource {
+    /// Engine calls this once for every registered source to create the final output audio stream.
     fn mix_into(&mut self, out: &mut [f32]) {
+        // used to gather the peers buffers before normalizing.
         let mut scratch = vec![0.0f32; out.len()];
+        // count of peers that have audio ready to process.
         let mut active = 0u32;
         {
             let mut buffers = self.0.peer_buffers.lock().unwrap();
@@ -204,8 +223,11 @@ impl MixSource for CallVoiceSource {
                 }
             }
         }
+        // guard to not divide by zero
         if active > 0 {
+            // the aveeraging factor
             let inv = 1.0 / active as f32;
+            // pairs output to scratch buffer then adds the calls averaged contribution to shared buffer
             for (o, s) in out.iter_mut().zip(scratch.iter()) {
                 *o += s * inv;
             }
@@ -221,15 +243,18 @@ pub struct MeshActiveCall {
     channel: MeshVoiceChannel,
 }
 
+/// Connects the sound engine to one specific active call.
 impl MeshActiveCall {
+
     pub fn start(channel: MeshVoiceChannel, sound: Arc<SoundHandler>) -> Self {
+        // Outgoing half of the wiring to the sound engine.
         let capture_channel = channel.clone();
         if let Err(e) = sound.set_capture_listener(Some(Box::new(move |samples: &[f32]| {
             capture_channel.broadcast_samples(samples);
         }))) {
             eprintln!("[mesh voice] failed to start capture: {e:#}");
         }
-
+        // incoming half of the current active call.
         let voice_handle = match sound.register_call_voice(CallVoiceSource(channel.clone())) {
             Ok(handle) => Some(handle),
             Err(e) => {
@@ -245,6 +270,7 @@ impl MeshActiveCall {
 }
 
 impl Drop for MeshActiveCall {
+    // self is out of scope after this call
     fn drop(&mut self) {
         let _ = self.sound.set_capture_listener(None);
         self.voice_handle = None;
@@ -252,14 +278,22 @@ impl Drop for MeshActiveCall {
         self.channel.close_all();
     }
 }
+
+/// Maps Rooms to their Spaces
 pub type RoomSpaceMap = Arc<StdMutex<HashMap<Uuid, Uuid>>>;
+/// Node wide table of room id to live meshvoicechannel mapping
 pub type ActiveCallRooms = Arc<StdMutex<HashMap<Uuid, MeshVoiceChannel>>>;
+
+/// Iroh protocol handler for responding to incoming connections for call rooms.
+/// Get registered with nodes Router.
 #[derive(Clone)]
 pub struct CallRoomProtocol {
-    active_rooms: ActiveCallRooms,
-    room_spaces: RoomSpaceMap,
-    events: broadcast::Sender<crate::events::AppEvent>,
+    // shared node state
+    active_rooms: ActiveCallRooms, //check if in the room that is being dialed for
+    room_spaces: RoomSpaceMap, //to resolve room_id into space_id to correclty create the resulting event.
+    events: broadcast::Sender<crate::events::AppEvent>, // for publishing newcallparticipant event
 }
+
 impl CallRoomProtocol {
     pub fn new(
         active_rooms: ActiveCallRooms,
@@ -269,37 +303,40 @@ impl CallRoomProtocol {
         Self { active_rooms, room_spaces, events }
     }
 }
+
 impl std::fmt::Debug for CallRoomProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallRoomProtocol").finish()
     }
 }
+
 impl ProtocolHandler for CallRoomProtocol {
+    /// mesh calls handshake client response when being dialed.
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let remote_id = connection.remote_id().to_string();
+        let remote_id = connection.remote_id().to_string(); //dialing peers iroh endpoint id
 
-        let (mut send, mut recv) = connection.accept_bi().await.map_err(std::io::Error::other)?;
+        let (mut send, mut recv) = connection.accept_bi().await.map_err(std::io::Error::other)?; // waits for bidirectional stream and splits.
 
+        // read handshakes payload
         let mut room_id_bytes = [0u8; 16];
         recv.read_exact(&mut room_id_bytes).await.map_err(std::io::Error::other)?;
         let room_id = Uuid::from_bytes(room_id_bytes);
 
+        // check for clients membership of dialed room
         let channel_opt = {
             let rooms = self.active_rooms.lock().unwrap();
             rooms.get(&room_id).cloned()
         };
 
+        // responds according to membership of room (ack[0] 1 byte for accept)
         match channel_opt {
             Some(mesh_channel) => {
                 send.write_all(&[1u8]).await.map_err(std::io::Error::other)?;
                 send.finish().map_err(std::io::Error::other)?;
                 mesh_channel.add_peer(remote_id.clone(), connection);
 
-                let space_id = {
-                    let map = self.room_spaces.lock().unwrap();
-                    map.get(&room_id).copied()
-                };
-
+                // resolves owning space and publish newcallparticipant event.
+                let space_id = space_id_for_room(&self.room_spaces, room_id);
                 if let Some(space_id) = space_id {
                     let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
                         space_id,
@@ -308,6 +345,7 @@ impl ProtocolHandler for CallRoomProtocol {
                     });
                 }
             }
+            // if no active channel for specified room, write back 0
             None => {
                 send.write_all(&[0u8]).await.map_err(std::io::Error::other)?;
                 send.finish().map_err(std::io::Error::other)?;

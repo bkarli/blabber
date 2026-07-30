@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 
 /// One entry in the device list returned to the UI.

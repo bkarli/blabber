@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use zeroize::Zeroizing;
+use crate::result_ext::ResultExt;
 use crate::space::spaces_dir;
 
 use crate::AppState;
@@ -12,18 +13,15 @@ fn identities_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
+        .stringify_err()?;
 
     let identities_dir = app_data_dir.join("identities");
     fs::create_dir_all(&identities_dir)
-        .map_err(|error| error.to_string())?;
+        .stringify_err()?;
     Ok(identities_dir)
 }
 
-fn identity_path(
-    app: &AppHandle,
-    display_name: &str,
-) -> Result<PathBuf, String> {
+fn identity_path(app: &AppHandle, display_name: &str) -> Result<PathBuf, String> {
     let directory = identities_dir(app)?;
     let safe_name = blabber_core::identity::sanitize_path_component(display_name)
         .ok_or("Invalid display name")?;
@@ -40,12 +38,12 @@ pub async fn delete_identity(
     let node = state.node.lock().await.take();
     state.spaces.lock().await.clear();
     if let Some(node) = node {
-        node.shutdown().await.map_err(|error| error.to_string())?;
+        node.shutdown().await.stringify_err()?;
     }
 
     let path = identity_path(&app, display_name.trim())?;
     if path.exists() {
-        std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+        std::fs::remove_file(&path).stringify_err()?;
     }
 
     Ok(())
@@ -55,21 +53,19 @@ async fn start_node_for_identity(
     app: &AppHandle,
     state: &State<'_, AppState>,
     identity: Identity,
-    password: &str,
-    identity_path: &std::path::Path,
 ) -> Result<(), String> {
     let blobs_path = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?
+        .stringify_err()?
         .join("blobs");
-    fs::create_dir_all(&blobs_path).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&blobs_path).stringify_err()?;
 
     let mut node = Node::new(identity);
-    node.run(blobs_path).await.map_err(|e| e.to_string())?;
+    node.run(blobs_path).await.stringify_err()?;
 
     // apply any previously saved audio device preference. a device that no
-    // longer exists shouldnt block login, fall back to the OS default
+    // longer exists shouldn't block login, fall back to the OS default
     if let Ok(audio_settings) = crate::audio::load_audio_settings(app) {
         if let Err(e) = node.sound.set_input_device(audio_settings.input_device) {
             eprintln!("failed to apply saved input device: {e:#}");
@@ -79,24 +75,18 @@ async fn start_node_for_identity(
         }
     }
 
-    if let Some(updated_identity) = node.identity_with_author() {
-        updated_identity
-            .store(password, identity_path)
-            .map_err(|error| error.to_string())?;
-    }
-
     crate::event_bridge::spawn_event_bridge(app.clone(), &node);
     let spaces_root = spaces_dir(app)?;
-    fs::create_dir_all(&spaces_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&spaces_root).stringify_err()?;
 
     let loaded_spaces = node
         .load_spaces(spaces_root)
         .await
-        .map_err(|e| e.to_string())?;
+        .stringify_err()?;
     *state.spaces.lock().await = loaded_spaces;
     *state.node.lock().await = Some(node);
     Ok(())
-    }
+}
 
 #[tauri::command]
 pub async fn create_identity(
@@ -121,11 +111,11 @@ pub async fn create_identity(
     let identity = Identity::new(display_name);
     identity
         .store(&password, &path)
-        .map_err(|error| error.to_string())?;
+        .stringify_err()?;
 
-    let display_name_for_return = identity.displayName.clone();
+    let display_name_for_return = identity.display_name.clone();
 
-    start_node_for_identity(&app, &state, identity, &password, &path).await?;
+    start_node_for_identity(&app, &state, identity).await?;
 
     Ok(display_name_for_return)
 }
@@ -143,55 +133,45 @@ pub async fn login(
         return Err("Identity does not exist".to_string());
     }
     let identity = Identity::load_from_disk(&path, &password)
-        .map_err(|error| error.to_string())?;
+        .stringify_err()?;
 
-    let display_name_for_return = identity.displayName.clone();
+    let display_name_for_return = identity.display_name.clone();
 
-    start_node_for_identity(&app, &state, identity, &password, &path).await?;
+    start_node_for_identity(&app, &state, identity).await?;
 
     Ok(display_name_for_return)
 }
 
 #[tauri::command]
-pub async fn logout(
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     let node = state.node.lock().await.take();
-
     state.spaces.lock().await.clear();
 
     if let Some(node) = node {
-        node.shutdown()
-            .await
-            .map_err(|error| error.to_string())?;
+        node.shutdown().await.stringify_err()?;
     }
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn list_identities(
-    app: AppHandle,
-) -> Result<Vec<String>, String> {
+pub fn list_identities(app: AppHandle) -> Result<Vec<String>, String> {
     let directory = identities_dir(&app)?;
     let mut identities = Vec::new();
-    for entry in fs::read_dir(directory)
-        .map_err(|error| error.to_string())?
-    {
-        let entry = entry.map_err(|error| error.to_string())?;
+
+    for entry in fs::read_dir(directory).stringify_err()? {
+        let entry = entry.stringify_err()?;
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str())
-            == Some("bin")
-        {
-            if let Some(name) =
-                path.file_stem().and_then(|name| name.to_str())
-            {
-                identities.push(name.to_string());
-            }
+
+        let is_identity_file = path.extension().and_then(|ext| ext.to_str()) == Some("bin");
+        if !is_identity_file {
+            continue;
+        }
+        if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+            identities.push(name.to_string());
         }
     }
 
     identities.sort();
-
     Ok(identities)
 }

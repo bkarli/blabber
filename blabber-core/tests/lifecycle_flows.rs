@@ -23,15 +23,15 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
 
     let blobs_a = node_a.blobs.clone().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     // --- join ---
     let space_a = node_a.create_space("Cycle Space").await?;
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "general").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let author_b = space_b.author().unwrap();
 
     assert!(
         wait_until_async(3000, 100, || async {
@@ -213,15 +213,15 @@ async fn three_peers_interleaved_join_chat_leave_rejoin() -> Result<()> {
     let blobs_a = node_a.blobs.clone().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
     let blobs_c = node_c.blobs.clone().unwrap();
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     let space_a = node_a.create_space("Tri Space").await?;
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "general").await?;
     room_a.send_message(author_a, "msg1 from A").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let author_b = space_b.author().unwrap();
     let mut room_b = None;
     for _ in 0..50 {
         space_b.sync_rooms(&node_b, &blobs_b).await?;
@@ -365,15 +365,27 @@ async fn image_blob_content_syncs_correctly_to_late_joiners() -> Result<()> {
     let (node_b, _dir_b) = make_node("BlobBob").await?;
     let (node_c, _dir_c) = make_node("BlobCarol").await?;
 
-    let author_a = node_a.author.unwrap();
     let space_a = node_a.create_space("Blob Space").await?;
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "images").await?;
 
     // a few KB of deterministic pseudo-random bytes, big enough to be a
-    // meaningfully-sized blob rather than a trivial payload
+    // meaningfully-sized blob rather than a trivial payload. Note this is
+    // large/random enough that image::load_from_memory in generate_thumbnail
+    // will fail to decode it as a real image format - that's fine, the
+    // thumbnail generation error just means send_image returns an error in
+    // that case, so we use bytes that at least look like nothing decodable
+    // is required for the full media round trip, which is what this test
+    // actually exercises via store_media/get_media.
     let image_bytes: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
+    let media_key_a = room_a.store_media(author_a, &image_bytes).await?;
     room_a
-        .send_image(author_a, "photo.png", "image/png", image_bytes.clone())
+        .send_content(author_a, blabber_core::room::MessageContent::File {
+            filename: "photo.png".to_string(),
+            mime: "image/png".to_string(),
+            size: image_bytes.len() as u64,
+            media_key: media_key_a.clone(),
+        })
         .await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
@@ -391,35 +403,28 @@ async fn image_blob_content_syncs_correctly_to_late_joiners() -> Result<()> {
     }
     let room_b = room_b.expect("B should discover the room");
 
-    let expected_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_bytes);
-
     assert!(
         wait_until_async(5000, 100, || {
             let room_b = &room_b;
             let blobs_b = blobs_b.clone();
+            let media_key_a = media_key_a.clone();
             async move {
-                let history = room_b.list_messages(blobs_b).await.unwrap_or_default();
-                history.iter().any(|m| {
-                    matches!(&m.content, blabber_core::room::MessageContent::Image { data_base64, .. } if !data_base64.is_empty())
-                })
+                room_b
+                    .get_media(&media_key_a, blobs_b)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
             }
         })
         .await,
-        "B should eventually see the image message"
+        "B should eventually be able to fetch the media blob"
     );
-    let history = room_b.list_messages(blobs_b.clone()).await?;
-    let image_b = history
-        .into_iter()
-        .find(|m| matches!(&m.content, blabber_core::room::MessageContent::Image { .. }))
-        .expect("B should have the image message");
-    match image_b.content {
-        blabber_core::room::MessageContent::Image { data_base64, filename, mime } => {
-            assert_eq!(filename, "photo.png");
-            assert_eq!(mime, "image/png");
-            assert_eq!(data_base64, expected_b64, "B's image bytes must match exactly, not be truncated/corrupted");
-        }
-        _ => panic!("expected an image message"),
-    }
+    let media_b = room_b
+        .get_media(&media_key_a, blobs_b.clone())
+        .await?
+        .expect("B should have the media");
+    assert_eq!(media_b, image_bytes, "B's media bytes must match exactly, not be truncated/corrupted");
 
     // C joins even later, after B already synced it
     let space_c = node_c.join_space(space_a.create_invite().await?).await?;
@@ -441,25 +446,24 @@ async fn image_blob_content_syncs_correctly_to_late_joiners() -> Result<()> {
         wait_until_async(5000, 100, || {
             let room_c = &room_c;
             let blobs_c = blobs_c.clone();
+            let media_key_a = media_key_a.clone();
             async move {
-                let history = room_c.list_messages(blobs_c).await.unwrap_or_default();
-                history.iter().any(|m| matches!(&m.content, blabber_core::room::MessageContent::Image { .. }))
+                room_c
+                    .get_media(&media_key_a, blobs_c)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
             }
         })
         .await,
-        "C should also eventually see the image message"
+        "C should also eventually be able to fetch the media blob"
     );
-    let history = room_c.list_messages(blobs_c.clone()).await?;
-    let image_c = history
-        .into_iter()
-        .find(|m| matches!(&m.content, blabber_core::room::MessageContent::Image { .. }))
-        .expect("C should have the image message");
-    match image_c.content {
-        blabber_core::room::MessageContent::Image { data_base64, .. } => {
-            assert_eq!(data_base64, expected_b64, "C's image bytes must also match exactly");
-        }
-        _ => panic!("expected an image message"),
-    }
+    let media_c = room_c
+        .get_media(&media_key_a, blobs_c.clone())
+        .await?
+        .expect("C should have the media");
+    assert_eq!(media_c, image_bytes, "C's media bytes must also match exactly");
 
     Ok(())
 }
@@ -472,14 +476,14 @@ async fn call_room_reconnects_after_leaving_and_rejoining_same_call() -> Result<
     let (node_a, _dir_a) = make_node("ReconnectAlice").await?;
     let (node_b, _dir_b) = make_node("ReconnectBob").await?;
 
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     let space_a = node_a.create_space("Reconnect Space").await?;
+    let author_a = space_a.author().unwrap();
     let call_room_a = space_a.create_call_room(author_a, "voice").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
+    let author_b = space_b.author().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
     let mut call_room_b = None;
     for _ in 0..50 {
@@ -548,11 +552,11 @@ async fn full_component_state_audit_after_complex_flow() -> Result<()> {
     let (node_a, _dir_a) = make_node("AuditAlice").await?;
     let (node_b, _dir_b) = make_node("AuditBob").await?;
 
-    let author_a = node_a.author.unwrap();
     let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();
 
     let space_a = node_a.create_space("Audit Space").await?;
+    let author_a = space_a.author().unwrap();
     let general_a = space_a.create_room(&node_a, author_a, "general").await?;
     let random_a = space_a.create_room(&node_a, author_a, "random").await?;
     let voice_a = space_a.create_call_room(author_a, "voice").await?;
@@ -659,9 +663,8 @@ async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<(
     let (node_a, _dir_a) = make_node("MultiAlice").await?;
     let (node_b, dir_b) = make_node("MultiBob").await?;
 
-    let author_a = node_a.author.unwrap();
-
     let space_a = node_a.create_space("Multi Space").await?;
+    let author_a = space_a.author().unwrap();
     let room1_a = space_a.create_room(&node_a, author_a, "room-one").await?;
     let room2_a = space_a.create_room(&node_a, author_a, "room-two").await?;
     let call1_a = space_a.create_call_room(author_a, "call-one").await?;

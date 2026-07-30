@@ -13,7 +13,7 @@ async fn rejoin_after_leaving_resyncs_rooms_and_membership() -> Result<()> {
     let (node_b, dir_b) = make_node("RejoinBob").await?;
 
     let space_a = node_a.create_space("Rejoin Test Space").await?;
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let _room_a = space_a.create_room(&node_a, author_a, "general").await?;
 
     let invite1 = space_a.create_invite().await?;
@@ -114,7 +114,7 @@ async fn rejoin_with_same_invite_string_resyncs_rooms_and_membership() -> Result
     let (node_b, dir_b) = make_node("SameInviteBob").await?;
 
     let space_a = node_a.create_space("Same Invite Test Space").await?;
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let _room_a = space_a.create_room(&node_a, author_a, "general").await?;
 
     let invite = space_a.create_invite().await?;

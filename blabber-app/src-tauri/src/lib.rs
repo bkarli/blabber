@@ -11,10 +11,11 @@ mod room;
 mod call_room;
 mod audio;
 mod event_bridge;
+mod result_ext;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
-use room::{create_room, list_rooms, send_message, list_messages,get_my_author_id,send_image,my_endpoint_id,send_file,get_media};
-use space::{create_server, list_servers, get_invite, join_space, leave_space, list_members};
+use room::{create_room, list_rooms, send_message, list_messages, get_my_author_id, send_image, my_endpoint_id, send_file, get_media};
+use space::{create_server, list_servers, get_invite, get_relay_invite, join_space, leave_space, list_members};
 use call_room::{create_call_room, list_call_rooms, join_call_room, leave_call_room, list_call_participants, set_muted};
 use audio::{list_audio_devices, set_input_device, set_output_device, play_sound_effect};
 
@@ -45,6 +46,7 @@ pub fn run() {
             join_space,
             leave_space,
             get_invite,
+            get_relay_invite,
             create_room,
             list_rooms,
             send_message,

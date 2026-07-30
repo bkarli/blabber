@@ -1,9 +1,22 @@
 # blabber-root
 
 A headless, GUI-free build of the Blabber node, meant to run permanently on
-a server. It joins the spaces you configure and stays online as a normal
- Member, so those spaces keep syncing and message/room history
-stays reachable.
+a server. It joins the spaces you configure as a **blind relay**, not a
+Member: it syncs and seeds ciphertext (messages, room/call metadata) so
+those spaces stay reachable even when every human member is offline, but it
+never receives the space's decryption key and is structurally unable to
+decrypt anything or write real content - enforced by `iroh-docs`' own
+read-only capability on every content doc, not just app-level policy.
+
+It does show up in the member list - clearly labeled as a relay, never as
+a human - by publishing a small, cleartext presence entry (its display
+name and endpoint id, nothing else) that carries no space secrets. This is
+the one write grant it holds: on the members doc only, and only for that
+one entry. It cannot write, forge, or decrypt anyone else's member record,
+any message, room, or call content. This matters because this is the one
+component meant to run unattended and exposed on the public internet, so
+it's the most likely single point of compromise; a compromised relay under
+this design still can't read your messages.
 
 It reuses `blabber-core::node::Node` as the desktop app
 (`blabber-app`) does.
@@ -28,21 +41,28 @@ The binary is produced at `target/release/blabber-root`.
 file doesn't exist, a commented out template is written there and the process
 exits with instructions, it never boots with guessed defaults.
 
-| Field           | Meaning                                                                                      |
-|-----------------|----------------------------------------------------------------------------------------------|
-| `display_name`  | How this node appears as a Member of every space it joins. Default: `"blabber-root"`.        |
-| `data_dir`      | Root directory for `identity.bin`, `blobs/`, and `spaces/`.                                  |
-| `password_file` | Path to a file whose trimmed contents is the identity password. See below.                   |
-| `invites`       | List of invite ticket strings to auto-join at startup and on `SIGHUP` reload. Default: `[]`. |
+| Field           | Meaning                                                                                                                        |
+|-----------------|--------------------------------------------------------------------------------------------------------------------------------|
+| `display_name`  | This node's identity label - used locally (e.g. in log output) and shown in each space's member list as this relay's presence, clearly marked as a relay, never as a Member. Default: `"blabber-root"`. |
+| `data_dir`      | Root directory for `identity.bin`, `blobs/`, and `spaces/`.                                                                    |
+| `password_file` | Path to a file whose trimmed contents is the identity password. See below.                                                     |
+| `invites`       | List of **relay** invite ticket strings to auto-join at startup and on `SIGHUP` reload. Default: `[]`.                         |
 
 On first run, an identity is created
 automatically using `display_name` and encrypted with the password from
 `password_file`.
 
-### Getting an invite ticket
+### Getting a relay invite ticket
 
-In the desktop app, use the existing "Get invite" / "Copy invite" action for
-a space, and paste the resulting code into the `invites` array.
+In the desktop app, use the "Get relay invite" action for a space (distinct
+from the regular "Get invite" action used to invite human members), and
+paste the resulting code into the `invites` array.
+
+A regular member invite ticket carries the space's decryption key and is
+deliberately rejected here rather than silently accepted: `blabber-root`
+only ever parses the relay-invite format, so pasting the wrong kind of
+ticket fails loudly (logged and skipped) instead of quietly handing this
+internet-facing process a key it should never hold.
 
 ## Password file
 

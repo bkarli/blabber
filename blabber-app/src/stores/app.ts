@@ -13,6 +13,8 @@ export interface Member {
   endpoint_id: string;
   display_name: string;
   joined_at: number;
+  /** True for a blabber-root blind relay's own presence entry, never a real human member. */
+  is_relay: boolean;
 }
 
 export interface RoomInfo {
@@ -48,7 +50,7 @@ export type AppEvent =
 export const useAppStore = defineStore('app', {
   state: () => ({
     spaces: [] as SpaceInfo[],
-    myAuthorId: null as string | null,
+    myAuthorIdBySpace: {} as Record<string, string>,
     myEndpointId: null as string | null,
     roomsBySpace: {} as Record<string, RoomInfo[]>,
     channelsBySpace: {} as Record<string, ChannelInfo[]>,
@@ -69,8 +71,10 @@ export const useAppStore = defineStore('app', {
     messagesFor: (state) => (roomId: string) => state.messagesByRoom[roomId] ?? [],
     isRoomUnread: (state) => (roomId: string) => !!state.unreadRoomIds[roomId],
 
+    myAuthorIdFor: (state) => (spaceId: string) => state.myAuthorIdBySpace[spaceId] ?? null,
+
     displayNameFor: (state) => (spaceId: string, authorId: string) => {
-      if (authorId === state.myAuthorId) return 'You';
+      if (authorId === state.myAuthorIdBySpace[spaceId]) return 'You';
       const member = (state.membersBySpace[spaceId] ?? []).find((m) => m.author_id === authorId);
       return member?.display_name ?? authorId.slice(0, 8);
     },
@@ -85,12 +89,6 @@ export const useAppStore = defineStore('app', {
     async init() {
       if (this.initialized) return;
       this.initialized = true;
-
-      try {
-        this.myAuthorId = await invoke<string>('get_my_author_id');
-      } catch (e) {
-        console.error('failed to load own author id', e);
-      }
 
       try {
         this.myEndpointId = await invoke<string>('my_endpoint_id');
@@ -151,7 +149,7 @@ export const useAppStore = defineStore('app', {
       }
     },
 
-    handleNewMessage({ room_id, message }: { space_id: string; room_id: string; message: Message }) {
+    handleNewMessage({ space_id, room_id, message }: { space_id: string; room_id: string; message: Message }) {
       const list = (this.messagesByRoom[room_id] ??= []);
       const alreadyExists = list.some(
         (m) => m.author === message.author && m.sent_at === message.sent_at
@@ -160,7 +158,7 @@ export const useAppStore = defineStore('app', {
         list.push(message);
         list.sort((a, b) => a.sent_at - b.sent_at);
         // our own message already played 'message-send' from sendMessage() directly
-        if (message.author !== this.myAuthorId) {
+        if (message.author !== this.myAuthorIdBySpace[space_id]) {
           useSoundEffectsStore().play('message-receive');
           if (room_id !== this.activeRoomId) {
             this.unreadRoomIds[room_id] = true;
@@ -276,6 +274,11 @@ export const useAppStore = defineStore('app', {
       return invoke<string>('get_invite', { spaceId });
     },
 
+    /** creates an invite for a relay without encryption key */
+    async getRelayInvite(spaceId: string) {
+      return invoke<string>('get_relay_invite', { spaceId });
+    },
+
     async loadMessages(spaceId: string, roomId: string) {
       const messages = await invoke<Message[]>('list_messages', { spaceId, roomId });
       // merge rather than replace: list_messages can skip a message whose
@@ -349,7 +352,16 @@ export const useAppStore = defineStore('app', {
       return invoke<string[]>('list_call_participants', { roomId });
     },
 
+    async loadMyAuthorId(spaceId: string) {
+      try {
+        this.myAuthorIdBySpace[spaceId] = await invoke<string>('get_my_author_id', { spaceId });
+      } catch (e) {
+        console.error('failed to load own author id for space', spaceId, e);
+      }
+    },
+
     async loadMembers(spaceId: string) {
+      await this.loadMyAuthorId(spaceId);
       const members = await invoke<Member[]>('list_members', { spaceId });
       const merged = new Map(
         (this.membersBySpace[spaceId] ?? []).map((m) => [m.author_id, m])

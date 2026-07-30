@@ -1,23 +1,26 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc, task::Poll::Pending};
-use anyhow::{Context};
-use rand::prelude::*;
-use zeroize::Zeroizing;
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-
-use crate::{AppEvent, Node, events, invite::Invite};
-use anyhow::{Result};
-use iroh_blobs::{Hash, store::fs::FsStore};
-use iroh_docs::{AuthorId, DocTicket, Entry, api::protocol::ShareMode, engine::LiveEvent, store::Query};
-use n0_future::{Stream, StreamExt};
-use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
-use crate::room::Room;
+use anyhow::{Context, Result};
+use iroh_blobs::{store::fs::FsStore, Hash};
+use iroh_docs::api::protocol::{AddrInfoOptions, ShareMode};
 use iroh_docs::api::Doc;
 use iroh_docs::protocol::Docs;
+use iroh_docs::{AuthorId, DocTicket, Entry, engine::LiveEvent, store::Query};
+use n0_future::StreamExt;
+use rand::prelude::*;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, Mutex};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
-use iroh_docs::api::protocol::AddrInfoOptions;
-use serde::{Serialize, Deserialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
+
 use crate::call_rooms::CallRoom;
+use crate::invite::{Invite, RelayInvite};
+use crate::room::Room;
+use crate::{events, crypto, AppEvent, Node};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Member {
@@ -25,12 +28,29 @@ pub struct Member {
     pub endpoint_id: String,
     pub display_name: String,
     pub joined_at: u64,
+    /// True for a blind relay's own presence entry (written in cleartext
+    /// under the `relay/` key prefix, never `member/`), false for a real
+    /// member. A relay is still never able to decrypt or forge a real
+    /// member's encrypted record - this only lets it announce its own
+    /// presence.
+    #[serde(default)]
+    pub is_relay: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct RoomRecord {
     id: Uuid,
     name: String,
+    messages_ticket: String,
+    media_ticket: String,
+}
+
+/// Cleartext discovery pointer for a room: no name, and both tickets are read only, a blind relay
+/// can sync/seed both the messages and media docs without ever being able
+/// to write to them or decrypt their content.
+#[derive(Serialize, Deserialize)]
+pub struct RoomRelayRecord {
+    id: Uuid,
     messages_ticket: String,
     media_ticket: String,
 }
@@ -42,50 +62,42 @@ struct CallRoomRecord {
     ticket: String,
 }
 
-enum SpaceRecords {
-    RoomRecord,
-    CallRoomRecord,
+/// Cleartext discovery pointer for a call room: read only ticket, no name.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct CallRoomRelayRecord {
+    id: Uuid,
+    ticket: String,
 }
-
 
 enum SpaceEvents {
     RecordEvent,
     MemberEvent,
 }
 
-/// Space holds
-/// - Each endpoint connected to it
-/// - Rooms: Chat Rooms
-/// - Channels Voice Rooms
-///
-/// You can invite other peers to that Space
-/// They will see the same rooms and channels
-///
-/// They can write and join the rooms and spaces
-///
-/// Other peers can invite other peers to the space
-///
-///
+/// A shared space: an `info` doc (room/call-room directory) and a `members`
+/// doc (roster), synced peer-to-peer via `iroh-docs`. Every entry is
+/// encrypted with `key` except the `blind relay` discovery pointers
+/// (`room-relay/`, `callroom-relay/`, `relay/`), which are deliberately
+/// cleartext so a keyless relay can still find and seed them. `key` and
+/// `author` are `None` for a blind relay: it can sync and seed every doc,
+/// but never decrypt or write real content.
 #[derive(Clone)]
 pub struct Space {
-    id: uuid::Uuid, 
+    id: uuid::Uuid,
     name: String,
 
-    // Documents
     pub info: Doc,
     pub members: Doc,
-    key: Arc<Zeroizing<[u8; 32]>>,
-    users: Vec<String>,
+    /// `None` for a blind relay
+    key: Option<Arc<Zeroizing<[u8; 32]>>>,
+    /// `None` for a blind relay
+    author: Option<AuthorId>,
     pub rooms: Arc<Mutex<Vec<Room>>>,
     pub docs: Docs,
     pub call_rooms: Arc<Mutex<Vec<CallRoom>>>,
 
     pub member_cache: Arc<Mutex<Vec<Member>>>,
     pending_member: Arc<Mutex<HashMap<Hash, Entry>>>,
-
-    pub room_record_cache : Arc<Mutex<Vec<RoomRecord>>>,
-    pub call_room_record_cache: Arc<Mutex<Vec<CallRoomRecord>>>,
-
     pending_room: Arc<Mutex<HashMap<Hash, Entry>>>,
 
     /// background tasks spawned by `watch_members`/`watch_info`, kept
@@ -94,22 +106,22 @@ pub struct Space {
 }
 
 impl Space {
-
-    /// Create a completely new space
+    /// Creates a brand-new space with a freshly generated key. `id` comes
+    /// from the caller rather than being generated here, since
+    /// `Node::create_space` needs it up front to derive `author` before it
+    /// can build this `Space` at all.
     pub async fn new(
         docs: &Docs,
+        id: Uuid,
         author: AuthorId,
         endpoint_id: String,
         display_name: String,
         name: impl Into<String>
         ) -> Result<Self> {
-        // create a UUID for the space
-
         let info = docs.create().await?;
         let members = docs.create().await?;
 
-        let id = Uuid::new_v4();
-        let key = Arc::new(Zeroizing::new(rand::rng().random::<[u8; 32]>()));
+        let key = Some(Arc::new(Zeroizing::new(rand::rng().random::<[u8; 32]>())));
 
         let space = Self {
             id,
@@ -117,17 +129,13 @@ impl Space {
             info,
             members,
             key,
-            users: vec![],
+            author: Some(author),
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
             call_rooms: Arc::new(Mutex::new(Vec::new())),
 
             member_cache: Arc::new(Mutex::new(Vec::new())),
             pending_member: Arc::new(Mutex::new(HashMap::new())),
-
-            room_record_cache: Arc::new(Mutex::new(Vec::new())),
-            call_room_record_cache: Arc::new(Mutex::new(Vec::new())),
-
             pending_room: Arc::new(Mutex::new(HashMap::new())),
             watch_handles: Arc::new(Mutex::new(Vec::new())),
         };
@@ -146,22 +154,61 @@ impl Space {
         endpoint_id: String,
         display_name: String,
     ) -> Result<()> {
+        let space_key = self
+            .key
+            .as_ref()
+            .context("cannot write member record without space key (blind relay?)")?;
+
         let joined_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
         let member = Member {
-            author_id: author.to_string(), 
+            author_id: author.to_string(),
             endpoint_id: endpoint_id.to_string(),
             display_name: display_name.to_string(),
             joined_at,
+            is_relay: false,
         };
 
         let key = format!("member/{author}");
-        let value = postcard::to_allocvec(&member)?;
+        let plaintext = postcard::to_allocvec(&member)?;
+        let value = crypto::encrypt(space_key, &plaintext, self.id.as_bytes())?;
 
         self.members.set_bytes(author, key.into_bytes(), value).await?;
+        Ok(())
+    }
+
+    /// Announce this blind relay's own presence in the members doc, so a
+    /// real member's member list shows "there's a relay attached to this
+    /// space" - clearly marked, never mistaken for a human. Written in
+    /// cleartext under a `relay/` key prefix, distinct from the encrypted
+    /// `member/` records real members write: a relay never holds the space
+    /// key to encrypt with, and this record carries nothing sensitive,
+    /// only its own presence.
+    async fn insert_self_as_relay(
+        &self,
+        author: AuthorId,
+        endpoint_id: String,
+        display_name: String,
+    ) -> Result<()> {
+        let joined_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let member = Member {
+            author_id: author.to_string(),
+            endpoint_id,
+            display_name,
+            joined_at,
+            is_relay: true,
+        };
+
+        let key = format!("relay/{author}");
+        let plaintext = postcard::to_allocvec(&member)?;
+        self.members.set_bytes(author, key.into_bytes(), plaintext).await?;
         Ok(())
     }
 
@@ -199,7 +246,6 @@ impl Space {
         Ok(())
     }
 
-    /// Create a space from an Invite
     pub async fn from_invite(
         docs: &Docs,
         invite: Invite,
@@ -219,18 +265,14 @@ impl Space {
             name: invite.space_name.clone(),
             info,
             members,
-            key: Arc::new(Zeroizing::new(invite.space_key)),
-            users: vec![],
+            key: Some(Arc::new(Zeroizing::new(invite.space_key))),
+            author: Some(author),
             rooms: Arc::new(Mutex::new(Vec::new())),
             docs: docs.clone(),
             call_rooms: Arc::new(Mutex::new(Vec::new())),
 
             member_cache: Arc::new(Mutex::new(Vec::new())),
             pending_member: Arc::new(Mutex::new(HashMap::new())),
-
-            room_record_cache: Arc::new(Mutex::new(Vec::new())),
-            call_room_record_cache: Arc::new(Mutex::new(Vec::new())),
-
             pending_room: Arc::new(Mutex::new(HashMap::new())),
             watch_handles: Arc::new(Mutex::new(Vec::new())),
         };
@@ -242,71 +284,157 @@ impl Space {
         Ok(space)
     }
 
-    /// create an invite for the Space
-    /// Should include at least one bootstrap node
-    pub async fn create_invite(&self) -> Result<Invite> {
-        Invite::from_space(self).await 
+    /// Create a space from a RelayInvite: a keyless blind relay. It can
+    /// sync/seed the space's docs but never decrypt or write real content.
+    /// It does get its own (locally-derived) author, used for exactly one
+    /// thing: signing its own cleartext presence entry in the members doc.
+    pub async fn from_relay_invite(
+        docs: &Docs,
+        invite: RelayInvite,
+        author: AuthorId,
+        endpoint_id: String,
+        display_name: impl Into<String>,
+    ) -> Result<Self> {
+        let info_ticket = DocTicket::from_str(&invite.info_ticket)?;
+        let member_ticket = DocTicket::from_str(&invite.member_ticket)?;
+
+        let info = docs.import(info_ticket).await?;
+        let members = docs.import(member_ticket).await?;
+        let display_name = display_name.into();
+
+        let space = Self {
+            id: invite.space_id,
+            name: invite.space_name.clone(),
+            info,
+            members,
+            key: None,
+            author: Some(author),
+            rooms: Arc::new(Mutex::new(Vec::new())),
+            docs: docs.clone(),
+            call_rooms: Arc::new(Mutex::new(Vec::new())),
+
+            member_cache: Arc::new(Mutex::new(Vec::new())),
+            pending_member: Arc::new(Mutex::new(HashMap::new())),
+            pending_room: Arc::new(Mutex::new(HashMap::new())),
+            watch_handles: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        space
+            .insert_self_as_relay(author, endpoint_id, display_name)
+            .await?;
+
+        Ok(space)
     }
-    
-    /// create the directory for the space
-    /// Document for Meta aswell as the chats
-    /// will be saved in that directory
+
+    pub async fn create_invite(&self) -> Result<Invite> {
+        Invite::from_space(self).await
+    }
+
+    pub async fn create_relay_invite(&self) -> Result<RelayInvite> {
+        RelayInvite::from_space(self).await
+    }
+
+    /// Persists this space's invite (encrypted for local storage) under
+    /// `root_path/<space-id>/meta/invite.txt`, so `Node::load_spaces` can
+    /// reload it later. Picks a real `Invite` or a keyless `RelayInvite`
+    /// depending on whether this space has a key.
     pub async fn create_directory(&self, root_path: &std::path::Path, storage_key: &[u8; 32]) -> Result<()> {
         let meta_dir = root_path.join(self.id.to_string()).join("meta");
         tokio::fs::create_dir_all(&meta_dir).await?;
-        let invite = self.create_invite().await?;
-        let encrypted = invite.serialize_invite_encrypted(storage_key)?;
+        let encrypted = if self.key.is_some() {
+            self.create_invite().await?.serialize_invite_encrypted(storage_key)?
+        } else {
+            self.create_relay_invite().await?.serialize_invite_encrypted(storage_key)?
+        };
         tokio::fs::write(meta_dir.join("invite.txt"), encrypted).await?;
         Ok(())
     }
 
     pub async fn list_members(&self, blobs: &FsStore) -> Result<Vec<Member>> {
-        // get all the members
+        let mut members = Vec::new();
+
+        // real, encrypted members - a blind relay has no key, so it never
+        // learns these records, but any peer that does have the space key
+        // can decrypt them regardless of who else (e.g. a relay) also
+        // happens to be syncing this doc.
+        if let Some(space_key) = self.key.as_ref() {
+            let space_id = self.id;
+            members.extend(
+                self.collect_member_entries(blobs, "member/", |bytes| {
+                    let plaintext = crypto::decrypt(space_key, bytes, space_id.as_bytes()).ok()?;
+                    postcard::from_bytes(&plaintext).ok()
+                })
+                .await?,
+            );
+        }
+
+        // blind relay presence - cleartext, no space key needed to read
+        // (or to have written it), readable by anyone syncing this doc,
+        // including another relay.
+        members.extend(
+            self.collect_member_entries(blobs, "relay/", |bytes| postcard::from_bytes(bytes).ok())
+                .await?,
+        );
+
+        Ok(members)
+    }
+
+    /// Walks every latest entry under `prefix` in the members doc, decoding
+    /// each with `decode` (which owns whatever decryption `prefix` needs, or
+    /// none at all for the cleartext relay/ prefix). A tombstone, a signer
+    /// mismatch, a self-reported `author_id` mismatch, or a `decode` failure
+    /// all just skip that entry rather than failing the whole scan - doc
+    /// entries are untrusted and often mid-sync.
+    async fn collect_member_entries(
+        &self,
+        blobs: &FsStore,
+        prefix: &str,
+        decode: impl Fn(&[u8]) -> Option<Member>,
+    ) -> Result<Vec<Member>> {
         let entries = self
             .members
-            .get_many(Query::single_latest_per_key().key_prefix("member/"))
+            .get_many(Query::single_latest_per_key().key_prefix(prefix))
             .await?;
-
         let mut entries = std::pin::pin!(entries);
         let mut members = Vec::new();
-        
-        // go through the entries and parse as member
+
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let key = std::str::from_utf8(entry.key())?;
-            let claim_auth = key.strip_prefix("member/").unwrap_or_default();
+            let claim_auth = key.strip_prefix(prefix).unwrap_or_default();
             if claim_auth != entry.author().to_string() {
                 continue;
             }
-            // a tombstone (from a member leaving) is an empty entry. skip it
             if entry.content_len() == 0 {
-                continue;
+                continue; // tombstone: the author left, or the relay stopped announcing itself
             }
-            // content may not have finished downloading yet if the entry metadata
-            // synced ahead of the blob content. skip it for now, a later sync will pick it up
             let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                continue; // content may not have finished syncing yet
+            };
+            let Some(member) = decode(&bytes) else {
                 continue;
             };
-            let Ok(member) = postcard::from_bytes::<Member>(&bytes) else {
-                continue;
-            };
-            // the payload's self reported author_id must also match the signer
             if member.author_id != claim_auth {
                 continue;
             }
             members.push(member);
         }
-
         Ok(members)
     }
 
-    /// Create a completely new room
-    pub async fn create_room(&self,node: &Node ,author: AuthorId, name: impl Into<String>) -> Result<Room> {
+    pub async fn create_room(&self, node: &Node, author: AuthorId, name: impl Into<String>) -> Result<Room> {
+        let space_key = self
+            .key
+            .clone()
+            .context("cannot create a room without space key (blind relay?)")?;
+
         let name = name.into();
-        let room = Room::new(&self.docs, name.clone(), self.key.clone()).await?;
+        let room = Room::new(&self.docs, name.clone(), Some(space_key.clone())).await?;
 
         let messages_ticket = room.messages.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
         let media_ticket = room.media.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+        let messages_read_ticket = room.messages.share(ShareMode::Read, AddrInfoOptions::RelayAndAddresses).await?;
+        let media_read_ticket = room.media.share(ShareMode::Read, AddrInfoOptions::RelayAndAddresses).await?;
 
         let record = RoomRecord {
             id: room.id,
@@ -314,12 +442,21 @@ impl Space {
             messages_ticket: messages_ticket.to_string(),
             media_ticket: media_ticket.to_string(),
         };
+        let relay_record = RoomRelayRecord {
+            id: room.id,
+            messages_ticket: messages_read_ticket.to_string(),
+            media_ticket: media_read_ticket.to_string(),
+        };
 
         let key = format!("room/{}", room.id);
-
-        let value = postcard::to_allocvec(&record)?;
-
+        let plaintext = postcard::to_allocvec(&record)?;
+        let value = crypto::encrypt(&space_key, &plaintext, self.id.as_bytes())?;
         self.info.set_bytes(author, key.into_bytes(), value).await?;
+
+        // cleartext pointer, readable without the space key
+        let relay_key = format!("room-relay/{}", room.id);
+        let relay_value = postcard::to_allocvec(&relay_record)?;
+        self.info.set_bytes(author, relay_key.into_bytes(), relay_value).await?;
 
         self.rooms.lock().await.push(room.clone());
 
@@ -331,61 +468,112 @@ impl Space {
         let _ = node.events.send(events::AppEvent::NewRoom {
             space_id: self.id,
             room_id: room.id,
-            room_name: room.name.clone(), 
+            room_name: room.name.clone(),
         });
 
-
-
         Ok(room)
-
     }
 
-    /// Create a new voice call room
     pub async fn create_call_room(&self, author: AuthorId, name: impl Into<String>) -> Result<CallRoom> {
+        let space_key = self
+            .key
+            .clone()
+            .context("cannot create a call room without space key (blind relay?)")?;
+
         let name = name.into();
-        let room = CallRoom::new(&self.docs, name.clone()).await?;
-        let ticket = room.call_log.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+        let room = CallRoom::new(&self.docs, name.clone(), Some(space_key.clone())).await?;
+        let write_ticket = room.call_log.share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses).await?;
+        let read_ticket = room.call_log.share(ShareMode::Read, AddrInfoOptions::RelayAndAddresses).await?;
+
         let record = CallRoomRecord {
             id: room.id,
             name: name.clone(),
-            ticket: ticket.to_string(),};
+            ticket: write_ticket.to_string(),
+        };
+        let relay_record = CallRoomRelayRecord {
+            id: room.id,
+            ticket: read_ticket.to_string(),
+        };
+
         let key = format!("callroom/{}", room.id);
-        let value = postcard::to_allocvec(&record)?;
+        let plaintext = postcard::to_allocvec(&record)?;
+        let value = crypto::encrypt(&space_key, &plaintext, self.id.as_bytes())?;
         self.info.set_bytes(author, key.into_bytes(), value).await?;
+
+        let relay_key = format!("callroom-relay/{}", room.id);
+        let relay_value = postcard::to_allocvec(&relay_record)?;
+        self.info.set_bytes(author, relay_key.into_bytes(), relay_value).await?;
+
         self.call_rooms.lock().await.push(room.clone());
         Ok(room)
     }
 
-    /// initially called when joining a space just to update the in memory
-    /// information on the rooms currently on that space
+    async fn is_known_room(&self, id: Uuid) -> bool {
+        self.rooms.lock().await.iter().any(|r| r.id == id)
+    }
+
+    async fn is_known_call_room(&self, id: Uuid) -> bool {
+        self.call_rooms.lock().await.iter().any(|r| r.id == id)
+    }
+
+    /// Called on join/reload to catch up on rooms created before we started
+    /// watching the info doc live.
     pub async fn sync_rooms(&self, node: &Node, blobs: &FsStore) -> Result<Vec<JoinHandle<()>>> {
-        let entries = self
-            .info
-            .get_many(Query::single_latest_per_key().key_prefix("room/"))
-            .await?;
-        
-        let mut entries = std::pin::pin!(entries);
+        match self.key.clone() {
+            Some(space_key) => {
+                let entries = self
+                    .info
+                    .get_many(Query::single_latest_per_key().key_prefix("room/"))
+                    .await?;
 
-        // go through the entries and create RoomRecors
-        while let Some(entry) = entries.next().await {
-            let entry = entry?;
-            // content may not have finished downloading yet if the entry metadata
-            // synced ahead of the blob content; skip it for now, a later sync will pick it up
-            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
-                continue;
-            };
-            let record: RoomRecord = postcard::from_bytes(&bytes)?;
+                let mut entries = std::pin::pin!(entries);
 
-            let already_known = {
-                let rooms = self.rooms.lock().await;
-                rooms.iter().any(|r| r.id == record.id)
-            };
+                while let Some(entry) = entries.next().await {
+                    let entry = entry?;
+                    // content may not have finished downloading yet if the entry metadata
+                    // synced ahead of the blob content; skip it for now, a later sync will pick it up
+                    let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                        continue;
+                    };
+                    let Ok(plaintext) = crypto::decrypt(&space_key, &bytes, self.id.as_bytes()) else {
+                        continue;
+                    };
+                    let record: RoomRecord = postcard::from_bytes(&plaintext)?;
 
-            if !already_known {
-                let messages_ticket = DocTicket::from_str(&record.messages_ticket)?;
-                let media_ticket = DocTicket::from_str(&record.media_ticket)?;
-                let room = Room::from_ticket(&self.docs, record.id, record.name, messages_ticket, media_ticket, self.key.clone()).await?;
-                self.rooms.lock().await.push(room);
+                    if !self.is_known_room(record.id).await {
+                        let messages_ticket = DocTicket::from_str(&record.messages_ticket)?;
+                        let media_ticket = DocTicket::from_str(&record.media_ticket)?;
+                        let room = Room::from_ticket(&self.docs, record.id, record.name, messages_ticket, media_ticket, Some(space_key.clone())).await?;
+                        self.rooms.lock().await.push(room);
+                    }
+                }
+            }
+            None => {
+                // blind relay: no space key, discover rooms through the cleartext read only pointer instead
+                let entries = self
+                    .info
+                    .get_many(Query::single_latest_per_key().key_prefix("room-relay/"))
+                    .await?;
+
+                let mut entries = std::pin::pin!(entries);
+
+                while let Some(entry) = entries.next().await {
+                    let entry = entry?;
+                    let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                        continue;
+                    };
+                    let Ok(record) = postcard::from_bytes::<RoomRelayRecord>(&bytes) else {
+                        continue;
+                    };
+
+                    if !self.is_known_room(record.id).await {
+                        let messages_ticket = DocTicket::from_str(&record.messages_ticket)?;
+                        let media_ticket = DocTicket::from_str(&record.media_ticket)?;
+                        // relay never learns the real name; the id stands in
+                        let room = Room::from_ticket(&self.docs, record.id, record.id.to_string(), messages_ticket, media_ticket, None).await?;
+                        self.rooms.lock().await.push(room);
+                    }
+                }
             }
         }
 
@@ -402,32 +590,55 @@ impl Space {
     /// and track them locally. Membership within a room is read fresh on demand
     /// (via `CallRoom::list_active_members`), so no live subscription is needed here.
     pub async fn sync_call_rooms(&self, blobs: &FsStore) -> Result<()> {
-        let entries = self
-            .info
-            .get_many(Query::single_latest_per_key().key_prefix("callroom/"))
-            .await?;
-        let mut entries = std::pin::pin!(entries);
-        while let Some(entry) = entries.next().await {
-            let entry = entry?;
-            // content may not have finished downloading yet if the entry metadata
-            // synced ahead of the blob content; skip it for now, a later sync will pick it up
-            let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
-                continue;
-            };
-            let record: CallRoomRecord = postcard::from_bytes(&bytes)?;
-            let already_known = {
-                let call_rooms = self.call_rooms.lock().await;
-                call_rooms.iter().any(|r| r.id == record.id)
-            };
-            if !already_known {
-                let ticket = DocTicket::from_str(&record.ticket)?;
-                let room = CallRoom::from_ticket(&self.docs, record.id, record.name, ticket).await?;
-                self.call_rooms.lock().await.push(room);
+        match self.key.clone() {
+            Some(space_key) => {
+                let entries = self
+                    .info
+                    .get_many(Query::single_latest_per_key().key_prefix("callroom/"))
+                    .await?;
+                let mut entries = std::pin::pin!(entries);
+                while let Some(entry) = entries.next().await {
+                    let entry = entry?;
+                    // content may not have finished downloading yet if the entry metadata
+                    // synced ahead of the blob content; skip it for now, a later sync will pick it up
+                    let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                        continue;
+                    };
+                    let Ok(plaintext) = crypto::decrypt(&space_key, &bytes, self.id.as_bytes()) else {
+                        continue;
+                    };
+                    let record: CallRoomRecord = postcard::from_bytes(&plaintext)?;
+                    if !self.is_known_call_room(record.id).await {
+                        let ticket = DocTicket::from_str(&record.ticket)?;
+                        let room = CallRoom::from_ticket(&self.docs, record.id, record.name, ticket, Some(space_key.clone())).await?;
+                        self.call_rooms.lock().await.push(room);
+                    }
+                }
+            }
+            None => {
+                let entries = self
+                    .info
+                    .get_many(Query::single_latest_per_key().key_prefix("callroom-relay/"))
+                    .await?;
+                let mut entries = std::pin::pin!(entries);
+                while let Some(entry) = entries.next().await {
+                    let entry = entry?;
+                    let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else {
+                        continue;
+                    };
+                    let Ok(record) = postcard::from_bytes::<CallRoomRelayRecord>(&bytes) else {
+                        continue;
+                    };
+                    if !self.is_known_call_room(record.id).await {
+                        let ticket = DocTicket::from_str(&record.ticket)?;
+                        let room = CallRoom::from_ticket(&self.docs, record.id, record.id.to_string(), ticket, None).await?;
+                        self.call_rooms.lock().await.push(room);
+                    }
+                }
             }
         }
         Ok(())
     }
-
 
     pub async fn try_apply_entry(
         &self,
@@ -437,12 +648,42 @@ impl Space {
         events: &broadcast::Sender<AppEvent>,
         space_id: Uuid,
     ) -> bool {
-
         match event_type {
             SpaceEvents::MemberEvent => {
-                // check authenticity
-                let Ok(key) = std::str::from_utf8(entry.key()) else { return false; };
-                let Some(claim_auth) = key.strip_prefix("member/") else { return false; };
+                let Ok(key) = std::str::from_utf8(entry.key()) else { return false };
+
+                // a blind relay's own cleartext presence entry - no space
+                // key needed to read it, so this branches ahead of the
+                // encrypted member/ handling below.
+                if let Some(claim_auth) = key.strip_prefix("relay/") {
+                    if claim_auth != entry.author().to_string() {
+                        return false;
+                    }
+                    let author_id = claim_auth.to_string();
+
+                    if entry.content_len() == 0 {
+                        self.member_cache.lock().await.retain(|m| m.author_id != author_id);
+                        let _ = events.send(AppEvent::MemberLeft { space_id, author_id });
+                        return true;
+                    }
+
+                    let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+                    let Ok(member) = postcard::from_bytes::<Member>(&bytes) else { return false };
+                    if member.author_id != author_id {
+                        return false;
+                    }
+
+                    let mut cache = self.member_cache.lock().await;
+                    match cache.iter_mut().find(|m| m.author_id == member.author_id) {
+                        Some(existing) => *existing = member.clone(),
+                        None => cache.push(member.clone()),
+                    }
+                    drop(cache);
+                    let _ = events.send(AppEvent::NewMember { space_id, member });
+                    return true;
+                }
+
+                let Some(claim_auth) = key.strip_prefix("member/") else { return false };
                 if claim_auth != entry.author().to_string() {
                     return false;
                 }
@@ -450,105 +691,138 @@ impl Space {
 
                 // `del` on the members doc writes a tombstone: an entry with
                 // the same "member/{author}" key but empty content. Treat
-                // as author leaving rather than trying (and
-                // failing) to decode it as a `Member`.
+                // as the author leaving rather than trying (and failing) to
+                // decode it as a `Member`.
                 if entry.content_len() == 0 {
                     self.member_cache.lock().await.retain(|m| m.author_id != author_id);
                     let _ = events.send(AppEvent::MemberLeft { space_id, author_id });
                     return true;
                 }
 
-                if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
-                    if let Ok(member) = postcard::from_bytes::<Member>(&bytes) {
-                        // the payload's self-reported author_id must also match the signer
-                        if member.author_id != author_id {
-                            return false;
+                // no key: a blind relay can never decrypt this, so there's
+                // nothing to retry later either - counts as handled.
+                let Some(space_key) = self.key.as_ref() else {
+                    return true;
+                };
+
+                let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+                let Ok(plaintext) = crypto::decrypt(space_key, &bytes, self.id.as_bytes()) else { return false };
+                let Ok(member) = postcard::from_bytes::<Member>(&plaintext) else { return false };
+                // the payload's self-reported author_id must also match the signer
+                if member.author_id != author_id {
+                    return false;
+                }
+
+                let mut cache = self.member_cache.lock().await;
+                match cache.iter_mut().find(|m| m.author_id == member.author_id) {
+                    Some(existing) => *existing = member.clone(),
+                    None => cache.push(member.clone()),
+                }
+                drop(cache);
+                let _ = events.send(AppEvent::NewMember { space_id, member });
+                true
+            }
+            SpaceEvents::RecordEvent => {
+                let Ok(key) = std::str::from_utf8(entry.key()) else { return false };
+
+                if key.starts_with("room/") {
+                    let Some(space_key) = self.key.as_ref() else { return true };
+                    let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+                    let Ok(plaintext) = crypto::decrypt(space_key, &bytes, self.id.as_bytes()) else { return false };
+                    let Ok(record) = postcard::from_bytes::<RoomRecord>(&plaintext) else { return false };
+
+                    if !self.is_known_room(record.id).await {
+                        if let Ok(messages_ticket) = DocTicket::from_str(&record.messages_ticket) {
+                            let Ok(media_ticket) = DocTicket::from_str(&record.media_ticket) else {
+                                return false;
+                            };
+                            if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), messages_ticket, media_ticket, self.key.clone()).await {
+                                self.rooms.lock().await.push(room.clone());
+                                let label = format!("{}/{}", self.name, room.name);
+                                match room.watch(events.clone(), blobs.clone(), label, space_id).await {
+                                    Ok(handle) => self.watch_handles.lock().await.push(handle),
+                                    Err(e) => eprintln!("failed to watch newly discovered room {}: {e:#}", room.id),
+                                }
+                                let _ = events.send(AppEvent::NewRoom {
+                                    space_id,
+                                    room_id: room.id,
+                                    room_name: room.name.clone(),
+                                });
+                            }
                         }
-                        let mut cache = self.member_cache.lock().await;
-                        match cache.iter_mut().find(|m| m.author_id == member.author_id) {
-                            Some(existing) => *existing = member.clone(),
-                            None => cache.push(member.clone()),
-                        }
-                        drop(cache);
-                        let _ = events.send(AppEvent::NewMember { space_id, member });
+                    }
+                    return true;
+                }
+
+                if key.starts_with("room-relay/") {
+                    // this cleartext pointer exists only so a blind relay can import the room read only
+                    if self.key.is_some() {
                         return true;
                     }
-                }
-                false
-            },
-                SpaceEvents::RecordEvent => {
-                let Ok(key) = std::str::from_utf8(entry.key()) else { return false; };
+                    let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+                    let Ok(record) = postcard::from_bytes::<RoomRelayRecord>(&bytes) else { return false };
 
-                if let Some(_room_id_str) = key.strip_prefix("room/") {
-                    if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
-                        if let Ok(record) = postcard::from_bytes::<RoomRecord>(&bytes) {
-                            println!("Room discovered");
-                            let already_known = {
-                                let rooms = self.rooms.lock().await;
-                                rooms.iter().any(|r| r.id == record.id)
+                    if !self.is_known_room(record.id).await {
+                        if let Ok(messages_ticket) = DocTicket::from_str(&record.messages_ticket) {
+                            let Ok(media_ticket) = DocTicket::from_str(&record.media_ticket) else {
+                                return false;
                             };
-                            if !already_known {
-                                if let Ok(messages_ticket) = DocTicket::from_str(&record.messages_ticket) {
-                                    let Ok(media_ticket) = DocTicket::from_str(&record.media_ticket) else {
-                                        return false;
-                                    };
-                                    if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.name.clone(), messages_ticket, media_ticket, self.key.clone()).await {
-                                        self.rooms.lock().await.push(room.clone());
-                                        let label = format!("{}/{}", self.name, room.name);
-                                        match room.watch(events.clone(), blobs.clone(), label, space_id).await {
-                                            Ok(handle) => self.watch_handles.lock().await.push(handle),
-                                            Err(e) => eprintln!(
-                                                "failed to watch newly discovered room {}: {e:#}",
-                                                room.id
-                                            ),
-                                        }
-
-                                        let _ = events.send(AppEvent::NewRoom {
-                                            space_id,
-                                            room_id: room.id,
-                                            room_name: room.name.clone(),
-                                        });
-                                    }
+                            if let Ok(room) = Room::from_ticket(&self.docs, record.id, record.id.to_string(), messages_ticket, media_ticket, None).await {
+                                self.rooms.lock().await.push(room.clone());
+                                let label = format!("{}/{}", self.name, room.name);
+                                match room.watch(events.clone(), blobs.clone(), label, space_id).await {
+                                    Ok(handle) => self.watch_handles.lock().await.push(handle),
+                                    Err(e) => eprintln!("failed to watch newly discovered room {}: {e:#}", room.id),
                                 }
                             }
-                            return true;
                         }
                     }
-                    return false;
+                    return true;
                 }
 
-                if let Some(_room_id_str) = key.strip_prefix("callroom/") {
-                    if let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await {
-                        if let Ok(record) = postcard::from_bytes::<CallRoomRecord>(&bytes) {
-                            let already_known = {
-                                let call_rooms = self.call_rooms.lock().await;
-                                call_rooms.iter().any(|r| r.id == record.id)
-                            };
-                            if !already_known {
-                                if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
-                                    if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.name.clone(), ticket).await {
-                                        println!("New Callroom");
-                                        self.call_rooms.lock().await.push(room.clone());
-                                        let _ = events.send(AppEvent::NewCallRoom {
-                                            space_id,
-                                            room_id: room.id,
-                                            room_name: room.name.clone(),
-                                        });
-                                    }
-                                }
+                if key.starts_with("callroom/") {
+                    let Some(space_key) = self.key.as_ref() else { return true };
+                    let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+                    let Ok(plaintext) = crypto::decrypt(space_key, &bytes, self.id.as_bytes()) else { return false };
+                    let Ok(record) = postcard::from_bytes::<CallRoomRecord>(&plaintext) else { return false };
+
+                    if !self.is_known_call_room(record.id).await {
+                        if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
+                            if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key.clone()).await {
+                                self.call_rooms.lock().await.push(room.clone());
+                                let _ = events.send(AppEvent::NewCallRoom {
+                                    space_id,
+                                    room_id: room.id,
+                                    room_name: room.name.clone(),
+                                });
                             }
-                            return true;
                         }
                     }
-                    return false;
+                    return true;
                 }
 
-                true 
-            }    
+                if key.starts_with("callroom-relay/") {
+                    if self.key.is_some() {
+                        return true;
+                    }
+                    let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
+                    let Ok(record) = postcard::from_bytes::<CallRoomRelayRecord>(&bytes) else { return false };
+
+                    if !self.is_known_call_room(record.id).await {
+                        if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
+                            if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.id.to_string(), ticket, None).await {
+                                self.call_rooms.lock().await.push(room);
+                            }
+                        }
+                    }
+                    return true;
+                }
+
+                true
+            }
         }
     }
 
-    
     pub async fn apply_event(
         &self,
         event_type: SpaceEvents,
@@ -566,8 +840,7 @@ impl Space {
                 }
             }
             LiveEvent::ContentReady { hash } => {
-                let stashed = pending.lock().await.remove(&hash);
-                if let Some(entry) = stashed {
+                if let Some(entry) = pending.lock().await.remove(&hash) {
                     self.try_apply_entry(event_type, &entry, blobs, events, space_id).await;
                 }
             }
@@ -617,7 +890,7 @@ impl Space {
         let pending = self.pending_room.clone();
         let label = label.into();
         let events = node.events.clone();
-        let space_id = self.id().clone();
+        let space_id = self.id();
 
         let handle = node.watch_doc(doc, label, move |event| {
             let space = space.clone();
@@ -634,28 +907,19 @@ impl Space {
         Ok(())
     }
 
-    /// subscribe to the info Document
-    pub async fn subscribe_info(&self) -> Result<impl Stream<Item = Result<LiveEvent>>> {
-        let events = self.info.subscribe().await?;
-        Ok(events)
-    }
-    
-    /// subscribe to the member document
-    pub async fn subscribe_members(&self) -> Result<impl Stream<Item = Result<LiveEvent>>> {
-        let events = self.members.subscribe().await?;
-        Ok(events)
-    }
-
     pub fn id(&self) -> Uuid {
         self.id
     }
 
-    pub fn key(&self) -> Arc<Zeroizing<[u8; 32]>> {
+    pub fn key(&self) -> Option<Arc<Zeroizing<[u8; 32]>>> {
         self.key.clone()
+    }
+
+    pub fn author(&self) -> Option<AuthorId> {
+        self.author
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
 }
-

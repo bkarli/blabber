@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use blabber_core::sound::AudioDeviceInfo;
 use crate::AppState;
+use crate::result_ext::ResultExt;
 
 /// Persistent device selection, global to the app, stored alongside identities/spaces.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -13,8 +14,8 @@ pub(crate) struct AudioSettings {
 }
 
 fn audio_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
+    let app_data_dir = app.path().app_data_dir().stringify_err()?;
+    fs::create_dir_all(&app_data_dir).stringify_err()?;
     Ok(app_data_dir.join("audio_settings.json"))
 }
 
@@ -25,14 +26,14 @@ pub(crate) fn load_audio_settings(app: &AppHandle) -> Result<AudioSettings, Stri
     if !path.is_file() {
         return Ok(AudioSettings::default());
     }
-    let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let raw = fs::read_to_string(&path).stringify_err()?;
     Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
 fn save_audio_settings(app: &AppHandle, settings: &AudioSettings) -> Result<(), String> {
     let path = audio_settings_path(app)?;
-    let raw = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    fs::write(path, raw).map_err(|error| error.to_string())
+    let raw = serde_json::to_string_pretty(settings).stringify_err()?;
+    fs::write(path, raw).stringify_err()
 }
 
 #[derive(Serialize)]
@@ -50,8 +51,8 @@ pub async fn list_audio_devices(state: State<'_, AppState>) -> Result<AudioDevic
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
 
-    let inputs = node.sound.list_input_devices().map_err(|error| error.to_string())?;
-    let outputs = node.sound.list_output_devices().map_err(|error| error.to_string())?;
+    let inputs = node.sound.list_input_devices().stringify_err()?;
+    let outputs = node.sound.list_output_devices().stringify_err()?;
 
     Ok(AudioDevicesResponse {
         inputs,
@@ -70,7 +71,7 @@ pub async fn set_input_device(
 ) -> Result<(), String> {
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
-    node.sound.set_input_device(device_name.clone()).map_err(|error| error.to_string())?;
+    node.sound.set_input_device(device_name.clone()).stringify_err()?;
 
     let mut settings = load_audio_settings(&app)?;
     settings.input_device = device_name;
@@ -86,7 +87,7 @@ pub async fn set_output_device(
 ) -> Result<(), String> {
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
-    node.sound.set_output_device(device_name.clone()).map_err(|error| error.to_string())?;
+    node.sound.set_output_device(device_name.clone()).stringify_err()?;
 
     let mut settings = load_audio_settings(&app)?;
     settings.output_device = device_name;
@@ -99,10 +100,10 @@ pub async fn play_sound_effect(app: AppHandle, state: State<'_, AppState>, name:
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
 
-    let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
+    let resource_dir = app.path().resource_dir().stringify_err()?;
     let sound_path = resource_dir.join("assets/sounds").join(format!("{name}.mp3"));
 
     node.sound
         .play_sound_effect(&name, || fs::read(&sound_path).map_err(Into::into))
-        .map_err(|error| error.to_string())
+        .stringify_err()
 }

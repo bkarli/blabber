@@ -8,15 +8,18 @@ use zeroize::Zeroizing;
 
 const NONCE_LEN: usize = 12;
 
+/// function all encrypted blabber payloads are encrypted under.
 pub fn encrypt(key: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(key.into());
     let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
+    //  actual encrypting
     let ciphertext = cipher
         .encrypt(nonce, Payload { msg: plaintext, aad })
         .map_err(|e| anyhow!("encryption failed: {e}"))?;
 
+    // assembles format for sending.
     let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);

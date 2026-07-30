@@ -99,7 +99,7 @@ async fn call_room_discovery_syncs_and_connects() -> Result<()> {
     let invite = space_a.create_invite().await?;
     let space_b = node_b.join_space(invite).await?;
 
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_call_room(author_a, "Test Call").await?;
 
     let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
@@ -241,8 +241,8 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
     let space_c = node_c.join_space(space_a.create_invite().await?).await?;
 
-    let author_a = node_a.author.unwrap();
-    let author_b = node_b.author.unwrap();
+    let author_a = space_a.author().unwrap();
+    let author_b = space_b.author().unwrap();
     let room_a = space_a.create_call_room(author_a, "Leave Test Call").await?;
 
     let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
@@ -331,7 +331,7 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
     let space_a = node_a.create_space("Event Test Space").await?;
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
 
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_call_room(author_a, "Event Test Call").await?;
 
     // subscribe before A joins so we don't miss the event
@@ -399,7 +399,7 @@ async fn remote_departure_emits_call_participant_left_event() -> Result<()> {
     let space_a = node_a.create_space("Departure Test Space").await?;
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
 
-    let author_a = node_a.author.unwrap();
+    let author_a = space_a.author().unwrap();
     let room_a = space_a.create_call_room(author_a, "Departure Test Call").await?;
 
     let mut events_a = node_a.events.subscribe();

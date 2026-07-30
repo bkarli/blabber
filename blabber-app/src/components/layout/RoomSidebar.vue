@@ -8,7 +8,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from '@/components/ui/alert-dialog';
-import { Share2, Check, Plus, Hash, Volume2, Settings, LogOut } from 'lucide-vue-next';
+import { Share2, Server, Check, Plus, Hash, Volume2, Settings, LogOut } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
 import CreateChannelDialog from '@/components/room/CreateChannelDialog.vue';
@@ -33,6 +33,7 @@ const rooms = computed(() => store.roomsFor(props.spaceId));
 const channels = computed(() => store.channelsFor(props.spaceId));
 
 const copied = ref(false);
+const relayCopied = ref(false);
 
 async function handleShare() {
   try {
@@ -42,6 +43,17 @@ async function handleShare() {
     setTimeout(() => { copied.value = false; }, 1500);
   } catch (e) {
     console.error('failed to copy invite', e);
+  }
+}
+
+async function handleShareRelay() {
+  try {
+    const ticket = await store.getRelayInvite(props.spaceId);
+    await navigator.clipboard.writeText(ticket);
+    relayCopied.value = true;
+    setTimeout(() => { relayCopied.value = false; }, 1500);
+  } catch (e) {
+    console.error('failed to copy relay invite', e);
   }
 }
 function openRoom(roomId: string) {
@@ -92,10 +104,21 @@ watch(
           variant="ghost"
           size="icon"
           class="h-7 w-7 text-muted-foreground hover:text-foreground"
+          title="Get invite"
           @click="handleShare"
         >
           <Check v-if="copied" class="h-4 w-4 text-primary" />
           <Share2 v-else class="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          class="h-7 w-7 text-muted-foreground hover:text-foreground"
+          title="Get relay invite (for a blabber-root server - never carries this space's decryption key)"
+          @click="handleShareRelay"
+        >
+          <Check v-if="relayCopied" class="h-4 w-4 text-primary" />
+          <Server v-else class="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"

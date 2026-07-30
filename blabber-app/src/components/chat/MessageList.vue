@@ -28,7 +28,7 @@ interface MessageGroup {
 const grouped = computed(() => {
   const groups: MessageGroup[] = [];
   for (const msg of messages.value) {
-    const isOwn = msg.author === store.myAuthorId;
+    const isOwn = msg.author === store.myAuthorIdFor(props.spaceId);
     const last = groups[groups.length - 1];
     if (last && last.author === msg.author) {
       last.contents.push({ content: msg.content, sentAt: msg.sent_at });
@@ -46,11 +46,6 @@ const grouped = computed(() => {
 
 const lightboxOpen = ref(false);
 const lightboxSrc = ref<string | null>(null);
-const loadingFull = ref<string | null>(null); // messageKey currently loading
-
-function messageKeyFor(author: string, sentAt: number) {
-  return `msg/${sentAt}-${author}`;
-}
 
 async function openFullImage(mediaKey: string, mime: string) {
   const base64 = await store.getMedia(props.spaceId, props.roomId, mediaKey);
@@ -63,7 +58,7 @@ async function openFullImage(mediaKey: string, mime: string) {
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 
-async function downloadFile(mediaKey: string, filename: string, mime: string) {
+async function downloadFile(mediaKey: string, filename: string) {
   try {
     const base64 = await store.getMedia(props.spaceId, props.roomId, mediaKey);
     if (!base64) {
@@ -158,7 +153,7 @@ function initials(name: string) {
               <div
                 v-else-if="'File' in item.content"
                 class="flex items-center gap-2 rounded-lg border border-border p-3 cursor-pointer"
-                @click="downloadFile(item.content.File.media_key, item.content.File.filename, item.content.File.mime)"
+                @click="downloadFile(item.content.File.media_key, item.content.File.filename)"
               >
                 <File class="h-6 w-6 text-muted-foreground" />
                 <div class="min-w-0">

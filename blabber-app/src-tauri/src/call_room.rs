@@ -4,6 +4,7 @@ use blabber_core::call_rooms::CallRoom;
 use blabber_core::space::Space;
 use uuid::Uuid;
 use crate::AppState;
+use crate::result_ext::ResultExt;
 
 #[derive(Serialize, Clone)]
 pub struct CallRoomInfo {
@@ -35,17 +36,19 @@ pub async fn create_call_room(
     }
     let space_uuid: Uuid = space_id.parse().map_err(|e| format!("invalid space id: {e}"))?;
     let node_guard = state.node.lock().await;
-    let node = node_guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("author not created yet")?;
+    node_guard.as_ref().ok_or("Node not started yet")?;
     let spaces = state.spaces.lock().await;
     let space = spaces
         .iter()
         .find(|s| s.id() == space_uuid)
         .ok_or("space not found")?;
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
     let room = space
         .create_call_room(author, name)
         .await
-        .map_err(|e| e.to_string())?;
+        .stringify_err()?;
     Ok(CallRoomInfo {
         id: room.id.to_string(),
         name: room.name.clone(),
@@ -88,7 +91,7 @@ pub async fn list_call_participants(
 
     let spaces = state.spaces.lock().await;
     let (_, room) = find_call_room(&spaces, room_uuid).await.ok_or("call room not found")?;
-    room.list_active_members(blobs).await.map_err(|e| e.to_string())
+    room.list_active_members(blobs).await.stringify_err()
 }
 
 /// Joins a call room's mesh call and stores the resulting live call as this client's active call.
@@ -103,7 +106,7 @@ pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Resu
         find_call_room(&spaces, room_uuid).await.ok_or("call room not found")?
     };
 
-    let (call, _channel) = node.join_call_room(space_id, &room).await.map_err(|e| e.to_string())?;
+    let (call, _channel) = node.join_call_room(space_id, &room).await.stringify_err()?;
     *state.active_call_room.lock().unwrap() = Some((room_uuid, call));
     Ok(())
 }
@@ -133,7 +136,8 @@ pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
     let Some((space_id, room)) = find_call_room(&spaces, room_uuid).await else {
         return Ok(());
     };
-    if let Some(author) = node.author {
+    let author = spaces.iter().find(|s| s.id() == space_id).and_then(|s| s.author());
+    if let Some(author) = author {
         let _ = room.set_membership(author, my_id.clone(), false).await;
     }
     let _ = node.events.send(blabber_core::events::AppEvent::CallParticipantLeft {
@@ -153,4 +157,3 @@ pub async fn set_muted(state: State<'_, AppState>, muted: bool) -> Result<(), St
     node.sound.set_muted(muted);
     Ok(())
 }
-

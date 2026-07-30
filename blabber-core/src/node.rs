@@ -1,29 +1,24 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
+use iroh::{protocol::Router, Endpoint, SecretKey, endpoint::presets};
+use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::api::Doc;
 use iroh_docs::engine::LiveEvent;
+use iroh_docs::{protocol::Docs, AuthorId, ALPN as DOCS_ALPN};
+use iroh_gossip::{Gossip, ALPN as GOSSIP_ALPN};
 use n0_future::StreamExt;
+use tokio::fs;
 use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::events::AppEvent;
+use crate::invite::{Invite, RelayInvite};
 use crate::space::Space;
 use crate::Identity;
-use crate::invite::Invite;
-use anyhow::{anyhow, Result};
-use iroh::{protocol::Router, Endpoint, SecretKey, EndpointId, endpoint::presets};
-use iroh_blobs::store::fs::FsStore;
-use iroh_docs::AuthorId;
-use iroh_gossip::{api::Event, Gossip, TopicId};
-use uuid::Uuid;
-use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
-use iroh_gossip::{ALPN as GOSSIP_ALPN};
-use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
-use iroh_docs::api::protocol::ShareMode;
-
-use anyhow::Context;
-use tokio::fs;
-
 
 pub struct Node {
     identity: Identity,
@@ -32,8 +27,7 @@ pub struct Node {
     pub router: Option<Router>,
     pub blobs: Option<FsStore>,
     pub docs: Option<Docs>,
-    pub author: Option<AuthorId>,
-    
+
     // Node can produce App Events and GUI can subscribe to these events
     pub events: broadcast::Sender<AppEvent>,
     pub spaces: Arc<Mutex<Vec<Space>>>,
@@ -49,7 +43,6 @@ pub struct Node {
 
 impl Node {
     pub fn new(identity: Identity) -> Self {
-        // create a broadcast channel
         let (events, _) = broadcast::channel(256);
         Self {
             identity,
@@ -58,7 +51,6 @@ impl Node {
             router: None,
             blobs: None,
             docs: None,
-            author: None,
             events,
             spaces: Arc::new(Mutex::new(Vec::new())),
             active_call_rooms: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -67,16 +59,38 @@ impl Node {
         }
     }
 
-    pub fn add_idetity_to_path(&self, path: &PathBuf) -> Result<PathBuf> {
-        let identity_dir = crate::identity::sanitize_path_component(&self.identity.displayName)
+    /// Scopes a shared root path (blob store, spaces directory, ...) under
+    /// this identity's own subdirectory, so multiple identities on the same
+    /// machine never collide.
+    pub fn identity_scoped_path(&self, path: &PathBuf) -> Result<PathBuf> {
+        let identity_dir = crate::identity::sanitize_path_component(&self.identity.display_name)
             .ok_or_else(|| anyhow!("identity display name has no path-safe characters"))?;
         Ok(path.join(identity_dir))
     }
 
+    /// produces key used to encrypt persisted invite.txt files
     pub fn local_storage_key(&self) -> [u8; 32] {
         blake3::derive_key("blabber-app invite local storage v1", self.identity.secret.as_bytes())
     }
 
+    /// Helpers for option typed fields, has to account for the possibility to option isnt ready yet.
+    fn require_endpoint(&self) -> Result<&Endpoint> {
+        self.endpoint.as_ref().context("endpoint not created yet")
+    }
+
+    fn require_gossip(&self) -> Result<&Gossip> {
+        self.gossip.as_ref().context("gossip not created yet")
+    }
+
+    fn require_blobs(&self) -> Result<&FsStore> {
+        self.blobs.as_ref().context("blobs not created yet")
+    }
+
+    fn require_docs(&self) -> Result<&Docs> {
+        self.docs.as_ref().context("docs engine not created yet")
+    }
+
+    /// turns secret into an addressable iroh node. Store iroh node in option field.
     pub async fn create_endpoint(&mut self) -> Result<()> {
         let secret_key = SecretKey::from_bytes(self.identity.secret.as_bytes());
         let ep = Endpoint::builder(presets::N0)
@@ -85,46 +99,31 @@ impl Node {
             .bind()
             .await?;
 
-        // replace the endpoint in the strcut
         self.endpoint = Some(ep);
         Ok(())
     }
 
+    /// initializes the blob sotre (is on disk).
     pub async fn create_blobs(&mut self, path: &PathBuf) -> Result<()> {
-        let blobs = FsStore::load(self.add_idetity_to_path(path)?).await?;
+        let blobs = FsStore::load(self.identity_scoped_path(path)?).await?;
         self.blobs = Some(blobs);
         Ok(())
     }
 
+    /// starts pub sub iroh gossip protocol. Makes iroh-docs actually live sync.
     pub async fn create_gossip(&mut self) -> Result<()> {
-        let endpoint = self
-            .endpoint
-            .clone()
-            .context("endpoint not created yet")?;
-
+        let endpoint = self.require_endpoint()?.clone();
         let gossip = Gossip::builder().spawn(endpoint);
-
         self.gossip = Some(gossip);
         Ok(())
     }
 
     pub async fn create_docs_engine(&mut self, path: &PathBuf) -> Result<()> {
-        let endpoint = self
-            .endpoint
-            .clone()
-            .context("endpoint not created yet")?;
+        let endpoint = self.require_endpoint()?.clone();
+        let gossip = self.require_gossip()?.clone();
+        let blobs = self.require_blobs()?.clone();
 
-        let gossip = self
-            .gossip
-            .clone()
-            .context("gossip not created yet")?;
-
-        let blobs = self
-            .blobs
-            .clone()
-            .context("blobs not created yet")?;
-
-        let docs = Docs::persistent(self.add_idetity_to_path(path)?)
+        let docs = Docs::persistent(self.identity_scoped_path(path)?)
             .spawn(endpoint, blobs.into(), gossip)
             .await?;
 
@@ -133,25 +132,10 @@ impl Node {
     }
 
     pub async fn create_router(&mut self) -> Result<()> {
-        let endpoint = self
-            .endpoint
-            .clone()
-            .context("endpoint not created yet")?;
-
-        let gossip = self
-            .gossip
-            .clone()
-            .context("gossip not created yet")?;
-
-        let blobs = self
-            .blobs
-            .clone()
-            .context("blobs not created yet")?;
-
-        let docs = self
-            .docs
-            .clone()
-            .context("docs not created yet")?;
+        let endpoint = self.require_endpoint()?.clone();
+        let gossip = self.require_gossip()?.clone();
+        let blobs = self.require_blobs()?.clone();
+        let docs = self.require_docs()?.clone();
 
         let call_room_protocol = crate::channel::CallRoomProtocol::new(
             self.active_call_rooms.clone(),
@@ -170,75 +154,79 @@ impl Node {
         Ok(())
     }
 
-    pub async fn create_author(&mut self) -> Result<()> {
-        let docs = self.docs.as_ref().context("Docs engine not created yet")?;
-        
-        // create the author only if there is None in the identity
-        let author = match self.identity.author {
-            Some(existing) => existing,
-            None => {
-                let new_author = docs.author_create().await?;
-                // set the newly created author in the identity
-                self.identity.author = Some(new_author);
-                new_author
-            }
-        };
-        self.author = Some(author);
+    /// Derives this identity's signing author for a specific space from the
+    /// identity secret and the space id, then registers it with the docs
+    /// engine so it can sign entries.
+    pub async fn space_author(&self, space_id: Uuid) -> Result<AuthorId> {
+        let docs = self.require_docs()?;
+        let seed = blake3::derive_key(
+            "blabber space author v1",
+            &[self.identity.secret.as_bytes().as_slice(), space_id.as_bytes()].concat(),
+        );
+        let author = iroh_docs::Author::from_bytes(&seed);
+        let author_id = author.id();
+        docs.author_import(author).await?;
+        Ok(author_id)
+    }
+
+    /// Starts a space's members/info live-sync watchers - shared by every
+    /// path that ends up with a freshly constructed `Space`.
+    async fn watch_space(&self, space: &Space, blobs: FsStore) -> Result<()> {
+        let label = format!("{}/members", space.name());
+        space.watch_members(self, blobs.clone(), label).await?;
+        let label = format!("{}/info", space.name());
+        space.watch_info(self, blobs, label).await?;
         Ok(())
     }
 
-    /// Rebuilds a copy of this node's identity with the now-known author, for
-    /// re-persisting to disk. Keeps `LockedSecret` construction internal to
-    /// `blabber-core` rather than exposing raw secret bytes to callers.
-    /// Returns `None` if no author has been created yet.
-    pub fn identity_with_author(&self) -> Option<Identity> {
-        self.author.map(|author| self.identity.with_author(author))
-    }
-
+    /// start of the create new space flow. Generates space id and per space author.
     pub async fn create_space(&self, name: impl Into<String>) -> Result<Space> {
-        let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        
-        let endpoint_id = endpoint.id().to_string();
+        let docs = self.require_docs()?;
+        let endpoint_id = self.require_endpoint()?.id().to_string();
 
-        let space = Space::new(docs,author, endpoint_id, self.identity.displayName.clone(), name).await?;
-        let blobs = self.blobs.clone().context("blobs not created yet")?;
-        let label = format!("{}/members", space.name());
-        space.watch_members(self, blobs.clone(), label).await?;
-        let label = format!("{}/info", space.name());
-        space.watch_info(self, blobs, label).await?;
+        let space_id = Uuid::new_v4();
+        let author = self.space_author(space_id).await?;
+
+        let space = Space::new(docs, space_id, author, endpoint_id, self.identity.display_name.clone(), name).await?;
+        self.watch_space(&space, self.require_blobs()?.clone()).await?;
 
         self.spaces.lock().await.push(space.clone());
-        println!("CREATE SPACE ID: {}", space.id());
         Ok(space)
-
     }
 
+    /// same as create space but for loading one from an invite.
     pub async fn join_space(&self, invite: Invite) -> Result<Space> {
-        let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        let endpoint_id = endpoint.id().to_string();
+        let docs = self.require_docs()?;
+        let endpoint_id = self.require_endpoint()?.id().to_string();
+        let author = self.space_author(invite.space_id).await?;
 
-        let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.displayName.clone()).await?;
-        let blobs = self.blobs.clone().context("blobs not created yet")?;
-        let label = format!("{}/members", space.name());
-        space.watch_members(self, blobs.clone(), label).await?;
-        let label = format!("{}/info", space.name());
-        space.watch_info(self, blobs, label).await?;
+        let space = Space::from_invite(docs, invite, author, endpoint_id, self.identity.display_name.clone()).await?;
+        self.watch_space(&space, self.require_blobs()?.clone()).await?;
 
         self.spaces.lock().await.push(space.clone());
         Ok(space)
-        }
+    }
 
-    /// Leave a space for good! remove identity from the space member
+    /// Join a space as a blind relay: no decryption key, but it does
+    /// publish its own cleartext presence in the members doc so it shows
+    /// up - clearly marked as a relay, never as a human - in the member list.
+    pub async fn join_space_relay(&self, invite: RelayInvite) -> Result<Space> {
+        let docs = self.require_docs()?;
+        let endpoint_id = self.require_endpoint()?.id().to_string();
+        let author = self.space_author(invite.space_id).await?;
+
+        let space = Space::from_relay_invite(docs, invite, author, endpoint_id, self.identity.display_name.clone()).await?;
+        self.watch_space(&space, self.require_blobs()?.clone()).await?;
+
+        self.spaces.lock().await.push(space.clone());
+        Ok(space)
+    }
+
+    /// Leave a space. remove identity from the space member
     /// list, stop syncing it, drop the local
     /// document replicas, and delete the invite/meta directory so
     /// `load_spaces` won't load it on next launch.
     pub async fn leave_space(&self, space_id: Uuid, spaces_root: PathBuf) -> Result<()> {
-        let author = self.author.context("author not created yet")?;
-
         let space = {
             let mut spaces = self.spaces.lock().await;
             let index = spaces
@@ -248,9 +236,12 @@ impl Node {
             spaces.remove(index)
         };
 
+        let author = space
+            .author()
+            .context("this space has no writable author (blind relay?)")?;
         space.leave(author).await?;
 
-        let user_root = self.add_idetity_to_path(&spaces_root)?;
+        let user_root = self.identity_scoped_path(&spaces_root)?;
         let space_dir = user_root.join(space_id.to_string());
         if space_dir.is_dir() {
             fs::remove_dir_all(&space_dir).await?;
@@ -258,34 +249,20 @@ impl Node {
         Ok(())
     }
 
-    /// Additionally we need to load the docs
+    /// Reloads every space this identity previously joined, from
+    /// `root_path/<identity>/<space-uuid>/meta/invite.txt`.
     pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
-        // go through the root_path and enumerate all the spaces present
-        // in the directory
-        // root_directory
-        //      - UUID
-        //          - Meta
-        //              - Info Read only
-        //              - Members
-        //              - Channels and Rooms
-        //          - [UUID]chat
-        
-        // add identity to the path
-        let root_path = self.add_idetity_to_path(&root_path)?;
+        // load spaces-root and create all necessary option fields.
+        let root_path = self.identity_scoped_path(&root_path)?;
         tokio::fs::create_dir_all(&root_path).await?;
-        let docs = self.docs.as_ref().context("docs engine not created yet")?;
-        let author = self.author.context("author not created yet")?;
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
-        let endpoint_id = endpoint.id().to_string();
-        let display_name = self.identity.displayName.clone();
-        let blobs = self
-            .blobs
-            .as_ref()
-            .context("blobs not created yet")?;
-        
+        let docs = self.require_docs()?;
+        let endpoint_id = self.require_endpoint()?.id().to_string();
+        let display_name = self.identity.display_name.clone();
+        let blobs = self.require_blobs()?;
+
+        // asynchronous directory scan checking for validity
         let mut spaces = Vec::new();
         let mut entries = fs::read_dir(root_path).await?;
-
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -297,31 +274,52 @@ impl Node {
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if Uuid::parse_str(dir_name).is_err(){
+            if Uuid::parse_str(dir_name).is_err() {
                 continue;
             }
             let invite_path = path.join("meta").join("invite.txt");
-            if !invite_path.is_file(){
+            if !invite_path.is_file() {
                 continue;
             }
-            
+
+            // read encrypted invite file and decode it as a member invite.
             let encrypted = fs::read(&invite_path).await?;
-            let invite = match Invite::deserialize_invite_encrypted(&encrypted, &self.local_storage_key()){
-                Ok(i) => i,
-                Err(e) =>{
-                    eprintln!("skipping unreadable space {dir_name}: {e}");
-                    continue;
+            let storage_key = self.local_storage_key();
+            let space = if let Ok(invite) = Invite::deserialize_invite_encrypted(&encrypted, &storage_key) {
+                let author = match self.space_author(invite.space_id).await {
+                    Ok(author) => author,
+                    Err(e) => {
+                        eprintln!("skipping space {dir_name}: failed to derive author: {e:#}");
+                        continue;
+                    }
+                };
+                Space::from_invite(
+                    docs,
+                    invite,
+                    author,
+                    endpoint_id.clone(),
+                    display_name.clone(),
+                ).await?
+            } else { // if not a member invite check for relay invite.
+                match RelayInvite::deserialize_invite_encrypted(&encrypted, &storage_key) {
+                    Ok(invite) => {
+                        let author = match self.space_author(invite.space_id).await {
+                            Ok(author) => author,
+                            Err(e) => {
+                                eprintln!("skipping relay space {dir_name}: failed to derive author: {e:#}");
+                                continue;
+                            }
+                        };
+                        Space::from_relay_invite(docs, invite, author, endpoint_id.clone(), display_name.clone()).await?
+                    }
+                    Err(e) => {
+                        eprintln!("skipping unreadable space {dir_name}: {e}");
+                        continue;
+                    }
                 }
             };
-            let space = Space::from_invite(
-                docs,
-                invite,
-                author,
-                endpoint_id.clone(),
-                display_name.clone(),
-            ).await?;
 
-
+            // if space is reconstructed, sync all the rooms.
             space
                 .sync_rooms(self, blobs)
                 .await
@@ -336,6 +334,7 @@ impl Node {
                     anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
                 })?;
 
+            // load the members of a space.
             let label = format!("{}/members", space.name());
             space.watch_members(self, blobs.clone(), label).await
                 .map_err(|error| anyhow::anyhow!("failed to watch members for space {dir_name}: {error}"))?;
@@ -347,13 +346,13 @@ impl Node {
             spaces.push(space);
         }
 
+        // clone everything that has been found for different ownership. (one for main in blabber-root, and one for space itself)
         self.spaces.lock().await.extend(spaces.clone());
         Ok(spaces)
-
     }
-    
 
-    /// Generic function on watching a Document
+    /// Thin wrapper around the free `watch_doc` so callers already holding
+    /// a `&Node` don't need a separate import.
     pub async fn watch_doc<F, Fut>(&self, doc: Doc, label: impl Into<String>, on_event: F) -> Result<JoinHandle<()>>
     where
         F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
@@ -361,6 +360,7 @@ impl Node {
     {
         watch_doc(doc, label, on_event).await
     }
+
     pub async fn shutdown(self) -> Result<()> {
         if let Some(router) = self.router {
             router
@@ -372,14 +372,10 @@ impl Node {
         Ok(())
     }
 
-    
-    /// Run the endpoint
-    ///
-    /// listen for incoming gossip connections
-    /// listen for incoming mesh call connections
+    /// Boots every subsystem in order: endpoint, gossip, blob store, docs engine, router.
     pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
         self.create_endpoint().await?;
-        // run wait online only in tests
+        // tests need a connected endpoint before proceeding; production doesn't wait
         #[cfg(test)]
         {
             self.wait_online().await?;
@@ -387,7 +383,6 @@ impl Node {
         self.create_gossip().await?;
         self.create_blobs(&blobs_path).await?;
         self.create_docs_engine(&blobs_path).await?;
-        self.create_author().await?;
         self.create_router().await?;
         Ok(())
     }
@@ -397,7 +392,7 @@ impl Node {
     pub async fn wait_online(&self) -> Result<()> {
         use tokio::time::{timeout, Duration};
 
-        let endpoint = self.endpoint.as_ref().context("endpoint not created yet")?;
+        let endpoint = self.require_endpoint()?;
 
         timeout(Duration::from_secs(5), endpoint.online())
             .await
@@ -406,7 +401,6 @@ impl Node {
         Ok(())
     }
 
-    // get a receiver for app-level events
     pub fn subscribe_events(&self) -> broadcast::Receiver<AppEvent> {
         self.events.subscribe()
     }
@@ -418,7 +412,7 @@ impl Node {
         my_id: String,
         peers: Vec<(String, iroh::EndpointAddr)>,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
-        let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
+        let endpoint = self.require_endpoint()?.clone();
         let handle = tokio::runtime::Handle::current();
         let mesh_channel = crate::channel::MeshVoiceChannel::new(
             handle.clone(),
@@ -465,10 +459,10 @@ impl Node {
         space_id: Uuid,
         room: &crate::call_rooms::CallRoom,
     ) -> Result<(crate::channel::MeshActiveCall, crate::channel::MeshVoiceChannel)> {
-        let endpoint = self.endpoint.clone().context("endpoint not created yet")?;
+        let endpoint = self.require_endpoint()?.clone();
         let my_id = endpoint.id().to_string();
-        let author = self.author.context("author not created yet")?;
-        let blobs = self.blobs.clone().context("blobs not created yet")?;
+        let author = self.space_author(space_id).await?;
+        let blobs = self.require_blobs()?.clone();
 
         // let CallRoomProtocol::accept find our space when someone else dials into us later
         self.room_spaces.lock().unwrap().insert(room.id, space_id);
@@ -526,21 +520,9 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use anyhow::Context;
     use tempfile::tempdir;
-    
-    #[tokio::test]
-    async fn test_create_endpoint() {
-    }
-
-    #[tokio::test]
-    async fn test_create_router() {}
-
-    #[tokio::test]
-    async fn test_create_and_join_space() {
-    }
 
     #[tokio::test]
     async fn watch_members_emits_new_member_event_for_new_entry() -> Result<()> {
@@ -560,9 +542,13 @@ mod tests {
             endpoint_id: "bob-endpoint".to_string(),
             display_name: "Bob".to_string(),
             joined_at: 0,
+            is_relay: false,
         };
         let key = format!("member/{bob_author}");
-        let value = postcard::to_allocvec(&bob).context("failed to encode member")?;
+        let space_key = space.key().context("space has no key")?;
+        let plaintext = postcard::to_allocvec(&bob).context("failed to encode member")?;
+        let value = crate::crypto::encrypt(&space_key, &plaintext, space.id().as_bytes())
+            .context("failed to encrypt member")?;
         space
             .members
             .set_bytes(bob_author, key.into_bytes(), value)
@@ -595,7 +581,7 @@ mod tests {
 
         let mut events = node.subscribe_events();
         let space = node.create_space("Test Space").await?;
-        let author = node.author.context("author not created")?;
+        let author = space.author().context("author not created")?;
 
         space.leave(author).await?;
 
@@ -637,34 +623,4 @@ mod tests {
         assert!(spaces.iter().all(|s| s.id() != space_id));
         Ok(())
     }
-
-    #[tokio::test]
-    async fn test_document_subscribe() {}
-
-    #[tokio::test]
-    async fn test_room_creation_and_message_sync() {
-    }
-
-    #[tokio::test]
-    async fn test_broadcast_emits_new_room_event_local() {
-    }
-
-
-    #[tokio::test]
-    async fn test_broadcast_emits_new_message_event_local() { 
-
-    }
-
-
-    #[tokio::test]
-    async fn test_broadcast_emits_new_room_event() { 
-
-    }
-
-
-    #[tokio::test]
-    async fn test_broadcast_emits_new_message_event() {
-
-    }
-
 }

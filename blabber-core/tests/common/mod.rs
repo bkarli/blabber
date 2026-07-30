@@ -23,8 +23,9 @@ pub fn message_text(message: &Message) -> Option<&str> {
     }
 }
 
-/// Boots a fully-initialized Node (endpoint, gossip, blobs, docs, router,
-/// author) in a fresh temp directory, ready to create/join spaces.
+/// Boots a fully-initialized Node (endpoint, gossip, blobs, docs, router) in
+/// a fresh temp directory, ready to create/join spaces. Authors are
+/// derived per-space, not created here.
 pub async fn make_node(name: &str) -> Result<(Node, TempDir)> {
     let dir = tempfile::tempdir()?;
     let mut node = Node::new(Identity::new(name));
@@ -33,7 +34,6 @@ pub async fn make_node(name: &str) -> Result<(Node, TempDir)> {
     node.create_gossip().await?;
     node.create_docs_engine(&dir.path().to_path_buf()).await?;
     node.create_router().await?;
-    node.create_author().await?;
     Ok((node, dir))
 }
 

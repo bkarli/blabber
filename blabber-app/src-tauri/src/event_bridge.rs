@@ -9,12 +9,9 @@ pub fn spawn_event_bridge(app_handle: AppHandle, node: &Node) {
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    println!("new event d");
-                    match app_handle.emit("app-event", event) {
-                        Ok(()) => println!("emit succeeded"),
-                        Err(e) => eprintln!("emit FAILED: {e}"),
+                    if let Err(e) = app_handle.emit("app-event", event) {
+                        eprintln!("failed to emit app-event: {e}");
                     }
-
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     eprintln!("event bridge lagged, skipped {n} events");

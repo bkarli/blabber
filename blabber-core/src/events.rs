@@ -6,35 +6,35 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum AppEvent {
-    NewMessage {
+    NewMessage { // whenever a new message is seen
         space_id: Uuid,
         room_id: Uuid,
         message: Message
     },
-    NewMember {
+    NewMember { // emitted for new member/relay and an existing ones record being updated
         space_id: Uuid,
         member: Member,
     },
-    MemberLeft {
+    MemberLeft { // emitted on tombstone entry
         space_id: Uuid,
         author_id: String,
     },
-    NewRoom {
+    NewRoom { // emitted on room creation (doing / receiving from others)
         space_id: Uuid,
         room_id: Uuid,
         room_name: String,
     },
-    NewCallRoom {
+    NewCallRoom { // same here
         space_id: Uuid,
         room_id: Uuid,
         room_name: String,
     },
-    NewCallParticipant {
+    NewCallParticipant { // sent on joining (self or others)
         space_id: Uuid,
         room_id: Uuid,
         endpoint_id: String,
     },
-    CallParticipantLeft {
+    CallParticipantLeft { // sent on leaving (self or others) when connection actually is dropped.
         space_id: Uuid,
         room_id: Uuid,
         endpoint_id: String,

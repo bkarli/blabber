@@ -4,6 +4,7 @@ use uuid::Uuid;
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 
 use crate::AppState;
+use crate::result_ext::ResultExt;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +33,7 @@ pub async fn list_rooms(
             id: room.id.to_string(),
             name: room.name.clone(),
         })
-    .collect();
+        .collect();
 
     Ok(result)
 }
@@ -50,14 +51,7 @@ pub async fn create_room(
     }
 
     let node_guard = state.node.lock().await;
-
-    let node = node_guard
-        .as_ref()
-        .ok_or("Node not started yet")?;
-
-    let author = node
-        .author
-        .ok_or("Author not created yet")?;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
 
     let spaces = state.spaces.lock().await;
 
@@ -66,16 +60,11 @@ pub async fn create_room(
         .find(|space| space.id().to_string() == space_id)
         .ok_or("Space not found")?;
 
-    let room = space
-        .create_room(&node, author, name)
-        .await
-        .map_err(|error| error.to_string())?;
-    println!(
-        "Room created: {} ({}) in space {}",
-        room.name,
-        room.id,
-        space_id
-    );
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
+
+    let room = space.create_room(node, author, name).await.stringify_err()?;
 
     Ok(RoomInfo {
         id: room.id.to_string(),
@@ -83,36 +72,38 @@ pub async fn create_room(
     })
 }
 
-
 #[tauri::command]
-    pub async fn send_message(
-        state: State<'_, AppState>,
-        space_id: String,
-        room_id: String,
-        content: String,
-    ) -> Result<(), String> {
-        let content = content.trim();
-        if content.is_empty() {
-            return Err("Message cannot be empty".to_string());
-        }
-
-        let node_guard = state.node.lock().await;
-        let node = node_guard.as_ref().ok_or("Node not started yet")?;
-        let author = node.author.ok_or("Author not created yet")?;
-
-        let spaces = state.spaces.lock().await;
-        let space = spaces
-            .iter()
-            .find(|s| s.id().to_string() == space_id)
-            .ok_or("Space not found")?;
-
-        let room_uuid = Uuid::parse_str(&room_id).map_err(|e| e.to_string())?;
-        let rooms = space.rooms.lock().await;
-        let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
-
-        room.send_message(author, content).await.map_err(|e| e.to_string())?;
-        Ok(())
+pub async fn send_message(
+    state: State<'_, AppState>,
+    space_id: String,
+    room_id: String,
+    content: String,
+) -> Result<(), String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("Message cannot be empty".to_string());
     }
+
+    let node_guard = state.node.lock().await;
+    node_guard.as_ref().ok_or("Node not started yet")?;
+
+    let spaces = state.spaces.lock().await;
+    let space = spaces
+        .iter()
+        .find(|s| s.id().to_string() == space_id)
+        .ok_or("Space not found")?;
+
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
+
+    let room_uuid = Uuid::parse_str(&room_id).map_err(|e| format!("invalid room id: {e}"))?;
+    let rooms = space.rooms.lock().await;
+    let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
+
+    room.send_message(author, content).await.stringify_err()?;
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn send_image(
@@ -122,17 +113,20 @@ pub async fn send_image(
     path: String,
 ) -> Result<(), String> {
     let node_guard = state.node.lock().await;
-    let node = node_guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("Author not created yet")?;
+    node_guard.as_ref().ok_or("Node not started yet")?;
 
     let spaces = state.spaces.lock().await;
     let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
+
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
 
     let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
     let rooms = space.rooms.lock().await;
     let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
 
-    let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    let data = tokio::fs::read(&path).await.stringify_err()?;
     let filename = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -140,7 +134,7 @@ pub async fn send_image(
         .to_string();
     let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
 
-    room.send_image(author, filename, mime, data).await.map_err(|e| e.to_string())?;
+    room.send_image(author, filename, mime, data).await.stringify_err()?;
     Ok(())
 }
 
@@ -152,17 +146,20 @@ pub async fn send_file(
     path: String,
 ) -> Result<(), String> {
     let node_guard = state.node.lock().await;
-    let node = node_guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("Author not created yet")?;
+    node_guard.as_ref().ok_or("Node not started yet")?;
 
     let spaces = state.spaces.lock().await;
     let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
+
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
 
     let room_uuid: Uuid = room_id.parse().map_err(|e| format!("invalid room id: {e}"))?;
     let rooms = space.rooms.lock().await;
     let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
 
-    let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    let data = tokio::fs::read(&path).await.stringify_err()?;
     let filename = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -170,17 +167,19 @@ pub async fn send_file(
         .to_string();
     let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
 
-    room.send_file(author, filename, mime, data).await.map_err(|e| e.to_string())?;
+    room.send_file(author, filename, mime, data).await.stringify_err()?;
     Ok(())
 }
 
+/// Returns the media as base64, or `None` if it isn't in the store (not
+/// yet synced, or this room has no key).
 #[tauri::command]
 pub async fn get_media(
     state: State<'_, AppState>,
     space_id: String,
     room_id: String,
     media_key: String,
-) -> Result<Option<String>, String> { // returns base64, or None
+) -> Result<Option<String>, String> {
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet")?;
     let blobs = node.blobs.clone().ok_or("Blobs not created yet")?;
@@ -188,13 +187,14 @@ pub async fn get_media(
     let spaces = state.spaces.lock().await;
     let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
 
-    let room_uuid = Uuid::parse_str(&room_id).map_err(|e| e.to_string())?;
+    let room_uuid = Uuid::parse_str(&room_id).map_err(|e| format!("invalid room id: {e}"))?;
     let rooms = space.rooms.lock().await;
     let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
 
-    let bytes = room.get_media(&media_key, blobs).await.map_err(|e| e.to_string())?;
+    let bytes = room.get_media(&media_key, blobs).await.stringify_err()?;
     Ok(bytes.map(|b| base64_engine.encode(b)))
 }
+
 #[tauri::command]
 pub async fn list_messages(
     state: State<'_, AppState>,
@@ -208,19 +208,23 @@ pub async fn list_messages(
     let spaces = state.spaces.lock().await;
     let space = spaces.iter().find(|s| s.id().to_string() == space_id).ok_or("Space not found")?;
 
-    let room_uuid = Uuid::parse_str(&room_id).map_err(|e| e.to_string())?;
+    let room_uuid = Uuid::parse_str(&room_id).map_err(|e| format!("invalid room id: {e}"))?;
     let rooms = space.rooms.lock().await;
     let room = rooms.iter().find(|r| r.id == room_uuid).ok_or("Room not found")?;
 
-    room.list_messages(blobs).await.map_err(|e| e.to_string())
+    room.list_messages(blobs).await.stringify_err()
 }
 
-
 #[tauri::command]
-pub async fn get_my_author_id(state: State<'_, AppState>) -> Result<String, String> {
-    let guard = state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not started yet")?;
-    let author = node.author.ok_or("Author not created yet")?;
+pub async fn get_my_author_id(state: State<'_, AppState>, space_id: String) -> Result<String, String> {
+    let spaces = state.spaces.lock().await;
+    let space = spaces
+        .iter()
+        .find(|s| s.id().to_string() == space_id)
+        .ok_or("Space not found")?;
+    let author = space
+        .author()
+        .ok_or("this space has no writable author (blind relay?)")?;
 
     Ok(author.to_string())
 }
