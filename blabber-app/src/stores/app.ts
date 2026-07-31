@@ -45,7 +45,9 @@ export type AppEvent =
   | { type: 'NewRoom'; space_id: string; room_id: string; room_name: string }
   | { type: 'NewCallRoom'; space_id: string; room_id: string; room_name: string }
   | { type: 'NewCallParticipant'; space_id: string; room_id: string; endpoint_id: string }
-  | { type: 'CallParticipantLeft'; space_id: string; room_id: string; endpoint_id: string };
+  | { type: 'CallParticipantLeft'; space_id: string; room_id: string; endpoint_id: string }
+  | { type: 'MemberOnline'; space_id: string; endpoint_id: string }
+  | { type: 'MemberOffline'; space_id: string; endpoint_id: string };
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -59,7 +61,12 @@ export const useAppStore = defineStore('app', {
     activeRoomId: null as string | null,
     unreadRoomIds: {} as Record<string, boolean>,
     activeCallRoomId: null as string | null,
+    activeCallSpaceId: null as string | null,
+    callViewMode: 'fullscreen' as 'fullscreen' | 'minimized',
     callParticipants: [] as string[],
+    participantsByRoom: {} as Record<string, string[]>,
+    onlineEndpointsBySpace: {} as Record<string, string[]>,
+    connectionTypesBySpace: {} as Record<string, Record<string, 'direct' | 'relayed' | 'unknown'>>,
     isMuted: false,
     initialized: false,
   }),
@@ -70,6 +77,11 @@ export const useAppStore = defineStore('app', {
     membersFor: (state) => (spaceId: string) => state.membersBySpace[spaceId] ?? [],
     messagesFor: (state) => (roomId: string) => state.messagesByRoom[roomId] ?? [],
     isRoomUnread: (state) => (roomId: string) => !!state.unreadRoomIds[roomId],
+    participantsFor: (state) => (roomId: string) => state.participantsByRoom[roomId] ?? [],
+    isOnline: (state) => (spaceId: string, endpointId: string) =>
+      (state.onlineEndpointsBySpace[spaceId] ?? []).includes(endpointId),
+    connectionTypeFor: (state) => (spaceId: string, endpointId: string) =>
+      state.connectionTypesBySpace[spaceId]?.[endpointId] ?? 'unknown',
 
     myAuthorIdFor: (state) => (spaceId: string) => state.myAuthorIdBySpace[spaceId] ?? null,
 
@@ -104,6 +116,7 @@ export const useAppStore = defineStore('app', {
 
       await listen<AppEvent>('app-event', (event) => {
         const payload = event.payload;
+        console.debug('[app-event]', payload);
 
         if (payload.type === 'NewMessage') {
           this.handleNewMessage(payload);
@@ -119,8 +132,25 @@ export const useAppStore = defineStore('app', {
           this.handleNewCallParticipant(payload);
         } else if (payload.type === 'CallParticipantLeft') {
           this.handleCallParticipantLeft(payload);
+        } else if (payload.type === 'MemberOnline') {
+          this.handleMemberOnline(payload);
+        } else if (payload.type === 'MemberOffline') {
+          this.handleMemberOffline(payload);
         }
       });
+    },
+
+    handleMemberOnline({ space_id, endpoint_id }: { space_id: string; endpoint_id: string }) {
+      const online = (this.onlineEndpointsBySpace[space_id] ??= []);
+      if (!online.includes(endpoint_id)) {
+        online.push(endpoint_id);
+      }
+    },
+
+    handleMemberOffline({ space_id, endpoint_id }: { space_id: string; endpoint_id: string }) {
+      if (this.onlineEndpointsBySpace[space_id]) {
+        this.onlineEndpointsBySpace[space_id] = this.onlineEndpointsBySpace[space_id].filter((id) => id !== endpoint_id);
+      }
     },
 
     handleNewCallRoom({ space_id, room_id, room_name }: { space_id: string; room_id: string; room_name: string }) {
@@ -137,6 +167,12 @@ export const useAppStore = defineStore('app', {
           this.callParticipants.push(endpoint_id);
         }
       }
+      // tracked per-room regardless of which call (if any) is currently open,
+      // so the sidebar can show live participants for every channel at once
+      const roomParticipants = (this.participantsByRoom[room_id] ??= []);
+      if (!roomParticipants.includes(endpoint_id)) {
+        roomParticipants.push(endpoint_id);
+      }
     },
 
     handleCallParticipantLeft({ room_id, endpoint_id }: { space_id: string; room_id: string; endpoint_id: string }) {
@@ -146,6 +182,9 @@ export const useAppStore = defineStore('app', {
         if (endpoint_id !== this.myEndpointId) {
           useSoundEffectsStore().play('call-leave');
         }
+      }
+      if (this.participantsByRoom[room_id]) {
+        this.participantsByRoom[room_id] = this.participantsByRoom[room_id].filter((id) => id !== endpoint_id);
       }
     },
 
@@ -247,6 +286,23 @@ export const useAppStore = defineStore('app', {
           merged.set(channel.id, channel);
         }
         this.channelsBySpace[spaceId] = Array.from(merged.values());
+
+        // seed live participant rosters for the sidebar. merge rather than
+        // replace: a NewCallParticipant event can land while these fetches
+        // are in flight, and a stale snapshot resolving afterwards must not
+        // erase it. same race as loadRooms/loadMembers/joinCallRoom.
+        // Removal stays exclusively handled by handleCallParticipantLeft.
+        await Promise.all(
+          channels.map(async (channel) => {
+            try {
+              const participants = await invoke<string[]>('list_call_participants', { roomId: channel.id });
+              const existing = this.participantsByRoom[channel.id] ?? [];
+              this.participantsByRoom[channel.id] = Array.from(new Set([...existing, ...participants]));
+            } catch (e) {
+              console.log('failed to load participants for channel', channel.id, e);
+            }
+          })
+        );
       } catch (e) {
         console.log('failed to load channels', e);
       }
@@ -316,7 +372,7 @@ export const useAppStore = defineStore('app', {
       return invoke<string | null>('get_media', { spaceId, roomId, mediaKey });
     },
 
-    async joinCallRoom(roomId: string) {
+    async joinCallRoom(spaceId: string, roomId: string) {
       await invoke<void>('join_call_room', { roomId });
       // reset first (clears any stale participants from a previous room),
       // then set activeCallRoomId so NewCallParticipant events for this
@@ -324,6 +380,8 @@ export const useAppStore = defineStore('app', {
       // resolves.
       this.callParticipants = [];
       this.activeCallRoomId = roomId;
+      this.activeCallSpaceId = spaceId;
+      this.callViewMode = 'fullscreen';
       const participants = await invoke<string[]>('list_call_participants', { roomId });
       // merge rather than replace: someone else's NewCallParticipant event
       // can land while this fetch is in flight, and a stale snapshot
@@ -337,9 +395,19 @@ export const useAppStore = defineStore('app', {
     async leaveCallRoom() {
       await invoke<void>('leave_call_room');
       this.activeCallRoomId = null;
+      this.activeCallSpaceId = null;
+      this.callViewMode = 'fullscreen';
       this.callParticipants = [];
       this.isMuted = false;
       useSoundEffectsStore().play('call-leave');
+    },
+
+    minimizeCall() {
+      this.callViewMode = 'minimized';
+    },
+
+    expandCall() {
+      this.callViewMode = 'fullscreen';
     },
 
     async setMuted(muted: boolean) {
@@ -370,6 +438,17 @@ export const useAppStore = defineStore('app', {
         merged.set(member.author_id, member);
       }
       this.membersBySpace[spaceId] = Array.from(merged.values());
+    },
+
+    async loadConnectionTypes(spaceId: string) {
+      try {
+        this.connectionTypesBySpace[spaceId] = await invoke<Record<string, 'direct' | 'relayed' | 'unknown'>>(
+          'list_connection_types',
+          { spaceId }
+        );
+      } catch (e) {
+        console.error('failed to load connection types', e);
+      }
     },
   },
 });

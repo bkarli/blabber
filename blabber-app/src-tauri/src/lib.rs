@@ -15,7 +15,7 @@ mod result_ext;
 
 use login::{create_identity, list_identities, login, logout, delete_identity};
 use room::{create_room, list_rooms, send_message, list_messages, get_my_author_id, send_image, my_endpoint_id, send_file, get_media};
-use space::{create_server, list_servers, get_invite, get_relay_invite, join_space, leave_space, list_members};
+use space::{create_server, list_servers, get_invite, get_relay_invite, join_space, leave_space, list_members, list_connection_types};
 use call_room::{create_call_room, list_call_rooms, join_call_room, leave_call_room, list_call_participants, set_muted};
 use audio::{list_audio_devices, set_input_device, set_output_device, play_sound_effect};
 
@@ -57,6 +57,7 @@ pub fn run() {
             get_my_author_id,
             my_endpoint_id,
             list_members,
+            list_connection_types,
             create_call_room,
             list_call_rooms,
             join_call_room,

@@ -555,6 +555,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.0",
  "blabber-core",
+ "iroh",
  "mime_guess",
  "serde",
  "serde_json",

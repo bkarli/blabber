@@ -39,4 +39,12 @@ pub enum AppEvent {
         room_id: Uuid,
         endpoint_id: String,
     },
+    MemberOnline { // gossip swarm neighbor for the members doc came up
+        space_id: Uuid,
+        endpoint_id: String,
+    },
+    MemberOffline { // gossip swarm neighbor for the members doc went down
+        space_id: Uuid,
+        endpoint_id: String,
+    },
 }

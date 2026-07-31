@@ -12,7 +12,7 @@ async fn relay_never_decrypts_but_still_propagates_ciphertext() -> Result<()> {
     let space_a = node_a.create_space("Relay Flow Space").await?;
     let author_a = space_a.author().unwrap();
     let room_a = space_a.create_room(&node_a, author_a, "general").await?;
-    let call_room_a = space_a.create_call_room(author_a, "voice").await?;
+    let call_room_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
 
     room_a.send_message(author_a, "visible only to real members").await?;
     call_room_a
@@ -33,7 +33,7 @@ async fn relay_never_decrypts_but_still_propagates_ciphertext() -> Result<()> {
     // later joining member does
     let blobs_relay = node_relay.blobs.clone().unwrap();
     space_relay.sync_rooms(&node_relay, &blobs_relay).await?;
-    space_relay.sync_call_rooms(&blobs_relay).await?;
+    space_relay.sync_call_rooms(&node_relay, &blobs_relay).await?;
 
     // the relay never learns real (encrypted) member records - the only
     // entries it can ever see in its own view of the members doc are

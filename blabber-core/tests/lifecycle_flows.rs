@@ -74,12 +74,12 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
         "A should receive B's chat message"
     );
 
-    // --- call ---
-    let call_room_a = space_a.create_call_room(author_a, "voice").await?;
+
+    let call_room_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
 
     let mut call_room_b = None;
     for _ in 0..50 {
-        space_b.sync_call_rooms(&blobs_b).await?;
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == call_room_a.id) {
             call_room_b = Some(r.clone());
@@ -150,7 +150,7 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
 
     let mut call_room_b2 = None;
     for _ in 0..50 {
-        space_b2.sync_call_rooms(&blobs_b).await?;
+        space_b2.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b2.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == call_room_a.id) {
             call_room_b2 = Some(r.clone());
@@ -480,14 +480,14 @@ async fn call_room_reconnects_after_leaving_and_rejoining_same_call() -> Result<
 
     let space_a = node_a.create_space("Reconnect Space").await?;
     let author_a = space_a.author().unwrap();
-    let call_room_a = space_a.create_call_room(author_a, "voice").await?;
+    let call_room_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
     let author_b = space_b.author().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
     let mut call_room_b = None;
     for _ in 0..50 {
-        space_b.sync_call_rooms(&blobs_b).await?;
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == call_room_a.id) {
             call_room_b = Some(r.clone());
@@ -559,7 +559,7 @@ async fn full_component_state_audit_after_complex_flow() -> Result<()> {
     let author_a = space_a.author().unwrap();
     let general_a = space_a.create_room(&node_a, author_a, "general").await?;
     let random_a = space_a.create_room(&node_a, author_a, "random").await?;
-    let voice_a = space_a.create_call_room(author_a, "voice").await?;
+    let voice_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
 
     general_a.send_message(author_a, "general message").await?;
     random_a.send_message(author_a, "random message").await?;
@@ -570,7 +570,7 @@ async fn full_component_state_audit_after_complex_flow() -> Result<()> {
     assert!(
         wait_until_async(3000, 100, || async {
             space_b.sync_rooms(&node_b, &blobs_b).await.is_ok()
-                && space_b.sync_call_rooms(&blobs_b).await.is_ok()
+                && space_b.sync_call_rooms(&node_b, &blobs_b).await.is_ok()
                 && space_b.rooms.lock().await.len() == 2
                 && space_b.call_rooms.lock().await.len() == 1
         })
@@ -667,12 +667,12 @@ async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<(
     let author_a = space_a.author().unwrap();
     let room1_a = space_a.create_room(&node_a, author_a, "room-one").await?;
     let room2_a = space_a.create_room(&node_a, author_a, "room-two").await?;
-    let call1_a = space_a.create_call_room(author_a, "call-one").await?;
+    let call1_a = space_a.create_call_room(&node_a, author_a, "call-one").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
     let blobs_b = node_b.blobs.clone().unwrap();
     space_b.sync_rooms(&node_b, &blobs_b).await?;
-    space_b.sync_call_rooms(&blobs_b).await?;
+    space_b.sync_call_rooms(&node_b, &blobs_b).await?;
 
     node_b.leave_space(space_b.id(), dir_b.path().join("spaces")).await?;
 
@@ -683,7 +683,7 @@ async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<(
     assert!(
         wait_until_async(3000, 100, || async {
             space_b2.sync_rooms(&node_b, &blobs_b).await.is_ok()
-                && space_b2.sync_call_rooms(&blobs_b).await.is_ok()
+                && space_b2.sync_call_rooms(&node_b, &blobs_b).await.is_ok()
                 && space_b2.rooms.lock().await.len() == 2
                 && space_b2.call_rooms.lock().await.len() == 1
         })
@@ -694,7 +694,7 @@ async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<(
     // NOW, with B fully caught up and steady-state, A creates more of each -
     // these can ONLY be found through the live watcher, no bulk call follows.
     let room3_a = space_a.create_room(&node_a, author_a, "room-three").await?;
-    let call2_a = space_a.create_call_room(author_a, "call-two").await?;
+    let call2_a = space_a.create_call_room(&node_a, author_a, "call-two").await?;
 
     assert!(
         wait_until_async(3000, 100, || async {

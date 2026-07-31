@@ -462,7 +462,7 @@ impl Space {
         Ok(room)
     }
 
-    pub async fn create_call_room(&self, author: AuthorId, name: impl Into<String>) -> Result<CallRoom> {
+    pub async fn create_call_room(&self, node: &Node, author: AuthorId, name: impl Into<String>) -> Result<CallRoom> {
         let space_key = self
             .key
             .clone()
@@ -493,6 +493,11 @@ impl Space {
         self.info.set_bytes(author, relay_key.into_bytes(), relay_value).await?;
 
         self.call_rooms.lock().await.push(room.clone());
+
+        let blobs = node.blobs.clone().context("blobs not created yet")?;
+        let label = format!("{}/call/{}", self.name, room.name);
+        room.watch(node.events.clone(), blobs, label, self.id).await?;
+
         Ok(room)
     }
 
@@ -575,9 +580,11 @@ impl Space {
     }
 
     /// Discover call rooms published in the space's info doc since we last checked,
-    /// and track them locally. Membership within a room is read fresh on demand
-    /// (via `CallRoom::list_active_members`), so no live subscription is needed here.
-    pub async fn sync_call_rooms(&self, blobs: &FsStore) -> Result<()> {
+    /// and track them locally, watching each newly-discovered room's `call_log`
+    /// so live join/leave events keep going. Watch is set up only inside the
+    /// "newly discovered"bbelow, not in a separate pass over every known
+    /// room afterward
+    pub async fn sync_call_rooms(&self, node: &Node, blobs: &FsStore) -> Result<()> {
         match self.key.clone() {
             Some(space_key) => {
                 let entries = self
@@ -599,7 +606,9 @@ impl Space {
                     if !self.is_known_call_room(record.id).await {
                         let ticket = DocTicket::from_str(&record.ticket)?;
                         let room = CallRoom::from_ticket(&self.docs, record.id, record.name, ticket, Some(space_key.clone())).await?;
-                        self.call_rooms.lock().await.push(room);
+                        self.call_rooms.lock().await.push(room.clone());
+                        let label = format!("{}/call/{}", self.name, room.name);
+                        room.watch(node.events.clone(), blobs.clone(), label, self.id).await?;
                     }
                 }
             }
@@ -620,7 +629,9 @@ impl Space {
                     if !self.is_known_call_room(record.id).await {
                         let ticket = DocTicket::from_str(&record.ticket)?;
                         let room = CallRoom::from_ticket(&self.docs, record.id, record.id.to_string(), ticket, None).await?;
-                        self.call_rooms.lock().await.push(room);
+                        self.call_rooms.lock().await.push(room.clone());
+                        let label = format!("{}/call/{}", self.name, room.name);
+                        room.watch(node.events.clone(), blobs.clone(), label, self.id).await?;
                     }
                 }
             }
@@ -778,6 +789,11 @@ impl Space {
                         if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
                             if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.name.clone(), ticket, self.key.clone()).await {
                                 self.call_rooms.lock().await.push(room.clone());
+                                let label = format!("{}/call/{}", self.name, room.name);
+                                match room.watch(events.clone(), blobs.clone(), label, space_id).await {
+                                    Ok(handle) => self.watch_handles.lock().await.push(handle),
+                                    Err(e) => eprintln!("failed to watch newly discovered call room {}: {e:#}", room.id),
+                                }
                                 let _ = events.send(AppEvent::NewCallRoom {
                                     space_id,
                                     room_id: room.id,
@@ -799,7 +815,12 @@ impl Space {
                     if !self.is_known_call_room(record.id).await {
                         if let Ok(ticket) = DocTicket::from_str(&record.ticket) {
                             if let Ok(room) = CallRoom::from_ticket(&self.docs, record.id, record.id.to_string(), ticket, None).await {
-                                self.call_rooms.lock().await.push(room);
+                                self.call_rooms.lock().await.push(room.clone());
+                                let label = format!("{}/call/{}", self.name, room.name);
+                                match room.watch(events.clone(), blobs.clone(), label, space_id).await {
+                                    Ok(handle) => self.watch_handles.lock().await.push(handle),
+                                    Err(e) => eprintln!("failed to watch newly discovered call room {}: {e:#}", room.id),
+                                }
                             }
                         }
                     }
@@ -831,6 +852,19 @@ impl Space {
                 if let Some(entry) = pending.lock().await.remove(&hash) {
                     self.try_apply_entry(event_type, &entry, blobs, events, space_id).await;
                 }
+            }
+            // only the members-doc watch counts as presence
+            LiveEvent::NeighborUp(public_key) if matches!(event_type, SpaceEvents::MemberEvent) => {
+                let _ = events.send(AppEvent::MemberOnline {
+                    space_id,
+                    endpoint_id: public_key.to_string(),
+                });
+            }
+            LiveEvent::NeighborDown(public_key) if matches!(event_type, SpaceEvents::MemberEvent) => {
+                let _ = events.send(AppEvent::MemberOffline {
+                    space_id,
+                    endpoint_id: public_key.to_string(),
+                });
             }
             _ => {}
         }

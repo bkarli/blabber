@@ -1,47 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { PhoneOff, Mic, MicOff } from 'lucide-vue-next';
+import { PhoneOff, Mic, MicOff, Minimize2 } from 'lucide-vue-next';
 import { useAppStore } from '@/stores/app';
 
-const route = useRoute();
-const router = useRouter();
+const props = defineProps<{ spaceId: string }>();
 const store = useAppStore();
-
-const spaceId = route.params.spaceId as string;
-const roomId = route.params.roomId as string;
-
-const joining = ref(true);
-const error = ref<string | null>(null);
-
-async function join() {
-  try {
-    await store.loadMembers(spaceId);
-    // seeds store.callParticipants. NewCallParticipant/CallParticipantLeft
-    // events keep it live-updated for the rest of the call
-    await store.joinCallRoom(roomId);
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    joining.value = false;
-  }
-}
 
 async function hangUp() {
   try {
     await store.leaveCallRoom();
   } catch (e) {
     console.error('failed to leave call room', e);
-  } finally {
-    router.push({ name: 'space', params: { spaceId } });
   }
 }
-
-onMounted(() => {
-  join();
-});
 
 async function toggleMute() {
   try {
@@ -60,21 +32,28 @@ function initials(name: string) {
 </script>
 
 <template>
-  <div class="flex h-full flex-1 flex-col items-center justify-center gap-10 bg-background p-8">
-    <p v-if="joining" class="text-sm text-muted-foreground">Joining call...</p>
-    <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
+  <div class="fixed inset-0 z-50 flex h-screen w-screen flex-col items-center justify-center gap-10 bg-background p-8">
+    <Button
+      variant="secondary"
+      class="absolute right-4 top-4 h-11 gap-2 rounded-full px-4 text-sm font-medium shadow-md"
+      title="Minimize"
+      @click="store.minimizeCall()"
+    >
+      <Minimize2 class="h-4 w-4" />
+      Minimize
+    </Button>
 
-    <div v-else class="flex w-full max-w-2xl flex-wrap items-start justify-center gap-6">
+    <div class="flex w-full max-w-2xl flex-wrap items-start justify-center gap-6">
       <div
         v-for="participant in store.callParticipants"
         :key="participant"
         class="flex flex-col items-center gap-2"
       >
         <Avatar class="h-20 w-20">
-          <AvatarFallback class="text-lg">{{ initials(store.displayNameForEndpoint(spaceId, participant)) }}</AvatarFallback>
+          <AvatarFallback class="text-lg">{{ initials(store.displayNameForEndpoint(props.spaceId, participant)) }}</AvatarFallback>
         </Avatar>
         <span class="max-w-[100px] truncate text-xs text-muted-foreground">
-          {{ store.displayNameForEndpoint(spaceId, participant) }}
+          {{ store.displayNameForEndpoint(props.spaceId, participant) }}
         </span>
       </div>
 

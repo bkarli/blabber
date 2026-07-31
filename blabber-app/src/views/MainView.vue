@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import SpaceSidebar from '@/components/layout/SpaceSidebar.vue';
 import RoomSidebar from '@/components/layout/RoomSidebar.vue';
 import MemberList from '@/components/layout/MemberList.vue';
+import UserProfileBar from '@/components/layout/UserProfileBar.vue';
 import ChatHeader from '@/components/chat/ChatHeader.vue';
 import MessageList from '@/components/chat/MessageList.vue';
 import MessageInput from '@/components/chat/MessageInput.vue';
@@ -24,6 +25,10 @@ watch(roomId, (id) => store.setActiveRoom(id ?? null), { immediate: true });
   <div class="flex h-screen w-screen overflow-hidden bg-sidebar text-foreground">
     <SpaceSidebar />
     <RoomSidebar v-if="spaceId" :space-id="spaceId" :active-room-id="roomId" />
+    <div v-else class="flex h-full w-60 flex-col border-r border-border bg-sidebar">
+      <div class="flex-1" />
+      <UserProfileBar />
+    </div>
 
     <main class="flex min-h-0 flex-1 flex-col bg-background">
       <template v-if="spaceId && roomId">
@@ -51,6 +56,6 @@ watch(roomId, (id) => store.setActiveRoom(id ?? null), { immediate: true });
       </template>
     </main>
 
-    <MemberList v-if="spaceId && roomId && membersOpen" :space-id="spaceId" />
+    <MemberList v-if="spaceId && membersOpen" :space-id="spaceId" />
   </div>
 </template>

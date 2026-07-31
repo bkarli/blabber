@@ -36,7 +36,7 @@ pub async fn create_call_room(
     }
     let space_uuid: Uuid = space_id.parse().map_err(|e| format!("invalid space id: {e}"))?;
     let node_guard = state.node.lock().await;
-    node_guard.as_ref().ok_or("Node not started yet")?;
+    let node = node_guard.as_ref().ok_or("Node not started yet")?;
     let spaces = state.spaces.lock().await;
     let space = spaces
         .iter()
@@ -46,7 +46,7 @@ pub async fn create_call_room(
         .author()
         .ok_or("this space has no writable author (blind relay?)")?;
     let room = space
-        .create_call_room(author, name)
+        .create_call_room(node, author, name)
         .await
         .stringify_err()?;
     Ok(CallRoomInfo {

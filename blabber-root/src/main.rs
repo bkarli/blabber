@@ -123,7 +123,7 @@ async fn try_join_invite(node: &Node, spaces_root: &Path, ticket: &str) -> Resul
 
     let blobs = node.blobs.clone().context("blobs not created yet")?;
     space.sync_rooms(node, &blobs).await?;
-    space.sync_call_rooms(&blobs).await?;
+    space.sync_call_rooms(node, &blobs).await?;
 
     println!("joined space '{}' ({})", space.name(), space.id());
     Ok(())

@@ -9,7 +9,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 mod common;
-use common::{make_node, wait_until};
+use common::{make_node, wait_until, wait_until_async};
 
 #[tokio::test]
 async fn two_peer_mesh_connects_both_directions() -> Result<()> {
@@ -100,14 +100,14 @@ async fn call_room_discovery_syncs_and_connects() -> Result<()> {
     let space_b = node_b.join_space(invite).await?;
 
     let author_a = space_a.author().unwrap();
-    let room_a = space_a.create_call_room(author_a, "Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Test Call").await?;
 
     let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
 
     // B discovers the call room via space info doc sync
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&blobs_b).await?;
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
@@ -243,7 +243,7 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
 
     let author_a = space_a.author().unwrap();
     let author_b = space_b.author().unwrap();
-    let room_a = space_a.create_call_room(author_a, "Leave Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Leave Test Call").await?;
 
     let (_call_a, mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
 
@@ -253,7 +253,7 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
     // B discovers the room and A's membership, then joins
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&blobs_b).await?;
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
@@ -283,7 +283,7 @@ async fn left_participant_is_not_redialed_by_new_joiner() -> Result<()> {
     // C joins afterwards and should discover only A as an active member
     let mut room_c = None;
     for _ in 0..100 {
-        space_c.sync_call_rooms(&blobs_c).await?;
+        space_c.sync_call_rooms(&node_c, &blobs_c).await?;
         let rooms = space_c.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_c = Some(r.clone());
@@ -332,7 +332,7 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
 
     let author_a = space_a.author().unwrap();
-    let room_a = space_a.create_call_room(author_a, "Event Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Event Test Call").await?;
 
     // subscribe before A joins so we don't miss the event
     let mut events_a = node_a.events.subscribe();
@@ -344,7 +344,7 @@ async fn accept_side_emits_new_call_participant_event() -> Result<()> {
 
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&blobs_b).await?;
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
@@ -400,7 +400,7 @@ async fn remote_departure_emits_call_participant_left_event() -> Result<()> {
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
 
     let author_a = space_a.author().unwrap();
-    let room_a = space_a.create_call_room(author_a, "Departure Test Call").await?;
+    let room_a = space_a.create_call_room(&node_a, author_a, "Departure Test Call").await?;
 
     let mut events_a = node_a.events.subscribe();
 
@@ -411,7 +411,7 @@ async fn remote_departure_emits_call_participant_left_event() -> Result<()> {
 
     let mut room_b = None;
     for _ in 0..100 {
-        space_b.sync_call_rooms(&blobs_b).await?;
+        space_b.sync_call_rooms(&node_b, &blobs_b).await?;
         let rooms = space_b.call_rooms.lock().await;
         if let Some(r) = rooms.iter().find(|r| r.id == room_a.id) {
             room_b = Some(r.clone());
@@ -459,6 +459,65 @@ async fn remote_departure_emits_call_participant_left_event() -> Result<()> {
     assert!(
         saw_event,
         "A never received a CallParticipantLeft event when B hung up - other peers' UI would never remove B's icon"
+    );
+
+    Ok(())
+}
+
+/// A bystander who has discovered a call room but never joined the mesh call
+/// itself (e.g. a sidebar just showing who's in a voice channel) must still
+/// see live join/leave events, purely from `CallRoom::watch` on the synced
+/// `call_log` doc - not from the mesh dial/accept path the tests above cover.
+#[tokio::test]
+async fn bystander_sees_call_participants_without_ever_joining() -> Result<()> {
+    let (node_a, _dir_a) = make_node("BystanderAlice").await?;
+    let (node_c, _dir_c) = make_node("BystanderCarol").await?;
+
+    let blobs_c = node_c.blobs.clone().unwrap();
+
+    let space_a = node_a.create_space("Bystander Test Space").await?;
+    let space_c = node_c.join_space(space_a.create_invite().await?).await?;
+
+    let author_a = space_a.author().unwrap();
+    let room_a = space_a.create_call_room(&node_a, author_a, "Bystander Call").await?;
+
+    // C discovers the room via space info doc sync, which also sets up
+    // C's watch on the room's call_log doc.
+    let discovered = wait_until_async(4000, 100, || async {
+        space_c.sync_call_rooms(&node_c, &blobs_c).await.is_ok()
+            && space_c.call_rooms.lock().await.iter().any(|r| r.id == room_a.id)
+    })
+    .await;
+    assert!(discovered, "C never discovered the call room via doc sync");
+
+    // subscribe before A joins so we don't miss the event
+    let mut events_c = node_c.events.subscribe();
+    let id_a = node_a.endpoint.as_ref().unwrap().id().to_string();
+
+    // A joins the call. Nobody dials C (C never joined the mesh call, and A
+    // has no other active participants to dial), so any event C sees must
+    // have come from watching the call_log doc, not from a mesh handshake.
+    let (_call_a, _mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
+
+    let saw_join = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match events_c.recv().await {
+                Ok(blabber_core::AppEvent::NewCallParticipant { room_id, endpoint_id, .. })
+                    if room_id == room_a.id && endpoint_id == id_a =>
+                {
+                    return true;
+                }
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        saw_join,
+        "bystander C never saw NewCallParticipant for A - a sidebar showing call presence would never update for peers who aren't dialing it directly"
     );
 
     Ok(())

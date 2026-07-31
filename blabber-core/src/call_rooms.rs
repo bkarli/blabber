@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use iroh_blobs::store::fs::FsStore;
-use iroh_docs::{AuthorId, DocTicket, api::Doc, protocol::Docs, store::Query};
+use iroh_docs::{AuthorId, DocTicket, Entry, api::Doc, engine::LiveEvent, protocol::Docs, store::Query};
 use n0_future::StreamExt;
+use tokio::{sync::{Mutex, broadcast}, task::JoinHandle};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use zeroize::Zeroizing;
 
-use crate::crypto;
+use crate::{crypto, events::AppEvent};
 
 /// Members state (in or out of call) as shared in the room doc.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -97,4 +99,88 @@ impl CallRoom {
         }
         Ok(active_members)
     }
+
+    /// Watches this room's call_log doc live, emitting NewCallParticipant/
+    /// CallParticipantLeft for every join/leave.
+    pub async fn watch(
+        &self,
+        events: broadcast::Sender<AppEvent>,
+        blobs: FsStore,
+        label: impl Into<String>,
+        space_id: Uuid,
+    ) -> Result<JoinHandle<()>> {
+        let doc = self.call_log.clone();
+        let pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>> = Arc::new(Mutex::new(HashMap::new()));
+        let label = label.into();
+        let room_id = self.id;
+        let key = self.key.clone();
+
+        let handle = crate::node::watch_doc(doc, label, move |event| {
+            let pending = pending.clone();
+            let blobs = blobs.clone();
+            let events = events.clone();
+            let key = key.clone();
+
+            async move {
+                apply_membership_event(pending, event, &blobs, &events, space_id, room_id, key).await;
+            }
+        }).await?;
+        Ok(handle)
+    }
+}
+
+async fn apply_membership_event(
+    pending: Arc<Mutex<HashMap<iroh_blobs::Hash, Entry>>>,
+    event: LiveEvent,
+    blobs: &FsStore,
+    events: &broadcast::Sender<AppEvent>,
+    space_id: Uuid,
+    room_id: Uuid,
+    key: Option<Arc<Zeroizing<[u8; 32]>>>,
+) {
+    match event {
+        LiveEvent::InsertLocal { entry, .. } | LiveEvent::InsertRemote { entry, .. } => {
+            let applied = try_apply_membership_entry(&entry, blobs, events, space_id, room_id, &key).await;
+            if !applied {
+                pending.lock().await.insert(entry.content_hash(), entry);
+            }
+        }
+        LiveEvent::ContentReady { hash } => {
+            if let Some(entry) = pending.lock().await.remove(&hash) {
+                try_apply_membership_entry(&entry, blobs, events, space_id, room_id, &key).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns true when this entry has been fully handled.
+async fn try_apply_membership_entry(
+    entry: &Entry,
+    blobs: &FsStore,
+    events: &broadcast::Sender<AppEvent>,
+    space_id: Uuid,
+    room_id: Uuid,
+    key: &Option<Arc<Zeroizing<[u8; 32]>>>,
+) -> bool {
+    let Ok(entry_key) = std::str::from_utf8(entry.key()) else { return true };
+    let Some(claim_auth) = entry_key.strip_prefix("member/") else { return true };
+    if claim_auth != entry.author().to_string() {
+        return true;
+    }
+
+    // a blind relay has no key, so it never learns who's in a call
+    let Some(space_key) = key.as_ref() else { return true };
+
+    let Some(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await.ok() else { return false };
+    let Ok(plaintext) = crypto::decrypt(space_key, &bytes, room_id.as_bytes()) else { return false };
+    let Ok(membership) = postcard::from_bytes::<CallMembership>(&plaintext) else { return false };
+
+    let app_event = if membership.active {
+        AppEvent::NewCallParticipant { space_id, room_id, endpoint_id: membership.endpoint_id }
+    } else {
+        AppEvent::CallParticipantLeft { space_id, room_id, endpoint_id: membership.endpoint_id }
+    };
+    let _ = events.send(app_event);
+    true
 }

@@ -82,7 +82,7 @@ async fn call_room_with_no_key_reads_nothing_and_cannot_publish() -> Result<()> 
 
     let space_a = node_a.create_space("Blind Key Call Space").await?;
     let author_a = space_a.author().unwrap();
-    let call_room_a = space_a.create_call_room(author_a, "voice").await?;
+    let call_room_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
     call_room_a
         .set_membership(author_a, "alice-endpoint".to_string(), true)
         .await?;

@@ -328,7 +328,7 @@ impl Node {
                 })?;
 
             space
-                .sync_call_rooms(blobs)
+                .sync_call_rooms(self, blobs)
                 .await
                 .map_err(|error| {
                     anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")

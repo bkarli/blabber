@@ -23,12 +23,6 @@ const routes = [
     component: () => import('@/views/MainView.vue'),
     meta: { requiresAuth: true },
   },
-  {
-    path: '/spaces/:spaceId/calls/:roomId',
-    name: 'call',
-    component: () => import('@/views/CallView.vue'),
-    meta: { requiresAuth: true },
-  },
 ];
 
 const router = createRouter({ history: createWebHistory(), routes });

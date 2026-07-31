@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { useAuthStore } from '@/stores/auth';
 import { useRouter } from 'vue-router';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
@@ -8,22 +7,30 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from '@/components/ui/alert-dialog';
-import { Share2, Server, Check, Plus, Hash, Volume2, Settings, LogOut } from 'lucide-vue-next';
+import { Share2, Server, Check, Plus, Hash, Volume2, LogOut } from 'lucide-vue-next';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useAppStore } from '@/stores/app';
 import CreateRoomDialog from '@/components/room/CreateRoomDialog.vue';
 import CreateChannelDialog from '@/components/room/CreateChannelDialog.vue';
-import IdentitySettingsDrawer from '@/components/settings/IdentitySettingsDrawer.vue';
+import UserProfileBar from '@/components/layout/UserProfileBar.vue';
+
+const MAX_VISIBLE_PARTICIPANTS = 5;
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '??';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
 
 // props must be declared BEFORE anything below references it
 const props = defineProps<{ spaceId: string; activeRoomId?: string }>();
 
 const router = useRouter();
 const store = useAppStore();
-const auth = useAuthStore();
 
 const createRoomOpen = ref(false);
 const createChannelOpen = ref(false);
-const settingsOpen = ref(false);
 const confirmLeaveOpen = ref(false);
 const leaving = ref(false);
 const leaveError = ref<string | null>(null);
@@ -76,7 +83,12 @@ async function handleLeave() {
 
 
 async function joinChannel(channelId: string) {
-  router.push({ name: 'call', params: { spaceId: props.spaceId, roomId: channelId } });
+  try {
+    await store.loadMembers(props.spaceId);
+    await store.joinCallRoom(props.spaceId, channelId);
+  } catch (e) {
+    console.error('failed to join call room', e);
+  }
 }
 // this block must come after `props` is declared above
 onMounted(() => {
@@ -174,39 +186,51 @@ watch(
       </div>
 
       <div class="flex flex-col gap-0.5">
-        <button
-          v-for="channel in channels"
-          :key="channel.id"
-          class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          @click="joinChannel(channel.id)"
-        >
-          <Volume2 class="h-4 w-4 shrink-0" />
-          <span class="truncate">{{ channel.name }}</span>
-        </button>
+        <div v-for="channel in channels" :key="channel.id">
+          <button
+            class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            @click="joinChannel(channel.id)"
+          >
+            <Volume2 class="h-4 w-4 shrink-0" />
+            <span class="truncate">{{ channel.name }}</span>
+          </button>
 
-        <p v-if="rooms.length === 0" class="px-2 py-1.5 text-sm text-muted-foreground">
+          <div
+            v-if="store.participantsFor(channel.id).length > 0"
+            class="ml-6 flex items-center gap-1.5 py-1"
+          >
+            <div class="flex -space-x-2">
+              <Avatar
+                v-for="endpointId in store.participantsFor(channel.id).slice(0, MAX_VISIBLE_PARTICIPANTS)"
+                :key="endpointId"
+                class="h-5 w-5 border border-sidebar"
+                :title="store.displayNameForEndpoint(spaceId, endpointId)"
+              >
+                <AvatarFallback class="text-[9px]">
+                  {{ initials(store.displayNameForEndpoint(spaceId, endpointId)) }}
+                </AvatarFallback>
+              </Avatar>
+            </div>
+            <span
+              v-if="store.participantsFor(channel.id).length > MAX_VISIBLE_PARTICIPANTS"
+              class="text-xs text-muted-foreground"
+            >
+              +{{ store.participantsFor(channel.id).length - MAX_VISIBLE_PARTICIPANTS }}
+            </span>
+          </div>
+        </div>
+
+        <p v-if="channels.length === 0" class="px-2 py-1.5 text-sm text-muted-foreground">
           No channels yet.
         </p>
       </div>
 
     </ScrollArea>
 
-    <div class="flex h-16 shrink-0 items-center gap-3 border-t border-border px-3">
-      <div class="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
-        Me
-      </div>
-      <div class="flex-1 min-w-0">
-        <p class="truncate text-sm font-medium">{{ auth.displayName ?? 'You' }}</p>
-        <p class="truncate text-xs text-muted-foreground">Online</p>
-      </div>
-      <Button variant="ghost" size="icon" class="h-8 w-8 text-muted-foreground hover:text-foreground" @click="settingsOpen = true">
-        <Settings class="h-4 w-4" />
-      </Button>
-    </div>
+    <UserProfileBar />
 
     <CreateRoomDialog v-model:open="createRoomOpen" :space-id="spaceId" />
     <CreateChannelDialog v-model:open="createChannelOpen" :space-id="spaceId" />
-    <IdentitySettingsDrawer v-model:open="settingsOpen" />
 
     <AlertDialog v-model:open="confirmLeaveOpen">
       <AlertDialogContent>

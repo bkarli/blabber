@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Server } from 'lucide-vue-next';
-import { useAppStore } from '@/stores/app';
+import { useAppStore, type Member } from '@/stores/app';
+
+const CONNECTION_POLL_INTERVAL_MS = 5000;
 
 const props = defineProps<{ spaceId: string }>();
 const store = useAppStore();
@@ -25,6 +27,35 @@ function initials(name: string) {
 function isYou(authorId: string) {
   return authorId === store.myAuthorIdFor(props.spaceId);
 }
+
+// gossip's NeighborUp/NeighborDown can only report on remote peers, never on
+// yourself, so store.isOnline never covers own entry
+function isOnline(member: Member) {
+  return store.isOnline(props.spaceId, member.endpoint_id) || isYou(member.author_id);
+}
+
+// connection type has no push event, poll while this
+// list is actually visible, scoped to this component's lifecycle.
+let connectionPollHandle: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  store.loadConnectionTypes(props.spaceId);
+  connectionPollHandle = setInterval(() => store.loadConnectionTypes(props.spaceId), CONNECTION_POLL_INTERVAL_MS);
+});
+onUnmounted(() => clearInterval(connectionPollHandle));
+
+// dot color puts signals together: red means offline, green/orange
+// distinguish a direct P2P connection from one going through iroh's relay
+function statusColor(member: Member) {
+  if (!isOnline(member)) return 'bg-red-500';
+  return store.connectionTypeFor(props.spaceId, member.endpoint_id) === 'relayed' ? 'bg-orange-500' : 'bg-green-500';
+}
+
+function statusTitle(member: Member) {
+  if (!isOnline(member)) return 'Offline';
+  return store.connectionTypeFor(props.spaceId, member.endpoint_id) === 'relayed'
+    ? 'Online - connected via relay (NAT traversal fallback)'
+    : 'Online - direct connection';
+}
 </script>
 
 <template>
@@ -42,15 +73,27 @@ function isYou(authorId: string) {
           :key="member.author_id"
           class="flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-accent"
         >
-          <Avatar v-if="!member.is_relay" class="h-8 w-8 shrink-0">
-            <AvatarFallback class="text-xs">{{ initials(member.display_name) }}</AvatarFallback>
-          </Avatar>
+          <div v-if="!member.is_relay" class="relative shrink-0">
+            <Avatar class="h-8 w-8">
+              <AvatarFallback class="text-xs">{{ initials(member.display_name) }}</AvatarFallback>
+            </Avatar>
+            <span
+              class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-sidebar"
+              :class="statusColor(member)"
+              :title="statusTitle(member)"
+            />
+          </div>
           <div
             v-else
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+            class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
             title="Blind relay - can seed this space's data but never decrypt it"
           >
             <Server class="h-4 w-4" />
+            <span
+              class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-sidebar"
+              :class="statusColor(member)"
+              :title="statusTitle(member)"
+            />
           </div>
           <span class="truncate text-sm">
             {{ member.display_name }}
