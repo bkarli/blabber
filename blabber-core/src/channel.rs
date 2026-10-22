@@ -35,6 +35,13 @@ pub(crate) const PEER_BUFFER_PRIME: usize = 48_000 * 40 / 1000;
 const PEER_PRIME_STEP: usize = 48_000 * 20 / 1000;
 /// Stays well below PEER_BUFFER_MAX, so a full prime plus a burst never trims.
 const PEER_PRIME_MAX: usize = 48_000 * 100 / 1000;
+/// After this much playback without running dry the prime shrinks by one
+/// PEER_PRIME_STEP again, so one bad moment (or a mute) doesn't cost latency
+/// for the rest of the call.
+const PEER_PRIME_DECAY_AFTER: usize = 48_000 * 5;
+/// Samples quieter than this count as silence and may be skipped to bring a
+/// deep buffer back down to the prime. Gated senders produce near-zero pauses.
+const PEER_SILENCE_LEVEL: f32 = 0.001;
 /// Fade length for starting/stopping a peer's playback without a click.
 const PEER_FADE_SAMPLES: usize = 48_000 * 5 / 1000;
 
@@ -64,11 +71,13 @@ pub(crate) struct PeerBuffer {
     fade_in_left: usize,
     /// current adaptive prime, see PEER_PRIME_STEP
     prime: usize,
+    /// samples played since the buffer last ran dry, see PEER_PRIME_DECAY_AFTER
+    played_since_dry: usize,
 }
 
 impl Default for PeerBuffer {
     fn default() -> Self {
-        Self { samples: VecDeque::new(), playing: false, fade_in_left: 0, prime: PEER_BUFFER_PRIME }
+        Self { samples: VecDeque::new(), playing: false, fade_in_left: 0, prime: PEER_BUFFER_PRIME, played_since_dry: 0 }
     }
 }
 
@@ -90,6 +99,7 @@ impl PeerBuffer {
             self.playing = true;
             self.fade_in_left = PEER_FADE_SAMPLES;
         }
+        self.skip_excess_silence(out.len());
         let n = out.len().min(self.samples.len());
         let runs_dry = self.samples.len() <= out.len();
         let fade_out_len = if runs_dry { n.min(PEER_FADE_SAMPLES) } else { 0 };
@@ -109,7 +119,28 @@ impl PeerBuffer {
         if runs_dry {
             self.playing = false;
             self.prime = (self.prime + PEER_PRIME_STEP).min(PEER_PRIME_MAX);
+            self.played_since_dry = 0;
+        } else {
+            self.played_since_dry += n;
+            if self.played_since_dry >= PEER_PRIME_DECAY_AFTER {
+                self.played_since_dry = 0;
+                self.prime = self.prime.saturating_sub(PEER_PRIME_STEP).max(PEER_BUFFER_PRIME);
+            }
         }
+    }
+
+    /// Lets the delay follow a shrunken prime: while more than the prime would
+    /// be left after this tick, silent samples at the front are dropped. Only
+    /// silence is dropped, so speech is never cut; a sender that never pauses
+    /// keeps its delay until push_samples' hard bound.
+    fn skip_excess_silence(&mut self, request: usize) {
+        let excess = self.samples.len().saturating_sub(self.prime + request);
+        let silent = self.samples
+            .iter()
+            .take(excess)
+            .take_while(|s| s.abs() < PEER_SILENCE_LEVEL)
+            .count();
+        self.samples.drain(..silent);
     }
 }
 
@@ -642,6 +673,79 @@ mod tests {
         assert_eq!(primes[1], PEER_BUFFER_PRIME + PEER_PRIME_STEP);
         assert_eq!(*primes.last().unwrap(), PEER_PRIME_MAX);
         assert!(PEER_PRIME_MAX + 3 * 960 < PEER_BUFFER_MAX, "a full prime plus a burst must not trim");
+    }
+
+    /// Plays `seconds` of steady audio: one 10 ms frame in, one 10 ms tick out.
+    fn play_steadily(buf: &mut PeerBuffer, value: f32, seconds: usize) {
+        for _ in 0..seconds * 100 {
+            buf.push(vec![value; 480]);
+            let mut out = vec![0.0; 480];
+            buf.mix_into(&mut out);
+        }
+    }
+
+    fn run_dry_until_max_prime(buf: &mut PeerBuffer) {
+        while buf.prime < PEER_PRIME_MAX {
+            buf.push(vec![1.0; buf.prime]);
+            let mut out = vec![0.0; buf.prime];
+            buf.mix_into(&mut out);
+        }
+    }
+
+    #[test]
+    fn peer_buffer_prime_decays_after_clean_playback() {
+        let mut buf = PeerBuffer::default();
+        run_dry_until_max_prime(&mut buf);
+        buf.push(vec![1.0; buf.prime]);
+        let steps = (PEER_PRIME_MAX - PEER_BUFFER_PRIME) / PEER_PRIME_STEP;
+        let decay_seconds = PEER_PRIME_DECAY_AFTER / 48_000;
+        play_steadily(&mut buf, 1.0, decay_seconds * steps + 1);
+        assert_eq!(buf.prime, PEER_BUFFER_PRIME);
+        assert!(buf.playing);
+    }
+
+    #[test]
+    fn peer_buffer_running_dry_restarts_the_decay_clock() {
+        let mut buf = PeerBuffer::default();
+        run_dry_until_max_prime(&mut buf);
+        buf.push(vec![1.0; buf.prime]);
+        play_steadily(&mut buf, 1.0, PEER_PRIME_DECAY_AFTER / 48_000 - 1);
+        assert_eq!(buf.prime, PEER_PRIME_MAX, "decayed before a full clean interval");
+    }
+
+    #[test]
+    fn peer_buffer_skips_excess_silence_down_to_prime() {
+        let mut buf = PeerBuffer::default();
+        buf.push(vec![0.0; PEER_PRIME_MAX]);
+        let mut out = vec![0.0; 480];
+        buf.mix_into(&mut out);
+        assert_eq!(buf.len(), PEER_BUFFER_PRIME);
+    }
+
+    #[test]
+    fn peer_buffer_never_skips_speech() {
+        let mut buf = PeerBuffer::default();
+        buf.push(vec![0.0; 960]);
+        buf.push(vec![0.5; PEER_PRIME_MAX]);
+        let mut out = vec![0.0; 480];
+        buf.mix_into(&mut out);
+        // only the leading silence went: this tick played speech, the rest is kept
+        assert!(out.iter().skip(PEER_FADE_SAMPLES).all(|&s| s == 0.5));
+        assert_eq!(buf.len(), PEER_PRIME_MAX - 480);
+    }
+
+    #[test]
+    fn peer_buffer_delay_recovers_in_a_speech_pause() {
+        let mut buf = PeerBuffer::default();
+        run_dry_until_max_prime(&mut buf);
+        buf.push(vec![0.5; buf.prime]);
+        let steps = (PEER_PRIME_MAX - PEER_BUFFER_PRIME) / PEER_PRIME_STEP;
+        play_steadily(&mut buf, 0.5, PEER_PRIME_DECAY_AFTER / 48_000 * steps + 1);
+        // still talking: the delay is untouched
+        assert!(buf.len() >= PEER_PRIME_MAX);
+        // the speaker pauses briefly, the excess drains away as silence
+        play_steadily(&mut buf, 0.0, 1);
+        assert!(buf.len() <= PEER_BUFFER_PRIME + 480, "delay stayed at {}", buf.len());
     }
 
     #[test]
