@@ -3,16 +3,17 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_blobs::store::fs::FsStore;
 use tokio::sync::broadcast;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use uuid::Uuid;
 
 use crate::sound::{MixSource, SoundHandler, VoiceHandle};
 use crate::space::Space;
+use crate::voice_codec::{VoiceDecoder, VoiceEncoder, FRAME_SAMPLES, SEQ_HEADER_LEN};
 
 /// ALPN mesh call rooms use to dial each other for the group-call audio mesh.
-pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
+pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/1";
 
 /// How long an inbound dial waits for the caller's member record to show up
 /// before being rejected.
@@ -25,43 +26,18 @@ const MEMBER_SYNC_POLL: Duration = Duration::from_millis(100);
 pub const PEER_BUFFER_TARGET: usize = 48_000 * 60 / 1000;
 pub const PEER_BUFFER_MAX: usize = 48_000 * 200 / 1000;
 
-const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
-const SAFE_DATAGRAM_CEILING: usize = 1200;
-const SAFETY_MARGIN: usize = 32;
+/// A peer starts and restarts playing only once this
+/// much audio is buffered, so normal network jitter doesn't cause gaps.
+const PEER_BUFFER_PRIME: usize = 48_000 * 40 / 1000;
+/// Fade length for starting/stopping a peer's playback without a click.
+const PEER_FADE_SAMPLES: usize = 48_000 * 5 / 1000;
 
-/// computes safe amount of audio samples to send in one datagram.
-fn samples_per_packet(connection: &Connection) -> usize {
-    let max_datagram = connection
-        .max_datagram_size()
-        .unwrap_or(FALLBACK_MAX_DATAGRAM_SIZE)
-        .min(SAFE_DATAGRAM_CEILING);
-    let safe_bytes = max_datagram.saturating_sub(SAFETY_MARGIN).max(4);
-    (safe_bytes / 4).max(1)
-}
-
-/// Splits an outgoing audio chunk into datagram-sized pieces and sends each over the connection.
-fn send_audio_chunk(connection: &Connection, data: &[f32], max_samples: usize) {
-    for sub_chunk in data.chunks(max_samples) {
-        let raw: Vec<u8> = sub_chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
-
-        if let Err(e) = connection.send_datagram(raw.into()) {
-            eprintln!("failed to send audio datagram: {e}");
-        }
-    }
-}
-
-/// converts received audio datagrams into f32 samples to play,
-fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-            .collect(),
-    )
-}
+/// How many newer packets may arrive before a missing one is declared lost.
+const REORDER_WINDOW: u32 = 2;
+/// Lost frames in a row that get concealed. Longer gaps are skipped.
+const MAX_CONCEALED_FRAMES: u32 = 5;
+/// A sequence jump this large means the sender restarted, start over there.
+const RESYNC_DISTANCE: u32 = 50;
 
 /// Appends received samples to a peer's jitter buffer, dropping the oldest audio
 /// down to PEER_BUFFER_TARGET once it grows past PEER_BUFFER_MAX.
@@ -70,6 +46,133 @@ fn push_samples(buf: &mut VecDeque<f32>, samples: Vec<f32>) {
     if buf.len() > PEER_BUFFER_MAX {
         let excess = buf.len() - PEER_BUFFER_TARGET;
         buf.drain(..excess);
+    }
+}
+
+/// One peer's decoded audio waiting to be played, plus its playout state.
+/// Plays only once primed, fades out when it runs
+/// dry, then waits to be primed again and fades back in.
+#[derive(Default)]
+struct PeerBuffer {
+    samples: VecDeque<f32>,
+    playing: bool,
+    fade_in_left: usize,
+}
+
+impl PeerBuffer {
+    fn push(&mut self, samples: Vec<f32>) {
+        push_samples(&mut self.samples, samples);
+    }
+
+    /// Adds up to out.len() samples of this peer onto out.
+    fn mix_into(&mut self, out: &mut [f32]) {
+        if !self.playing {
+            if self.samples.len() < PEER_BUFFER_PRIME {
+                return;
+            }
+            self.playing = true;
+            self.fade_in_left = PEER_FADE_SAMPLES;
+        }
+        let n = out.len().min(self.samples.len());
+        let runs_dry = self.samples.len() <= out.len();
+        let fade_out_len = if runs_dry { n.min(PEER_FADE_SAMPLES) } else { 0 };
+        for (i, slot) in out[..n].iter_mut().enumerate() {
+            let sample = self.samples.pop_front().unwrap_or(0.0);
+            let mut gain = 1.0;
+            if self.fade_in_left > 0 {
+                gain *= 1.0 - self.fade_in_left as f32 / PEER_FADE_SAMPLES as f32;
+                self.fade_in_left -= 1;
+            }
+            let left = n - i;
+            if left <= fade_out_len {
+                gain *= (left - 1) as f32 / fade_out_len as f32;
+            }
+            *slot += sample * gain;
+        }
+        if runs_dry {
+            self.playing = false;
+        }
+    }
+}
+
+/// Splits a received packet into sequence number and Opus payload.
+fn parse_packet(bytes: &[u8]) -> Option<(u32, &[u8])> {
+    if bytes.len() <= SEQ_HEADER_LEN {
+        return None;
+    }
+    let seq = u32::from_le_bytes(bytes[..SEQ_HEADER_LEN].try_into().unwrap());
+    Some((seq, &bytes[SEQ_HEADER_LEN..]))
+}
+
+/// `a - b` in sequence space, correct across u32 wrap-around.
+fn seq_diff(a: u32, b: u32) -> i32 {
+    a.wrapping_sub(b) as i32
+}
+
+/// Turns one peer's packets back into an in-order stream of 20 ms frames.
+/// Packets are held for a short reorder window; a frame that stays missing is
+/// rebuilt from the FEC data of its successor when that arrived, otherwise
+/// concealed by the decoder.
+struct PeerReceiver {
+    decoder: VoiceDecoder,
+    next_seq: Option<u32>,
+    pending: BTreeMap<u32, Vec<u8>>,
+    concealed_run: u32,
+}
+
+impl PeerReceiver {
+    fn new(decoder: VoiceDecoder) -> Self {
+        Self { decoder, next_seq: None, pending: BTreeMap::new(), concealed_run: 0 }
+    }
+
+    /// Accepts a packet and returns the frames that became playable, in order.
+    fn receive(&mut self, seq: u32, payload: &[u8]) -> Vec<Vec<f32>> {
+        let next = *self.next_seq.get_or_insert(seq);
+        let ahead = seq_diff(seq, next);
+        if ahead < 0 {
+            // too late, its slot was already filled or concealed
+            return Vec::new();
+        }
+        if ahead as u32 > RESYNC_DISTANCE {
+            self.pending.clear();
+            self.next_seq = Some(seq);
+            self.concealed_run = 0;
+        }
+        self.pending.insert(seq, payload.to_vec());
+
+        let mut frames = Vec::new();
+        while let Some(next) = self.next_seq {
+            if let Some(payload) = self.pending.remove(&next) {
+                self.concealed_run = 0;
+                frames.push(self.decoder.decode(&payload).unwrap_or_else(|_| self.conceal()));
+                self.next_seq = Some(next.wrapping_add(1));
+                continue;
+            }
+            let newest = self.pending.keys().copied().max_by_key(|&k| seq_diff(k, next));
+            let Some(newest) = newest else { break };
+            if (seq_diff(newest, next) as u32) < REORDER_WINDOW {
+                break;
+            }
+            // next is lost
+            if self.concealed_run >= MAX_CONCEALED_FRAMES {
+                let oldest = self.pending.keys().copied().min_by_key(|&k| seq_diff(k, next)).unwrap();
+                self.next_seq = Some(oldest);
+                self.concealed_run = 0;
+                continue;
+            }
+            self.concealed_run += 1;
+            let frame = match self.pending.get(&next.wrapping_add(1)) {
+                Some(following) => self.decoder.decode_fec(following).unwrap_or_else(|_| self.conceal()),
+                None => self.conceal(),
+            };
+            frames.push(frame);
+            self.next_seq = Some(next.wrapping_add(1));
+        }
+        frames
+    }
+
+    fn conceal(&mut self) -> Vec<f32> {
+        self.decoder.conceal().unwrap_or_else(|_| vec![0.0; FRAME_SAMPLES])
     }
 }
 
@@ -82,7 +185,7 @@ fn space_id_for_room(room_spaces: &RoomSpaceMap, room_id: Uuid) -> Option<Uuid> 
 #[derive(Clone)]
 pub struct MeshVoiceChannel {
     connections: Arc<StdMutex<HashMap<String, Connection>>>,
-    peer_buffers: Arc<StdMutex<HashMap<String, VecDeque<f32>>>>,
+    peer_buffers: Arc<StdMutex<HashMap<String, PeerBuffer>>>,
     handle: tokio::runtime::Handle,
     room_id: Uuid,
     room_spaces: RoomSpaceMap,
@@ -107,12 +210,13 @@ impl MeshVoiceChannel {
         }
     }
 
-    /// Sends processed mic audio to every connected peer.
-    pub(crate) fn broadcast_samples(&self, samples: &[f32]) {
+    /// Sends one encoded voice packet to every connected peer.
+    pub(crate) fn broadcast_packet(&self, packet: &[u8]) {
         let conns = self.connections.lock().unwrap();
         for connection in conns.values() {
-            let max_samples = samples_per_packet(connection);
-            send_audio_chunk(connection, samples, max_samples);
+            if let Err(e) = connection.send_datagram(packet.to_vec().into()) {
+                eprintln!("failed to send audio datagram: {e}");
+            }
         }
     }
 
@@ -122,7 +226,7 @@ impl MeshVoiceChannel {
         self.peer_buffers
             .lock()
             .unwrap()
-            .insert(peer_id.clone(), VecDeque::new());
+            .insert(peer_id.clone(), PeerBuffer::default());
 
         //connection is registered under peer_id. Checks for old connections under this id and replaces them.
         let previous = self
@@ -140,14 +244,30 @@ impl MeshVoiceChannel {
         let peer_id_for_task = peer_id.clone();
         let mesh_channel = self.clone();
         self.handle.spawn(async move {
+            // without the audio feature there is no decoder, datagrams are
+            // still read so a disconnect is noticed
+            let mut receiver = match VoiceDecoder::new() {
+                Ok(decoder) => Some(PeerReceiver::new(decoder)),
+                Err(e) => {
+                    eprintln!("[mesh voice] no decoder for {peer_id_for_task}: {e:#}");
+                    None
+                }
+            };
             //the spawned tasks life cycle
             loop {
                 match connection.read_datagram().await {
                     Ok(bytes) => {
-                        if let Some(samples) = bytes_to_samples(&bytes) {
-                            let mut buffers = peer_buffers.lock().unwrap();
-                            if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
-                                push_samples(buf, samples);
+                        let (Some(receiver), Some((seq, payload))) = (receiver.as_mut(), parse_packet(&bytes)) else {
+                            continue;
+                        };
+                        let frames = receiver.receive(seq, payload);
+                        if frames.is_empty() {
+                            continue;
+                        }
+                        let mut buffers = peer_buffers.lock().unwrap();
+                        if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
+                            for frame in frames {
+                                buf.push(frame);
                             }
                         }
                     }
@@ -212,7 +332,7 @@ impl MeshVoiceChannel {
 
     /// returns the amount of audio samples that havent been processed in the jitter buffer.
     pub fn buffered_sample_count(&self, peer_id: &str) -> Option<usize> {
-        self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.len())
+        self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.samples.len())
     }
 
     /// returns the amount of currently registered connections
@@ -221,40 +341,15 @@ impl MeshVoiceChannel {
     }
 }
 
-/// Wraps a call's peer buffers as one mixer voice: averages every
-/// currently-talking peer together, then adds that average into the
-/// shared output mix as a single source.
+/// Wraps a call's peer buffers as one mixer voice.
 struct CallVoiceSource(MeshVoiceChannel);
 
 impl MixSource for CallVoiceSource {
     /// Engine calls this once for every registered source to create the final output audio stream.
     fn mix_into(&mut self, out: &mut [f32]) {
-        // used to gather the peers buffers before normalizing.
-        let mut scratch = vec![0.0f32; out.len()];
-        // count of peers that have audio ready to process.
-        let mut active = 0u32;
-        {
-            let mut buffers = self.0.peer_buffers.lock().unwrap();
-            for buf in buffers.values_mut() {
-                if buf.is_empty() {
-                    continue;
-                }
-                active += 1;
-                for slot in scratch.iter_mut() {
-                    if let Some(sample) = buf.pop_front() {
-                        *slot += sample;
-                    }
-                }
-            }
-        }
-        // guard to not divide by zero
-        if active > 0 {
-            // the aveeraging factor
-            let inv = 1.0 / active as f32;
-            // pairs output to scratch buffer then adds the calls averaged contribution to shared buffer
-            for (o, s) in out.iter_mut().zip(scratch.iter()) {
-                *o += s * inv;
-            }
+        let mut buffers = self.0.peer_buffers.lock().unwrap();
+        for buf in buffers.values_mut() {
+            buf.mix_into(out);
         }
     }
 }
@@ -273,11 +368,16 @@ pub struct MeshActiveCall {
 impl MeshActiveCall {
 
     pub fn start(channel: MeshVoiceChannel, sound: Arc<SoundHandler>) -> Self {
-        // Outgoing half of the wiring to the sound engine.
+        // Outgoing half of the wiring to the sound engine: encode once,
+        // send the same packet to every peer.
         let capture_channel = channel.clone();
-        let capture_id = match sound.start_capture(Box::new(move |samples: &[f32]| {
-            capture_channel.broadcast_samples(samples);
-        })) {
+        let capture_id = match VoiceEncoder::new().and_then(|mut encoder| {
+            sound.start_capture(Box::new(move |samples: &[f32]| {
+                for packet in encoder.push(samples) {
+                    capture_channel.broadcast_packet(&packet);
+                }
+            }))
+        }) {
             Ok(id) => Some(id),
             Err(e) => {
                 eprintln!("[mesh voice] failed to start capture: {e:#}");
@@ -465,5 +565,165 @@ mod tests {
         let mut buf = VecDeque::new();
         push_samples(&mut buf, vec![1.0; PEER_BUFFER_MAX]);
         assert_eq!(buf.len(), PEER_BUFFER_MAX);
+    }
+
+    fn primed_buffer(value: f32) -> PeerBuffer {
+        let mut buf = PeerBuffer::default();
+        buf.push(vec![value; PEER_BUFFER_PRIME]);
+        buf
+    }
+
+    #[test]
+    fn peer_buffer_waits_until_primed() {
+        let mut buf = PeerBuffer::default();
+        buf.push(vec![1.0; PEER_BUFFER_PRIME - 1]);
+        let mut out = vec![0.0; 480];
+        buf.mix_into(&mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert_eq!(buf.samples.len(), PEER_BUFFER_PRIME - 1);
+    }
+
+    #[test]
+    fn peer_buffer_fades_in_then_plays_at_full_level() {
+        let mut buf = primed_buffer(1.0);
+        let mut out = vec![0.0; 480];
+        buf.mix_into(&mut out);
+        assert_eq!(out[0], 0.0);
+        assert!(out.windows(2).take(PEER_FADE_SAMPLES).all(|w| w[1] >= w[0]));
+        assert_eq!(out[479], 1.0);
+    }
+
+    #[test]
+    fn peer_buffer_fades_out_and_reprimes_when_running_dry() {
+        let mut buf = primed_buffer(1.0);
+        let mut out = vec![0.0; PEER_BUFFER_PRIME];
+        buf.mix_into(&mut out);
+        assert_eq!(*out.last().unwrap(), 0.0);
+        assert!(out[PEER_BUFFER_PRIME / 2] == 1.0);
+        assert!(!buf.playing);
+
+        // a trickle of audio is not played until primed again
+        buf.push(vec![1.0; 480]);
+        let mut out = vec![0.0; 480];
+        buf.mix_into(&mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn peer_buffer_adds_onto_existing_mix() {
+        let mut a = primed_buffer(0.25);
+        let mut b = primed_buffer(0.5);
+        let mut out = vec![0.0; 480];
+        a.mix_into(&mut out);
+        b.mix_into(&mut out);
+        assert_eq!(out[479], 0.75);
+    }
+
+    #[test]
+    fn parse_packet_rejects_runts() {
+        assert!(parse_packet(&[1, 0, 0, 0]).is_none());
+        assert_eq!(parse_packet(&[2, 0, 0, 0, 9]), Some((2, &[9u8][..])));
+    }
+
+    #[cfg(feature = "audio")]
+    mod receiver {
+        use super::*;
+
+        /// `count` encoded packets of a 440 Hz tone, split into (seq, payload).
+        fn packets(count: usize) -> Vec<(u32, Vec<u8>)> {
+            let mut encoder = VoiceEncoder::new().unwrap();
+            let tone: Vec<f32> = (0..count * FRAME_SAMPLES)
+                .map(|i| 0.3 * (i as f32 * 2.0 * std::f32::consts::PI * 440.0 / 48_000.0).sin())
+                .collect();
+            encoder.push(&tone)
+                .iter()
+                .map(|p| {
+                    let (seq, payload) = parse_packet(p).unwrap();
+                    (seq, payload.to_vec())
+                })
+                .collect()
+        }
+
+        fn receiver() -> PeerReceiver {
+            PeerReceiver::new(VoiceDecoder::new().unwrap())
+        }
+
+        #[test]
+        fn in_order_packets_decode_immediately() {
+            let mut rx = receiver();
+            for (seq, payload) in packets(5) {
+                let frames = rx.receive(seq, &payload);
+                assert_eq!(frames.len(), 1);
+                assert_eq!(frames[0].len(), FRAME_SAMPLES);
+            }
+        }
+
+        #[test]
+        fn swapped_packets_are_reordered() {
+            let p = packets(3);
+            let mut rx = receiver();
+            assert_eq!(rx.receive(p[0].0, &p[0].1).len(), 1);
+            assert_eq!(rx.receive(p[2].0, &p[2].1).len(), 0, "should wait for the missing packet");
+            assert_eq!(rx.receive(p[1].0, &p[1].1).len(), 2);
+            assert_eq!(rx.next_seq, Some(3));
+        }
+
+        #[test]
+        fn lost_packet_is_filled_after_reorder_window() {
+            let p = packets(4);
+            let mut rx = receiver();
+            rx.receive(p[0].0, &p[0].1);
+            // packet 1 never arrives
+            assert_eq!(rx.receive(p[2].0, &p[2].1).len(), 0);
+            let frames = rx.receive(p[3].0, &p[3].1);
+            // FEC/concealed frame for 1, then 2 and 3
+            assert_eq!(frames.len(), 3);
+            assert!(frames.iter().all(|f| f.len() == FRAME_SAMPLES));
+        }
+
+        #[test]
+        fn late_packet_is_dropped() {
+            let p = packets(4);
+            let mut rx = receiver();
+            rx.receive(p[0].0, &p[0].1);
+            rx.receive(p[2].0, &p[2].1);
+            rx.receive(p[3].0, &p[3].1);
+            assert_eq!(rx.receive(p[1].0, &p[1].1).len(), 0);
+        }
+
+        #[test]
+        fn long_gap_is_skipped_not_concealed() {
+            let p = packets(20);
+            let mut rx = receiver();
+            rx.receive(p[0].0, &p[0].1);
+            let mut produced = 0;
+            for (seq, payload) in &p[15..] {
+                produced += rx.receive(*seq, payload).len();
+            }
+            // 5 concealed frames for the gap, then 15..20 decoded
+            assert_eq!(produced, MAX_CONCEALED_FRAMES as usize + 5);
+            assert_eq!(rx.next_seq, Some(20));
+        }
+
+        #[test]
+        fn sender_restart_resyncs() {
+            let mut rx = receiver();
+            let p = packets(2);
+            rx.receive(p[0].0, &p[0].1);
+            let far = 1_000_000;
+            assert_eq!(rx.receive(far, &p[1].1).len(), 1);
+            assert_eq!(rx.next_seq, Some(far + 1));
+        }
+
+        #[test]
+        fn encoder_buffers_partial_frames() {
+            let mut encoder = VoiceEncoder::new().unwrap();
+            assert!(encoder.push(&[0.0; FRAME_SAMPLES - 1]).is_empty());
+            let packets = encoder.push(&[0.0; FRAME_SAMPLES + 1]);
+            assert_eq!(packets.len(), 2);
+            assert_eq!(parse_packet(&packets[0]).unwrap().0, 0);
+            assert_eq!(parse_packet(&packets[1]).unwrap().0, 1);
+            assert!(packets.iter().all(|p| p.len() < 400), "voice packets should be small");
+        }
     }
 }

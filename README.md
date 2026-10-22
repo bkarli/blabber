@@ -64,7 +64,7 @@ nvm use 22
 
 ### 3. Native/system dependencies (Tauri + audio)
 
-Since Blabber uses Tauri and voice communication through `cpal`, a few platform-specific libraries are required.
+Since Blabber uses Tauri and voice communication through `cpal`, a few platform-specific libraries are required. Calls use the Opus codec; libopus is compiled from source during the build, which needs `cmake` and a C compiler on every platform.
 
 **Linux (Debian/Ubuntu):**
 
@@ -80,18 +80,19 @@ sudo apt install -y \
   curl wget file \
   libssl-dev \
   libasound2-dev \
-  pkg-config
+  pkg-config \
+  cmake
 ```
 
 **macOS:**
-MacOS should work out of the box
+Install `cmake` (e.g. `brew install cmake`); everything else works out of the box.
 
 **Windows:**
 We haven't tested windows
 
 ### Optional: Nix flake
 
-`flake.nix` provides a development shell containing the Rust toolchain together with `pkg-config`, `openssl`, and `alsa-lib`.
+`flake.nix` provides a development shell containing the Rust toolchain together with `pkg-config`, `cmake`, `openssl`, and `alsa-lib`.
 
 ```bash
 nix develop

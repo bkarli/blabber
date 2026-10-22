@@ -14,10 +14,19 @@ const MIX_CHUNK_MS: u64 = 10;
 /// Lower bound for how much mixed audio waits between mixer and sound card.
 const OUTPUT_QUEUE_MIN_TARGET: usize = WIRE_SAMPLE_RATE as usize * 30 / 1000;
 const LEVELER_TARGET_RMS: f32 = 0.15;
+/// Block RMS above which the mic counts as speaking.
 const LEVELER_NOISE_GATE_RMS: f32 = 0.004;
 const LEVELER_MAX_GAIN: f32 = 8.0;
+/// AGC smoothing: gain comes down fast on loud input, rises slowly.
 const LEVELER_ATTACK_MS: f32 = 15.0;
 const LEVELER_RELEASE_MS: f32 = 300.0;
+/// Gate envelope: opens fast so word onsets aren't cut, stays open through
+/// short pauses
+const GATE_OPEN_MS: f32 = 5.0;
+const GATE_HOLD_MS: f32 = 200.0;
+const GATE_CLOSE_MS: f32 = 50.0;
+/// Output level up to which the limiter is fully linear.
+const LIMITER_KNEE: f32 = 0.8;
 
 fn downmix_to_mono(data: &[f32], channels: u16) -> Vec<f32> {
     if channels <= 1 {
@@ -43,14 +52,36 @@ fn upmix_from_mono(data: &[f32], channels: u16) -> Vec<f32> {
     out
 }
 
-/// RMS-based level control with a noise gate.
+/// Per-sample smoothing coefficient for a one-pole filter with time constant `ms`.
+fn one_pole_coeff(ms: f32, sample_rate: u32) -> f32 {
+    1.0 - (-1.0 / (ms / 1000.0 * sample_rate as f32)).exp()
+}
+
+/// Linear below LIMITER_KNEE, then rounds off towards 1.0.
+fn soft_limit(x: f32) -> f32 {
+    let magnitude = x.abs();
+    if magnitude <= LIMITER_KNEE {
+        return x;
+    }
+    let headroom = 1.0 - LIMITER_KNEE;
+    let limited = LIMITER_KNEE + headroom * ((magnitude - LIMITER_KNEE) / headroom).tanh();
+    limited.copysign(x)
+}
+
+/// Mic level control: an automatic gain towards LEVELER_TARGET_RMS plus a
+/// noise gate. Both are separate envelopes: the gate decides whether the mic
+/// is heard, the AGC decides*how loud and
+/// only adapts while someone is speaking, so it never pumps up background
+/// noise during pauses. Gains are interpolated per sample to avoid zipper noise.
 struct RmsLeveler {
-    gain: f32,
+    agc_gain: f32,
+    gate: f32,
+    hold_left: usize,
 }
 
 impl RmsLeveler {
     fn new() -> Self {
-        Self { gain: 0.0 }
+        Self { agc_gain: 1.0, gate: 0.0, hold_left: 0 }
     }
 
     fn process(&mut self, input: &[f32], sample_rate: u32) -> Vec<f32> {
@@ -60,48 +91,79 @@ impl RmsLeveler {
 
         let sum_sq: f32 = input.iter().map(|&s| s * s).sum();
         let rms = (sum_sq / input.len() as f32).sqrt();
+        let speaking = rms >= LEVELER_NOISE_GATE_RMS;
 
-        let desired_gain = if rms < LEVELER_NOISE_GATE_RMS {
-            0.0
+        let start_gain = self.agc_gain;
+        if speaking {
+            self.hold_left = (GATE_HOLD_MS / 1000.0 * sample_rate as f32) as usize;
+            let desired = (LEVELER_TARGET_RMS / rms).min(LEVELER_MAX_GAIN);
+            let time_constant_ms = if desired < self.agc_gain { LEVELER_ATTACK_MS } else { LEVELER_RELEASE_MS };
+            let block_s = input.len() as f32 / sample_rate as f32;
+            let coeff = 1.0 - (-block_s / (time_constant_ms / 1000.0)).exp();
+            self.agc_gain += (desired - self.agc_gain) * coeff;
         } else {
-            (LEVELER_TARGET_RMS / rms).min(LEVELER_MAX_GAIN)
+            self.hold_left = self.hold_left.saturating_sub(input.len());
+        }
+        let gate_target = if speaking || self.hold_left > 0 { 1.0 } else { 0.0 };
+        let gate_coeff = if gate_target > self.gate {
+            one_pole_coeff(GATE_OPEN_MS, sample_rate)
+        } else {
+            one_pole_coeff(GATE_CLOSE_MS, sample_rate)
         };
 
-        let time_constant_ms = if desired_gain < self.gain {
-            LEVELER_ATTACK_MS
-        } else {
-            LEVELER_RELEASE_MS
-        };
-        let block_duration_s = input.len() as f32 / sample_rate as f32;
-        let coeff = 1.0 - (-block_duration_s / (time_constant_ms / 1000.0)).exp();
-        self.gain += (desired_gain - self.gain) * coeff;
-
+        let len = input.len() as f32;
         input.iter()
-            .map(|&sample| (sample * self.gain).clamp(-1.0, 1.0))
+            .enumerate()
+            .map(|(i, &sample)| {
+                let gain = start_gain + (self.agc_gain - start_gain) * (i + 1) as f32 / len;
+                self.gate += (gate_target - self.gate) * gate_coeff;
+                soft_limit(sample * gain * self.gate)
+            })
             .collect()
     }
 }
 
-fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || input.is_empty() {
-        return input.to_vec();
+/// Linear-interpolating resampler for a continuous stream fed in chunks.
+struct LinearResampler {
+    step: f64,
+    passthrough: bool,
+    /// read position of the next output, where 0 is `prev` and 1 is the
+    /// current chunk's first sample
+    pos: f64,
+    prev: Option<f32>,
+}
+
+impl LinearResampler {
+    fn new(from_rate: u32, to_rate: u32) -> Self {
+        Self {
+            step: from_rate as f64 / to_rate.max(1) as f64,
+            passthrough: from_rate == to_rate,
+            // start on the first real sample, `prev` is only a placeholder then
+            pos: 1.0,
+            prev: None,
+        }
     }
 
-    let ratio = to_rate as f64 / from_rate as f64;
-    let out_len = ((input.len() as f64) * ratio).round() as usize;
-    let mut output = Vec::with_capacity(out_len);
+    fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        if self.passthrough || input.is_empty() {
+            return input.to_vec();
+        }
+        let prev = *self.prev.get_or_insert(input[0]);
+        let at = |i: usize| if i == 0 { prev } else { input[i - 1] };
 
-    for i in 0..out_len {
-        let src_pos = i as f64 / ratio;
-        let idx = src_pos.floor() as usize;
-        let frac = (src_pos - idx as f64) as f32;
-
-        let s0 = input[idx.min(input.len() - 1)];
-        let s1 = input[(idx + 1).min(input.len() - 1)];
-        output.push(s0 + (s1 - s0) * frac);
+        let len = input.len();
+        let mut output = Vec::with_capacity((len as f64 / self.step) as usize + 1);
+        while self.pos < len as f64 {
+            let idx = self.pos.floor() as usize;
+            let frac = (self.pos - idx as f64) as f32;
+            let s0 = at(idx);
+            output.push(s0 + (at(idx + 1) - s0) * frac);
+            self.pos += self.step;
+        }
+        self.pos -= len as f64;
+        self.prev = Some(input[len - 1]);
+        output
     }
-
-    output
 }
 
 /// Opens input stream regardless of the device native sample format.
@@ -326,7 +388,7 @@ pub fn decode_mp3_to_wire_rate(bytes: &[u8]) -> Result<DecodedSound> {
     }
 
     let mono = downmix_to_mono(&interleaved, source_channels);
-    let resampled = resample_linear(&mono, source_rate, WIRE_SAMPLE_RATE);
+    let resampled = LinearResampler::new(source_rate, WIRE_SAMPLE_RATE).process(&mono);
     Ok(DecodedSound { samples: Arc::new(resampled) })
 }
 
@@ -406,6 +468,7 @@ fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamS
 
     let (mixed_tx, mixed_rx) = std::sync::mpsc::channel::<Vec<f32>>();
     let mut pending: Vec<f32> = Vec::new();
+    let mut resampler = LinearResampler::new(WIRE_SAMPLE_RATE, native_rate);
     let queued = Arc::new(AtomicUsize::new(0));
     let max_request = Arc::new(AtomicUsize::new(0));
     let callback_queued = queued.clone();
@@ -422,7 +485,7 @@ fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamS
                 match mixed_rx.try_recv() {
                     Ok(mono_chunk) => {
                         callback_queued.fetch_sub(mono_chunk.len(), Ordering::Relaxed);
-                        let resampled = resample_linear(&mono_chunk, WIRE_SAMPLE_RATE, native_rate);
+                        let resampled = resampler.process(&mono_chunk);
                         let upmixed = upmix_from_mono(&resampled, channels);
                         pending.extend(upmixed);
                     }
@@ -496,11 +559,7 @@ fn output_thread_main(
                         });
                     }
                     for sample in acc.iter_mut() {
-                        // soft-clip instead of hard clamping: several loud
-                        // voices summing past unity (or resample overshoot)
-                        // rounds off gently instead of hard-clipping into a
-                        // harsh digital crunch
-                        *sample = sample.tanh();
+                        *sample = soft_limit(*sample);
                     }
                     // counted before sending, so the callback's subtraction doesn't underflow
                     s.queued.fetch_add(acc.len(), Ordering::Relaxed);
@@ -562,6 +621,7 @@ fn build_input_stream_for(
     let channels = supported_config.channels();
 
     let mut leveler = RmsLeveler::new();
+    let mut resampler = LinearResampler::new(native_rate, WIRE_SAMPLE_RATE);
     let stream = open_input_stream(
         &device,
         supported_config,
@@ -571,7 +631,7 @@ fn build_input_stream_for(
             }
             let mono = downmix_to_mono(data, channels);
             let leveled = leveler.process(&mono, native_rate);
-            let resampled = resample_linear(&leveled, native_rate, WIRE_SAMPLE_RATE);
+            let resampled = resampler.process(&leveled);
             if let Some(cb) = listener.lock().unwrap().as_mut() {
                 cb(&resampled);
             }
@@ -832,5 +892,97 @@ mod tests {
     fn samples_to_mix_target_grows_with_large_device_buffers() {
         let large_request = OUTPUT_QUEUE_MIN_TARGET;
         assert_eq!(samples_to_mix(0, large_request), 2 * large_request);
+    }
+
+    const RATE: u32 = 48_000;
+
+    fn sine(amplitude: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|i| amplitude * (i as f32 * 2.0 * std::f32::consts::PI * 440.0 / RATE as f32).sin()).collect()
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    /// Feeds `signal` through the leveler in 10 ms blocks.
+    fn level(leveler: &mut RmsLeveler, signal: &[f32]) -> Vec<f32> {
+        signal.chunks(480).flat_map(|block| leveler.process(block, RATE)).collect()
+    }
+
+    #[test]
+    fn leveler_keeps_background_noise_silent() {
+        let mut leveler = RmsLeveler::new();
+        let out = level(&mut leveler, &sine(0.002, RATE as usize));
+        assert!(out.iter().all(|s| s.abs() < 1e-6));
+    }
+
+    #[test]
+    fn leveler_brings_quiet_speech_towards_target() {
+        let mut leveler = RmsLeveler::new();
+        let out = level(&mut leveler, &sine(0.05, 2 * RATE as usize));
+        let settled = rms(&out[out.len() - 4800..]);
+        assert!((settled - LEVELER_TARGET_RMS).abs() < 0.02, "settled at {settled}");
+    }
+
+    #[test]
+    fn leveler_gate_holds_through_short_pause() {
+        let mut leveler = RmsLeveler::new();
+        level(&mut leveler, &sine(0.1, RATE as usize));
+        // a 100 ms dip below the gate threshold, e.g. between two words
+        let pause = level(&mut leveler, &sine(0.003, 4800));
+        assert!(rms(&pause[pause.len() - 480..]) > 0.002, "gate closed inside the hold time");
+        // long after the hold ran out the gate has faded closed
+        let later = level(&mut leveler, &sine(0.003, RATE as usize / 2));
+        assert!(rms(&later[later.len() - 480..]) < 1e-4);
+    }
+
+    #[test]
+    fn leveler_gain_does_not_grow_during_silence() {
+        let mut leveler = RmsLeveler::new();
+        level(&mut leveler, &sine(0.15, RATE as usize));
+        let gain_while_speaking = leveler.agc_gain;
+        level(&mut leveler, &vec![0.0; 2 * RATE as usize]);
+        assert_eq!(leveler.agc_gain, gain_while_speaking);
+    }
+
+    #[test]
+    fn leveler_never_exceeds_full_scale() {
+        let mut leveler = RmsLeveler::new();
+        level(&mut leveler, &sine(0.01, RATE as usize));
+        // sudden shout after the AGC turned the gain up
+        let out = level(&mut leveler, &sine(1.0, 4800));
+        assert!(out.iter().all(|s| s.abs() <= 1.0));
+    }
+
+    #[test]
+    fn soft_limit_is_linear_below_knee_and_bounded_above() {
+        assert_eq!(soft_limit(0.5), 0.5);
+        assert_eq!(soft_limit(-LIMITER_KNEE), -LIMITER_KNEE);
+        assert!(soft_limit(5.0) <= 1.0 && soft_limit(5.0) > 0.99);
+        assert!(soft_limit(-5.0) >= -1.0);
+        assert!(soft_limit(0.9) > soft_limit(0.85));
+    }
+
+    #[test]
+    fn resampler_is_continuous_across_chunk_boundaries() {
+        // a ramp resampled 3 -> 2 must stay exactly a ramp with step 1.5,
+        // whatever chunk sizes it arrives in
+        let ramp: Vec<f32> = (0..300).map(|i| i as f32).collect();
+        let mut resampler = LinearResampler::new(3, 2);
+        let mut out = Vec::new();
+        for chunk in ramp.chunks(7) {
+            out.extend(resampler.process(chunk));
+        }
+        for (i, &sample) in out.iter().enumerate() {
+            assert!((sample - i as f32 * 1.5).abs() < 1e-3, "sample {i} = {sample}");
+        }
+        assert_eq!(out.len(), 200);
+    }
+
+    #[test]
+    fn resampler_keeps_the_rate_over_many_small_chunks() {
+        let mut resampler = LinearResampler::new(44_100, 48_000);
+        let total: usize = (0..100).map(|_| resampler.process(&[0.0; 441]).len()).sum();
+        assert!(total.abs_diff(48_000) <= 1, "produced {total}");
     }
 }
