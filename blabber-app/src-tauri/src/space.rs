@@ -164,6 +164,11 @@ pub async fn leave_space(
     let node_guard = state.node.lock().await;
     let node = node_guard.as_ref().ok_or("Node not started yet... please log in first")?;
 
+    // end a call in this space while the space still exists to publish the departure
+    if crate::call_room::active_call_in_space(&state, node, space_uuid) {
+        crate::call_room::hang_up_active_call(&state, node).await;
+    }
+
     let root = spaces_dir(&app)?;
     node.leave_space(space_uuid, root).await.stringify_err()?;
 

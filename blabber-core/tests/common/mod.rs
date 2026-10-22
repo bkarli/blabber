@@ -6,12 +6,9 @@
 #![allow(dead_code)] // not every test file uses every helper
 
 use anyhow::Result;
-use blabber_core::call_rooms::CallRoom;
-use blabber_core::channel::MeshActiveCall;
 use blabber_core::room::{Message, MessageContent};
 use blabber_core::space::Space;
 use blabber_core::{Identity, Node};
-use iroh_docs::AuthorId;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -107,24 +104,4 @@ pub async fn share_call_space(nodes: &[&Node], room_id: Uuid) -> Result<Vec<Spac
         node.room_spaces.lock().unwrap().insert(room_id, space.id());
     }
     Ok(spaces)
-}
-
-/// Mirrors blabber-app/src-tauri/src/call_room.rs's `leave_call_room` Tauri
-/// command exactly: hang up the mesh call, forget the room's mesh-routing
-/// state, and publish the departure so other members' rosters update.
-/// blabber-core has no single method for this - it's Tauri-layer glue over
-/// public Node/CallRoom pieces - so tests replicate it here.
-pub async fn leave_call_room(
-    node: &Node,
-    room_id: Uuid,
-    call: MeshActiveCall,
-    room: &CallRoom,
-    author: AuthorId,
-    my_id: String,
-) -> Result<()> {
-    call.hang_up();
-    node.active_call_rooms.lock().unwrap().remove(&room_id);
-    node.room_spaces.lock().unwrap().remove(&room_id);
-    room.set_membership(author, my_id, false).await?;
-    Ok(())
 }

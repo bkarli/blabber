@@ -498,6 +498,41 @@ impl Node {
 
         Ok(result)
     }
+
+    /// Leave a call room: stop accepting mesh dials for it, hang up the local
+    /// call, and publish our departure so other members' rosters update.
+    pub async fn leave_call_room(&self, room_id: Uuid, call: crate::channel::MeshActiveCall) -> Result<()> {
+        self.active_call_rooms.lock().unwrap().remove(&room_id);
+        let space_id = self.room_spaces.lock().unwrap().remove(&room_id);
+        call.hang_up();
+        self.sound.set_muted(false);
+
+        let Some(space_id) = space_id else {
+            return Ok(());
+        };
+        let my_id = self.require_endpoint()?.id().to_string();
+        let _ = self.events.send(crate::events::AppEvent::CallParticipantLeft {
+            space_id,
+            room_id,
+            endpoint_id: my_id.clone(),
+        });
+
+        // the space may already be gone (left meanwhile)
+        let found = {
+            let spaces = self.spaces.lock().await;
+            match spaces.iter().find(|space| space.id() == space_id) {
+                Some(space) => {
+                    let room = space.call_rooms.lock().await.iter().find(|r| r.id == room_id).cloned();
+                    room.zip(space.author())
+                }
+                None => None,
+            }
+        };
+        if let Some((room, author)) = found {
+            room.set_membership(author, my_id, false).await?;
+        }
+        Ok(())
+    }
 }
 
 pub async fn watch_doc<F, Fut>(doc: Doc, label: impl Into<String>, on_event: F) -> Result<JoinHandle<()>>

@@ -653,6 +653,8 @@ pub struct SoundHandler {
     next_voice_id: AtomicU64,
     output_engine: StdMutex<Option<OutputEngine>>,
     input_engine: StdMutex<Option<InputEngine>>,
+    /// id of the capture currently owning the mic, see `start_capture`
+    capture_owner: StdMutex<Option<u64>>,
     sound_cache: StdMutex<HashMap<String, Arc<DecodedSound>>>,
 }
 
@@ -666,6 +668,7 @@ impl SoundHandler {
             next_voice_id: AtomicU64::new(0),
             output_engine: StdMutex::new(None),
             input_engine: StdMutex::new(None),
+            capture_owner: StdMutex::new(None),
             sound_cache: StdMutex::new(HashMap::new()),
         }
     }
@@ -720,23 +723,29 @@ impl SoundHandler {
         Ok(())
     }
 
-    /// Registers or clears the single active mic listener. Starts the
-    /// input stream lazily on the first listener and tears it entirely
-    /// when cleared, so mic is never open outside of active calls.
-    pub(crate) fn set_capture_listener(&self, listener: Option<CaptureListener>) -> Result<()> {
-        match listener {
-            Some(l) => {
-                let mut guard = self.input_engine.lock().unwrap();
-                if guard.is_none() {
-                    let device = self.input_device.lock().unwrap().clone();
-                    *guard = Some(InputEngine::start(self.muted.clone(), device)?);
-                }
-                guard.as_ref().unwrap().set_listener(Some(l))
-            }
-            None => {
-                *self.input_engine.lock().unwrap() = None;
-                Ok(())
-            }
+    /// Makes listener the single active mic listener, replacing any previous
+    /// one, and returns an id identifying this capture. Starts the input stream
+    /// lazily, so the mic is never open outside of active calls.
+    pub(crate) fn start_capture(&self, listener: CaptureListener) -> Result<u64> {
+        let mut guard = self.input_engine.lock().unwrap();
+        if guard.is_none() {
+            let device = self.input_device.lock().unwrap().clone();
+            *guard = Some(InputEngine::start(self.muted.clone(), device)?);
+        }
+        guard.as_ref().unwrap().set_listener(Some(listener))?;
+        let id = self.next_voice_id.fetch_add(1, Ordering::Relaxed);
+        *self.capture_owner.lock().unwrap() = Some(id);
+        Ok(id)
+    }
+
+    /// Closes the mic, but only if capture `id` still owns it. A stale call
+    /// being dropped after a newer one started capturing must not cut the
+    /// newer call's mic, same idea as `VoiceHandle` for the output mix.
+    pub(crate) fn stop_capture(&self, id: u64) {
+        let mut owner = self.capture_owner.lock().unwrap();
+        if *owner == Some(id) {
+            *owner = None;
+            *self.input_engine.lock().unwrap() = None;
         }
     }
 

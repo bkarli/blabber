@@ -76,7 +76,7 @@ export const useAppStore = defineStore('app', {
     channelsFor: (state) => (spaceId: string) => state.channelsBySpace[spaceId] ?? [],
     membersFor: (state) => (spaceId: string) => state.membersBySpace[spaceId] ?? [],
     messagesFor: (state) => (roomId: string) => state.messagesByRoom[roomId] ?? [],
-    isRoomUnread: (state) => (roomId: string) => !!state.unreadRoomIds[roomId],
+    isRoomUnread: (state) => (roomId: string) => state.unreadRoomIds[roomId],
     participantsFor: (state) => (roomId: string) => state.participantsByRoom[roomId] ?? [],
     isOnline: (state) => (spaceId: string, endpointId: string) =>
       (state.onlineEndpointsBySpace[spaceId] ?? []).includes(endpointId),
@@ -259,6 +259,10 @@ export const useAppStore = defineStore('app', {
 
     async leaveSpace(spaceId: string) {
       await invoke<void>('leave_space', { spaceId });
+      // the backend hangs up a call in this space before leaving it
+      if (this.activeCallSpaceId === spaceId) {
+        this.resetCallState();
+      }
       this.spaces = this.spaces.filter((s) => s.id !== spaceId);
       delete this.roomsBySpace[spaceId];
       delete this.channelsBySpace[spaceId];
@@ -373,12 +377,26 @@ export const useAppStore = defineStore('app', {
     },
 
     async joinCallRoom(spaceId: string, roomId: string) {
-      await invoke<void>('join_call_room', { roomId });
+      // already in this call, bring it back up
+      if (roomId === this.activeCallRoomId) {
+        this.expandCall();
+        return;
+      }
+      // the backend leaves the current call (if any) before joining, so a
+      // failed switch leaves us in no call at all
+      const switching = this.activeCallRoomId !== null;
+      try {
+        await invoke<void>('join_call_room', { roomId });
+      } catch (e) {
+        if (switching) this.resetCallState();
+        throw e;
+      }
       // reset first (clears any stale participants from a previous room),
       // then set activeCallRoomId so NewCallParticipant events for this
       // room start accumulating into a clean array before the fetch below
-      // resolves.
+      // resolves. Mute is reset by the backend on leave, so mirror that.
       this.callParticipants = [];
+      this.isMuted = false;
       this.activeCallRoomId = roomId;
       this.activeCallSpaceId = spaceId;
       this.callViewMode = 'fullscreen';
@@ -394,12 +412,17 @@ export const useAppStore = defineStore('app', {
 
     async leaveCallRoom() {
       await invoke<void>('leave_call_room');
+      this.resetCallState();
+      useSoundEffectsStore().play('call-leave');
+    },
+
+    /** Clears local call UI state after the backend has ended the call (leave, leaving its space, logout). */
+    resetCallState() {
       this.activeCallRoomId = null;
       this.activeCallSpaceId = null;
       this.callViewMode = 'fullscreen';
       this.callParticipants = [];
       this.isMuted = false;
-      useSoundEffectsStore().play('call-leave');
     },
 
     minimizeCall() {

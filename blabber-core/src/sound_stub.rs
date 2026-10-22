@@ -55,9 +55,11 @@ impl SoundHandler {
 
     pub fn set_muted(&self, _muted: bool) {}
 
-    pub(crate) fn set_capture_listener(&self, _listener: Option<CaptureListener>) -> Result<()> {
-        Ok(())
+    pub(crate) fn start_capture(&self, _listener: CaptureListener) -> Result<u64> {
+        Ok(0)
     }
+
+    pub(crate) fn stop_capture(&self, _id: u64) {}
 
     pub fn register_call_voice(&self, _source: impl MixSource + 'static) -> Result<VoiceHandle> {
         Ok(VoiceHandle)

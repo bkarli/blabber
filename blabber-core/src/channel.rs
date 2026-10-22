@@ -247,6 +247,8 @@ impl MixSource for CallVoiceSource {
 /// peer audio with the shared `SoundHandler`, and unregisters both on drop.
 pub struct MeshActiveCall {
     sound: Arc<SoundHandler>,
+    /// `None` if the mic couldn't be opened
+    capture_id: Option<u64>,
     voice_handle: Option<VoiceHandle>,
     channel: MeshVoiceChannel,
 }
@@ -257,11 +259,15 @@ impl MeshActiveCall {
     pub fn start(channel: MeshVoiceChannel, sound: Arc<SoundHandler>) -> Self {
         // Outgoing half of the wiring to the sound engine.
         let capture_channel = channel.clone();
-        if let Err(e) = sound.set_capture_listener(Some(Box::new(move |samples: &[f32]| {
+        let capture_id = match sound.start_capture(Box::new(move |samples: &[f32]| {
             capture_channel.broadcast_samples(samples);
-        }))) {
-            eprintln!("[mesh voice] failed to start capture: {e:#}");
-        }
+        })) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                eprintln!("[mesh voice] failed to start capture: {e:#}");
+                None
+            }
+        };
         // incoming half of the current active call.
         let voice_handle = match sound.register_call_voice(CallVoiceSource(channel.clone())) {
             Ok(handle) => Some(handle),
@@ -271,7 +277,7 @@ impl MeshActiveCall {
             }
         };
 
-        Self { sound, voice_handle, channel }
+        Self { sound, capture_id, voice_handle, channel }
     }
 
     pub fn hang_up(self) {}
@@ -280,7 +286,10 @@ impl MeshActiveCall {
 impl Drop for MeshActiveCall {
     // self is out of scope after this call
     fn drop(&mut self) {
-        let _ = self.sound.set_capture_listener(None);
+        // no-op if a newer call has taken over the mic since
+        if let Some(id) = self.capture_id {
+            self.sound.stop_capture(id);
+        }
         self.voice_handle = None;
         // close every peer connection
         self.channel.close_all();

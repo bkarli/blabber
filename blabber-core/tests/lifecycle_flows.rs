@@ -10,7 +10,7 @@
 use anyhow::Result;
 
 mod common;
-use common::{leave_call_room, make_node, message_text, wait_until, wait_until_async};
+use common::{make_node, message_text, wait_until, wait_until_async};
 
 /// The full narrative in one continuous session: join, chat, start and join
 /// a call, leave the call, leave the space entirely, rejoin the space, prove
@@ -110,7 +110,7 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
     );
 
     // --- leave (the call, not the space) ---
-    leave_call_room(&node_b, call_room_b.id, call_b, &call_room_b, author_b, id_b.clone()).await?;
+    node_b.leave_call_room(call_room_b.id, call_b).await?;
     assert!(
         wait_until(3000, 100, || mesh_a.connection_count() == 0).await,
         "A should observe B leaving the call"
@@ -483,7 +483,6 @@ async fn call_room_reconnects_after_leaving_and_rejoining_same_call() -> Result<
     let call_room_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
 
     let space_b = node_b.join_space(space_a.create_invite().await?).await?;
-    let author_b = space_b.author().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
     let mut call_room_b = None;
     for _ in 0..50 {
@@ -531,7 +530,7 @@ async fn call_room_reconnects_after_leaving_and_rejoining_same_call() -> Result<
         .unwrap_or(false);
         assert!(saw_join, "cycle {cycle}: A should see a NewCallParticipant event for B joining");
 
-        leave_call_room(&node_b, call_room_b.id, call_b, &call_room_b, author_b, id_b.clone()).await?;
+        node_b.leave_call_room(call_room_b.id, call_b).await?;
 
         assert!(
             wait_until(3000, 100, || mesh_a.connection_count() == 0).await,

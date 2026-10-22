@@ -1,6 +1,6 @@
-import { defineStore } from 'pinia';
-import { api } from '@/lib/tauri';
-import { useAppStore } from './app';
+import {defineStore} from 'pinia';
+import {api} from '@/lib/tauri';
+import {useAppStore} from './app';
 import router from '@/router';
 
 export const useAuthStore = defineStore('auth', {
@@ -12,19 +12,19 @@ export const useAuthStore = defineStore('auth', {
   },
   actions: {
     async createIdentity(displayName: string, password: string) {
-      const name = await api.createIdentity(displayName, password);
-      this.displayName = name;
+      this.displayName = await api.createIdentity(displayName, password);
       await useAppStore().init();
       router.push({ name: 'spaces' });
     },
     async login(displayName: string, password: string) {
-      const name = await api.login(displayName, password);
-      this.displayName = name;
+      this.displayName = await api.login(displayName, password);
       await useAppStore().init();
       router.push({ name: 'spaces' });
     },
     async logout() {
       await api.logout();
+      // the backend hung up any active call; the call overlay lives outside the router
+      useAppStore().resetCallState();
       this.displayName = null;
       router.push({ name: 'login' });
     },

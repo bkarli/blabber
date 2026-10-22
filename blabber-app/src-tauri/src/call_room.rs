@@ -1,6 +1,7 @@
 use tauri::State;
 use serde::Serialize;
 use blabber_core::call_rooms::CallRoom;
+use blabber_core::node::Node;
 use blabber_core::space::Space;
 use uuid::Uuid;
 use crate::AppState;
@@ -106,6 +107,10 @@ pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Resu
         find_call_room(&spaces, room_uuid).await.ok_or("call room not found")?
     };
 
+    // one call per client: properly leave the current one first. If the join
+    // below fails, the client ends up in no call at all.
+    hang_up_active_call(&state, node).await;
+
     let (call, _channel) = node.join_call_room(space_id, &room).await.stringify_err()?;
     *state.active_call_room.lock().unwrap() = Some((room_uuid, call));
     Ok(())
@@ -114,38 +119,33 @@ pub async fn join_call_room(state: State<'_, AppState>, room_id: String) -> Resu
 /// Leaves the client's currently active call room, if any, and tears down its mesh call.
 #[tauri::command]
 pub async fn leave_call_room(state: State<'_, AppState>) -> Result<(), String> {
-    // stop our local audio pipeline and drop the mesh connections for this room
-    let Some((room_uuid, call)) = state.active_call_room.lock().unwrap().take() else {
-        return Ok(());
-    };
-    call.hang_up();
-
     let node_guard = state.node.lock().await;
-    let Some(node) = node_guard.as_ref() else {
-        return Ok(());
-    };
-    node.active_call_rooms.lock().unwrap().remove(&room_uuid);
-    node.room_spaces.lock().unwrap().remove(&room_uuid);
-
-    // publish our departure so other members' rosters update
-    let Some(endpoint) = node.endpoint.as_ref() else {
-        return Ok(());
-    };
-    let my_id = endpoint.id().to_string();
-    let spaces = state.spaces.lock().await;
-    let Some((space_id, room)) = find_call_room(&spaces, room_uuid).await else {
-        return Ok(());
-    };
-    let author = spaces.iter().find(|s| s.id() == space_id).and_then(|s| s.author());
-    if let Some(author) = author {
-        let _ = room.set_membership(author, my_id.clone(), false).await;
+    match node_guard.as_ref() {
+        Some(node) => hang_up_active_call(&state, node).await,
+        // no node to publish through: just stop the local audio pipeline
+        None => drop(state.active_call_room.lock().unwrap().take()),
     }
-    let _ = node.events.send(blabber_core::events::AppEvent::CallParticipantLeft {
-        space_id,
-        room_id: room_uuid,
-        endpoint_id: my_id,
-    });
     Ok(())
+}
+
+/// Ends this client's active call, if any. Every path that ends a call goes
+/// through here (leaving, switching rooms, leaving the space, logout), so a
+/// call never outlives its room, space or node.
+pub(crate) async fn hang_up_active_call(state: &AppState, node: &Node) {
+    let Some((room_uuid, call)) = state.active_call_room.lock().unwrap().take() else {
+        return;
+    };
+    if let Err(e) = node.leave_call_room(room_uuid, call).await {
+        eprintln!("failed to publish call departure for room {room_uuid}: {e:#}");
+    }
+}
+
+/// Whether this client's active call is in a room of `space_id`.
+pub(crate) fn active_call_in_space(state: &AppState, node: &Node, space_id: Uuid) -> bool {
+    let Some(room_uuid) = state.active_call_room.lock().unwrap().as_ref().map(|(id, _)| *id) else {
+        return false;
+    };
+    node.room_spaces.lock().unwrap().get(&room_uuid) == Some(&space_id)
 }
 
 /// Mutes or unmutes this client's mic. an engine wide setting, since only

@@ -591,3 +591,42 @@ async fn blind_relay_cannot_dial_into_call() -> Result<()> {
     assert_eq!(mesh_relay.connection_count(), 0, "relay registered a connection to A");
     Ok(())
 }
+
+#[tokio::test]
+async fn leave_call_room_unregisters_room_and_publishes_departure() -> Result<()> {
+    let (node_a, _dir_a) = make_node("LeaveAlice").await?;
+    let (node_b, _dir_b) = make_node("LeaveBob").await?;
+    let blobs_a = node_a.blobs.clone().unwrap();
+
+    let space_a = node_a.create_space("Leave Space").await?;
+    node_b.join_space(space_a.create_invite().await?).await?;
+    let author_a = space_a.author().unwrap();
+    let room_a = space_a.create_call_room(&node_a, author_a, "voice").await?;
+    let id_a = node_a.endpoint.as_ref().unwrap().id();
+    let addr_a = node_a.endpoint.as_ref().unwrap().addr();
+    let id_b = node_b.endpoint.as_ref().unwrap().id();
+
+    let (call_a, _mesh_a) = node_a.join_call_room(space_a.id(), &room_a).await?;
+    let mut events_a = node_a.subscribe_events();
+    node_a.leave_call_room(room_a.id, call_a).await?;
+
+    assert!(!node_a.active_call_rooms.lock().unwrap().contains_key(&room_a.id));
+    assert!(!node_a.room_spaces.lock().unwrap().contains_key(&room_a.id));
+    assert!(
+        !room_a.list_active_members(blobs_a).await?.contains(&id_a.to_string()),
+        "A's departure was not published to the call log"
+    );
+    let saw_own_leave = matches!(
+        events_a.try_recv(),
+        Ok(blabber_core::AppEvent::CallParticipantLeft { endpoint_id, .. }) if endpoint_id == id_a.to_string()
+    );
+    assert!(saw_own_leave, "no CallParticipantLeft event for A's own leave");
+
+    // A has left, so even a real member dialing the old room must be refused
+    node_b.room_spaces.lock().unwrap().insert(room_a.id, space_a.id());
+    let (_call_b, mesh_b) = node_b
+        .join_mesh(room_a.id, id_b.to_string(), vec![(id_a.to_string(), addr_a)])
+        .await?;
+    assert_eq!(mesh_b.connection_count(), 0, "A still accepted dials for a room it left");
+    Ok(())
+}

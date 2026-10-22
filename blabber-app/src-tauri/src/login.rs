@@ -38,6 +38,7 @@ pub async fn delete_identity(
     let node = state.node.lock().await.take();
     state.spaces.lock().await.clear();
     if let Some(node) = node {
+        crate::call_room::hang_up_active_call(&state, &node).await;
         node.shutdown().await.stringify_err()?;
     }
 
@@ -148,6 +149,7 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     state.spaces.lock().await.clear();
 
     if let Some(node) = node {
+        crate::call_room::hang_up_active_call(&state, &node).await;
         node.shutdown().await.stringify_err()?;
     }
 
