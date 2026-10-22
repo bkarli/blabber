@@ -498,7 +498,7 @@ impl Node {
     }
 }
 
-pub async fn watch_doc<F, Fut>(doc: Doc, label: impl Into<String>, mut on_event: F) -> Result<JoinHandle<()>>
+pub async fn watch_doc<F, Fut>(doc: Doc, label: impl Into<String>, on_event: F) -> Result<JoinHandle<()>>
 where
     F: Fn(LiveEvent) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
