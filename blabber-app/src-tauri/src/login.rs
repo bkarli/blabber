@@ -1,5 +1,6 @@
 use blabber_core::identity::Identity;
 use blabber_core::node::Node;
+use blabber_core::space::Space;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
@@ -34,13 +35,9 @@ pub async fn delete_identity(
     state: State<'_, AppState>,
     display_name: String,
 ) -> Result<(), String> {
-    // shut down the running node first, if any
+    // shut down the running session first, if any
     let node = state.node.lock().await.take();
-    state.spaces.lock().await.clear();
-    if let Some(node) = node {
-        crate::call_room::hang_up_active_call(&state, &node).await;
-        node.shutdown().await.stringify_err()?;
-    }
+    end_session(&state, node).await?;
 
     let path = identity_path(&app, display_name.trim())?;
     if path.exists() {
@@ -50,11 +47,37 @@ pub async fn delete_identity(
     Ok(())
 }
 
+/// Tears down a session: hangs up the active call, stops the event bridge so
+/// nothing from this identity reaches the webview anymore, forgets its spaces
+/// and shuts the node down. Every path that ends or replaces a session goes
+/// through here (logout, identity deletion, logging in again).
+async fn end_session(state: &AppState, node: Option<Node>) -> Result<(), String> {
+    if let Some(node) = &node {
+        crate::call_room::hang_up_active_call(state, node).await;
+    }
+    if let Some(bridge) = state.event_bridge.lock().unwrap().take() {
+        bridge.abort();
+    }
+    state.spaces.lock().await.clear();
+    if let Some(node) = node {
+        node.shutdown().await.stringify_err()?;
+    }
+    Ok(())
+}
+
 async fn start_node_for_identity(
     app: &AppHandle,
     state: &State<'_, AppState>,
     identity: Identity,
 ) -> Result<(), String> {
+    // held for the whole startup so two logins can't interleave. A session that
+    // is still running (e.g. the webview was reloaded without logging out)
+    // is ended first, so there is never a second node with the same key.
+    let mut node_slot = state.node.lock().await;
+    if let Err(e) = end_session(state, node_slot.take()).await {
+        eprintln!("failed to cleanly end the previous session: {e}");
+    }
+
     let blobs_path = app
         .path()
         .app_data_dir()
@@ -76,17 +99,28 @@ async fn start_node_for_identity(
         }
     }
 
-    crate::event_bridge::spawn_event_bridge(app.clone(), &node);
+    let bridge = crate::event_bridge::spawn_event_bridge(app.clone(), &node);
+    let loaded_spaces = match load_spaces(app, &mut node).await {
+        Ok(spaces) => spaces,
+        Err(e) => {
+            // don't leave a half-started node and its bridge running
+            bridge.abort();
+            if let Err(shutdown_error) = node.shutdown().await {
+                eprintln!("failed to shut down node after failed login: {shutdown_error:#}");
+            }
+            return Err(e);
+        }
+    };
+    *state.spaces.lock().await = loaded_spaces;
+    *state.event_bridge.lock().unwrap() = Some(bridge);
+    *node_slot = Some(node);
+    Ok(())
+}
+
+async fn load_spaces(app: &AppHandle, node: &mut Node) -> Result<Vec<Space>, String> {
     let spaces_root = spaces_dir(app)?;
     fs::create_dir_all(&spaces_root).stringify_err()?;
-
-    let loaded_spaces = node
-        .load_spaces(spaces_root)
-        .await
-        .stringify_err()?;
-    *state.spaces.lock().await = loaded_spaces;
-    *state.node.lock().await = Some(node);
-    Ok(())
+    node.load_spaces(spaces_root).await.stringify_err()
 }
 
 #[tauri::command]
@@ -146,14 +180,7 @@ pub async fn login(
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     let node = state.node.lock().await.take();
-    state.spaces.lock().await.clear();
-
-    if let Some(node) = node {
-        crate::call_room::hang_up_active_call(&state, &node).await;
-        node.shutdown().await.stringify_err()?;
-    }
-
-    Ok(())
+    end_session(&state, node).await
 }
 
 #[tauri::command]

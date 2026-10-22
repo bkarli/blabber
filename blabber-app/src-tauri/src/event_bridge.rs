@@ -1,8 +1,11 @@
+use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast;
 use blabber_core::node::Node;
 
-pub fn spawn_event_bridge(app_handle: AppHandle, node: &Node) {
+/// Forwards the node's AppEvents to the webview as "app-event". The returned
+/// handle must be kept and aborted when the session ends.
+pub fn spawn_event_bridge(app_handle: AppHandle, node: &Node) -> JoinHandle<()> {
     let mut rx = node.subscribe_events();
 
     tauri::async_runtime::spawn(async move {
@@ -20,5 +23,5 @@ pub fn spawn_event_bridge(app_handle: AppHandle, node: &Node) {
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    })
 }

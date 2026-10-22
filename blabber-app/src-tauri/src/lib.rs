@@ -25,6 +25,8 @@ pub struct AppState {
     pub spaces: TokioMutex<Vec<Space>>,
     /// the mesh call this client is currently in, if any: (room id, live call handle)
     pub active_call_room: Mutex<Option<(Uuid, MeshActiveCall)>>,
+    /// task forwarding the current node's AppEvents to the webview
+    pub event_bridge: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

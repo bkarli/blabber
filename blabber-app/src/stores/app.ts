@@ -1,7 +1,11 @@
 import { defineStore } from 'pinia';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useSoundEffectsStore } from '@/stores/soundEffects';
+
+// unlisten for the current session's 'app-event' listener. A handle, not UI
+// state, so it lives outside the store state that $reset() wipes.
+let unlistenAppEvents: UnlistenFn | null = null;
 
 export interface SpaceInfo {
   id: string;
@@ -114,7 +118,7 @@ export const useAppStore = defineStore('app', {
         console.error('failed to load initial spaces', e);
       }
 
-      await listen<AppEvent>('app-event', (event) => {
+      unlistenAppEvents = await listen<AppEvent>('app-event', (event) => {
         const payload = event.payload;
         console.debug('[app-event]', payload);
 
@@ -414,6 +418,13 @@ export const useAppStore = defineStore('app', {
       await invoke<void>('leave_call_room');
       this.resetCallState();
       useSoundEffectsStore().play('call-leave');
+    },
+
+    /** Drops all session state (call state included) on logout, so the next identity's init() starts fresh. */
+    reset() {
+      unlistenAppEvents?.();
+      unlistenAppEvents = null;
+      this.$reset();
     },
 
     /** Clears local call UI state after the backend has ended the call (leave, leaving its space, logout). */

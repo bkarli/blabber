@@ -23,8 +23,9 @@ export const useAuthStore = defineStore('auth', {
     },
     async logout() {
       await api.logout();
-      // the backend hung up any active call; the call overlay lives outside the router
-      useAppStore().resetCallState();
+      // the backend ended the session (incl. any call); drop everything the old
+      // identity loaded, the call overlay included since it lives outside the router
+      useAppStore().reset();
       this.displayName = null;
       router.push({ name: 'login' });
     },
