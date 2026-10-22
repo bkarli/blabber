@@ -29,10 +29,12 @@ memsec = "0.7.0"
 image = "0.25.10"
 
 base64 = { workspace = true }
+opus = { version = "0.4.0", optional = true }
 
 [features]
 default = ["audio"]
-audio = ["dep:cpal", "dep:symphonia"]
+audio = ["dep:cpal", "dep:symphonia", "dep:opus"]
+opus = ["dep:opus"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

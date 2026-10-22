@@ -14,6 +14,13 @@ pub mod sound;
 #[path = "sound_stub.rs"]
 pub mod sound;
 
+#[cfg(feature = "audio")]
+#[path = "voice_codec.rs"]
+pub mod voice_codec;
+#[cfg(not(feature = "audio"))]
+#[path = "voice_codec_stub.rs"]
+pub mod voice_codec;
+
 pub use events::AppEvent;
 pub mod call_rooms;
 pub mod room;

@@ -20,6 +20,7 @@
           cargo-tauri
 
           pkg-config
+          cmake # builds the bundled libopus
           openssl
           alsa-lib
 

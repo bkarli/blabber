@@ -6,6 +6,7 @@
 //! conditions (NAT traversal, path MTU, etc. can't be reproduced on one machine).
 
 use anyhow::Result;
+use blabber_core::voice_codec::{VoiceEncoder, FRAME_SAMPLES};
 use uuid::Uuid;
 
 mod common;
@@ -172,12 +173,18 @@ async fn audio_datagrams_flow_in_both_directions() -> Result<()> {
     let conn_a_to_b = mesh_a
         .connection_for(&id_b.to_string())
         .expect("A has no connection to B");
-    conn_a_to_b.send_datagram(vec![1u8; 64].into())?;
+    let mut encoder_a = VoiceEncoder::new()?;
+    for packet in encoder_a.push(&[0.0; FRAME_SAMPLES]) {
+        conn_a_to_b.send_datagram(packet.into())?;
+    }
 
     let conn_b_to_a = mesh_b
         .connection_for(&id_a.to_string())
         .expect("B has no connection to A");
-    conn_b_to_a.send_datagram(vec![2u8; 64].into())?;
+    let mut encoder_b = VoiceEncoder::new()?;
+    for packet in encoder_b.push(&[0.0; FRAME_SAMPLES]) {
+        conn_b_to_a.send_datagram(packet.into())?;
+    }
 
     let b_received = wait_until(2000, 50, || {
         mesh_b.buffered_sample_count(&id_a.to_string()).unwrap_or(0) > 0
@@ -656,12 +663,12 @@ async fn flooded_peer_buffer_stays_bounded() -> Result<()> {
 
     // far more audio than PEER_BUFFER_MAX, much faster than real time. Silence, so a
     // test machine with a real output device draining A's buffer plays nothing audible
-    let packet = vec![0u8; 292 * 4];
+    let mut encoder = VoiceEncoder::new()?;
     let id_b = id_b.to_string();
     let mut peak = 0;
     for _ in 0..100 {
-        for _ in 0..5 {
-            let _ = conn_b_to_a.send_datagram(packet.clone().into());
+        for packet in encoder.push(&[0.0; 5 * FRAME_SAMPLES]) {
+            let _ = conn_b_to_a.send_datagram(packet.into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let buffered = mesh_a.buffered_sample_count(&id_b).unwrap_or(0);
