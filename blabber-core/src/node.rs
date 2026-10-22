@@ -141,6 +141,7 @@ impl Node {
             self.active_call_rooms.clone(),
             self.room_spaces.clone(),
             self.events.clone(),
+            self.spaces.clone(),
         );
 
         let router = Router::builder(endpoint)
