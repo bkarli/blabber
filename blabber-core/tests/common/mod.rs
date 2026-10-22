@@ -92,10 +92,12 @@ pub async fn share_call_space(nodes: &[&Node], room_id: Uuid) -> Result<Vec<Spac
         .map(|node| node.endpoint.as_ref().unwrap().id().to_string())
         .collect();
     let endpoint_ids = &endpoint_ids;
-    for joined in &spaces {
+    // same source CallRoomProtocol checks: the members doc itself, not member_cache
+    for (node, joined) in nodes.iter().zip(&spaces) {
+        let blobs = node.blobs.as_ref().unwrap();
         let synced = wait_until_async(10000, 100, || async move {
-            let cache = joined.member_cache.lock().await;
-            endpoint_ids.iter().all(|id| cache.iter().any(|m| &m.endpoint_id == id))
+            let Ok(members) = joined.list_members(blobs).await else { return false };
+            endpoint_ids.iter().all(|id| members.iter().any(|m| &m.endpoint_id == id))
         })
         .await;
         anyhow::ensure!(synced, "member records never synced for space {}", joined.id());

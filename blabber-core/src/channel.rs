@@ -1,6 +1,7 @@
 use anyhow::Result;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
+use iroh_blobs::store::fs::FsStore;
 use tokio::sync::broadcast;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -300,6 +301,7 @@ pub struct CallRoomProtocol {
     room_spaces: RoomSpaceMap, //to resolve room_id into space_id to correclty create the resulting event.
     events: broadcast::Sender<crate::events::AppEvent>, // for publishing newcallparticipant event
     spaces: Arc<tokio::sync::Mutex<Vec<Space>>>, // node's spaces, to check the dialer is a member
+    blobs: FsStore, // to read member records straight from the members doc
 }
 
 impl CallRoomProtocol {
@@ -308,22 +310,26 @@ impl CallRoomProtocol {
         room_spaces: RoomSpaceMap,
         events: broadcast::Sender<crate::events::AppEvent>,
         spaces: Arc<tokio::sync::Mutex<Vec<Space>>>,
+        blobs: FsStore,
     ) -> Self {
-        Self { active_rooms, room_spaces, events, spaces }
+        Self { active_rooms, room_spaces, events, spaces, blobs }
     }
 
-    /// True if endpoint_id belongs to a member of the space.
+    /// True if endpoint_id belongs to a member of the space. Reads the members
+    /// doc directly, not `member_cache`: the cache can permanently miss records
+    /// that synced between its initial seed and its live subscription.
     async fn is_space_member(&self, space_id: Uuid, endpoint_id: &str) -> bool {
-        let member_cache = {
+        let space = {
             let spaces = self.spaces.lock().await;
             match spaces.iter().find(|space| space.id() == space_id) {
-                Some(space) => space.member_cache.clone(),
+                Some(space) => space.clone(),
                 None => return false,
             }
         };
-        member_cache
-            .lock()
-            .await
+        let Ok(members) = space.list_members(&self.blobs).await else {
+            return false;
+        };
+        members
             .iter()
             .any(|member| !member.is_relay && member.endpoint_id == endpoint_id)
     }

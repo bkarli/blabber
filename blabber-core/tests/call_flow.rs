@@ -569,16 +569,14 @@ async fn blind_relay_cannot_dial_into_call() -> Result<()> {
 
     // wait until A actually knows the relay, so the rejection below is the
     // is_relay exclusion and not just a member record that hasn't synced yet
+    let blobs_a = node_a.blobs.clone().unwrap();
     let relay_known = wait_until_async(10000, 100, || {
         let space_a = space_a.clone();
+        let blobs_a = blobs_a.clone();
         let id_relay = id_relay.clone();
         async move {
-            space_a
-                .member_cache
-                .lock()
-                .await
-                .iter()
-                .any(|m| m.endpoint_id == id_relay && m.is_relay)
+            let Ok(members) = space_a.list_members(&blobs_a).await else { return false };
+            members.iter().any(|m| m.endpoint_id == id_relay && m.is_relay)
         }
     })
     .await;

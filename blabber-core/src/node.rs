@@ -142,6 +142,7 @@ impl Node {
             self.room_spaces.clone(),
             self.events.clone(),
             self.spaces.clone(),
+            blobs.clone(),
         );
 
         let router = Router::builder(endpoint)
