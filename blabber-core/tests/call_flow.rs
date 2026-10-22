@@ -630,3 +630,47 @@ async fn leave_call_room_unregisters_room_and_publishes_departure() -> Result<()
     assert_eq!(mesh_b.connection_count(), 0, "A still accepted dials for a room it left");
     Ok(())
 }
+
+#[tokio::test]
+async fn flooded_peer_buffer_stays_bounded() -> Result<()> {
+    use blabber_core::channel::{PEER_BUFFER_MAX, PEER_BUFFER_TARGET};
+
+    let (node_a, _dir_a) = make_node("FloodAlice").await?;
+    let (node_b, _dir_b) = make_node("FloodBob").await?;
+
+    let room_id = Uuid::new_v4();
+    share_call_space(&[&node_a, &node_b], room_id).await?;
+    let id_a = node_a.endpoint.as_ref().unwrap().id();
+    let addr_a = node_a.endpoint.as_ref().unwrap().addr();
+    let id_b = node_b.endpoint.as_ref().unwrap().id();
+
+    let (_call_a, mesh_a) = node_a.join_mesh(room_id, id_a.to_string(), vec![]).await?;
+    let (_call_b, mesh_b) = node_b
+        .join_mesh(room_id, id_b.to_string(), vec![(id_a.to_string(), addr_a)])
+        .await?;
+    wait_until(3000, 100, || {
+        mesh_a.connection_count() == 1 && mesh_b.connection_count() == 1
+    })
+    .await;
+    let conn_b_to_a = mesh_b.connection_for(&id_a.to_string()).expect("B has no connection to A");
+
+    // far more audio than PEER_BUFFER_MAX, much faster than real time. Silence, so a
+    // test machine with a real output device draining A's buffer plays nothing audible
+    let packet = vec![0u8; 292 * 4];
+    let id_b = id_b.to_string();
+    let mut peak = 0;
+    for _ in 0..100 {
+        for _ in 0..5 {
+            let _ = conn_b_to_a.send_datagram(packet.clone().into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let buffered = mesh_a.buffered_sample_count(&id_b).unwrap_or(0);
+        peak = peak.max(buffered);
+        assert!(buffered <= PEER_BUFFER_MAX, "buffer grew to {buffered} > {PEER_BUFFER_MAX}");
+    }
+    assert!(
+        peak >= PEER_BUFFER_TARGET,
+        "flood never filled the buffer past the target (peak {peak}), so the cap wasn't exercised"
+    );
+    Ok(())
+}

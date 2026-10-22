@@ -19,6 +19,12 @@ pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
 const MEMBER_SYNC_GRACE: Duration = Duration::from_secs(3);
 const MEMBER_SYNC_POLL: Duration = Duration::from_millis(100);
 
+/// Per-peer jitter buffer bounds, in wire samples. Audio can arrive
+/// faster than it's played. Once a buffer exceeds the max it's trimmed back to
+/// the target, memory stays bounded and latency recovers.
+pub const PEER_BUFFER_TARGET: usize = 48_000 * 60 / 1000;
+pub const PEER_BUFFER_MAX: usize = 48_000 * 200 / 1000;
+
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
 const SAFE_DATAGRAM_CEILING: usize = 1200;
 const SAFETY_MARGIN: usize = 32;
@@ -55,6 +61,16 @@ fn bytes_to_samples(bytes: &[u8]) -> Option<Vec<f32>> {
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
             .collect(),
     )
+}
+
+/// Appends received samples to a peer's jitter buffer, dropping the oldest audio
+/// down to PEER_BUFFER_TARGET once it grows past PEER_BUFFER_MAX.
+fn push_samples(buf: &mut VecDeque<f32>, samples: Vec<f32>) {
+    buf.extend(samples);
+    if buf.len() > PEER_BUFFER_MAX {
+        let excess = buf.len() - PEER_BUFFER_TARGET;
+        buf.drain(..excess);
+    }
 }
 
 /// checks what space a given call room belongs to.
@@ -131,7 +147,7 @@ impl MeshVoiceChannel {
                         if let Some(samples) = bytes_to_samples(&bytes) {
                             let mut buffers = peer_buffers.lock().unwrap();
                             if let Some(buf) = buffers.get_mut(&peer_id_for_task) {
-                                buf.extend(samples);
+                                push_samples(buf, samples);
                             }
                         }
                     }
@@ -416,5 +432,38 @@ impl ProtocolHandler for CallRoomProtocol {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_samples_keeps_buffer_below_max() {
+        let mut buf = VecDeque::new();
+        for _ in 0..100 {
+            push_samples(&mut buf, vec![0.0; 292]);
+            assert!(buf.len() <= PEER_BUFFER_MAX);
+        }
+    }
+
+    #[test]
+    fn push_samples_trims_to_target_and_keeps_newest() {
+        let mut buf: VecDeque<f32> = (0..PEER_BUFFER_MAX).map(|i| i as f32).collect();
+        // one more packet pushes it over the max
+        let newest: Vec<f32> = (0..292).map(|i| (PEER_BUFFER_MAX + i) as f32).collect();
+        push_samples(&mut buf, newest);
+
+        assert_eq!(buf.len(), PEER_BUFFER_TARGET);
+        assert_eq!(*buf.back().unwrap(), (PEER_BUFFER_MAX + 291) as f32);
+        assert_eq!(*buf.front().unwrap(), (PEER_BUFFER_MAX + 292 - PEER_BUFFER_TARGET) as f32);
+    }
+
+    #[test]
+    fn push_samples_below_max_keeps_everything() {
+        let mut buf = VecDeque::new();
+        push_samples(&mut buf, vec![1.0; PEER_BUFFER_MAX]);
+        assert_eq!(buf.len(), PEER_BUFFER_MAX);
     }
 }

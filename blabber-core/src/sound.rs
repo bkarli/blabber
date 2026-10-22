@@ -6,11 +6,13 @@ use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, StreamConfig};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 const WIRE_SAMPLE_RATE: u32 = 48000;
 const MIX_CHUNK_MS: u64 = 10;
+/// Lower bound for how much mixed audio waits between mixer and sound card.
+const OUTPUT_QUEUE_MIN_TARGET: usize = WIRE_SAMPLE_RATE as usize * 30 / 1000;
 const LEVELER_TARGET_RMS: f32 = 0.15;
 const LEVELER_NOISE_GATE_RMS: f32 = 0.004;
 const LEVELER_MAX_GAIN: f32 = 8.0;
@@ -378,6 +380,21 @@ struct OutputStreamState {
     #[allow(dead_code)]
     stream: cpal::Stream,
     mixed_tx: std::sync::mpsc::Sender<Vec<f32>>,
+    /// wire samples sent into mixed_tx but not yet taken
+    queued: Arc<AtomicUsize>,
+    /// largest callback request seen, in wire samples
+    max_request: Arc<AtomicUsize>,
+}
+
+/// How many wire samples the mixer should produce this tick: enough to top the
+/// queue to the sound card up to its target, nothing once it's full. Pacing by
+/// what the card consumed keeps the
+/// queue bounded however far the two clocks drift, and stops production
+/// entirely if the card stops pulling. The target is at least twice the largest
+/// callback request so a device with large buffers never drains it completely.
+fn samples_to_mix(queued: usize, max_request: usize) -> usize {
+    let target = OUTPUT_QUEUE_MIN_TARGET.max(max_request.saturating_mul(2));
+    target.saturating_sub(queued)
 }
 
 fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamState> {
@@ -389,14 +406,22 @@ fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamS
 
     let (mixed_tx, mixed_rx) = std::sync::mpsc::channel::<Vec<f32>>();
     let mut pending: Vec<f32> = Vec::new();
+    let queued = Arc::new(AtomicUsize::new(0));
+    let max_request = Arc::new(AtomicUsize::new(0));
+    let callback_queued = queued.clone();
+    let callback_max_request = max_request.clone();
 
     let stream = open_output_stream(
         &device,
         config,
         move |output: &mut [f32]| {
+            let frames = output.len() / channels.max(1) as usize;
+            let wire_request = frames * WIRE_SAMPLE_RATE as usize / native_rate.max(1) as usize;
+            callback_max_request.fetch_max(wire_request, Ordering::Relaxed);
             while pending.len() < output.len() {
                 match mixed_rx.try_recv() {
                     Ok(mono_chunk) => {
+                        callback_queued.fetch_sub(mono_chunk.len(), Ordering::Relaxed);
                         let resampled = resample_linear(&mono_chunk, WIRE_SAMPLE_RATE, native_rate);
                         let upmixed = upmix_from_mono(&resampled, channels);
                         pending.extend(upmixed);
@@ -415,7 +440,7 @@ fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamS
     )?;
     stream.play().context("failed to start playback stream")?;
 
-    Ok(OutputStreamState { stream, mixed_tx })
+    Ok(OutputStreamState { stream, mixed_tx, queued, max_request })
 }
 
 /// Owns the output streams thread: builds a stream for the
@@ -440,8 +465,6 @@ fn output_thread_main(
         }
     };
 
-    let mut last_tick = std::time::Instant::now();
-
     loop {
         match cmd_rx.recv_timeout(std::time::Duration::from_millis(MIX_CHUNK_MS)) {
             Ok(OutputCommand::SetDevice(name)) => {
@@ -453,17 +476,17 @@ fn output_thread_main(
                         None
                     }
                 };
-                last_tick = std::time::Instant::now();
             }
             Ok(OutputCommand::Shutdown) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let now = std::time::Instant::now();
-                let elapsed = now.duration_since(last_tick);
-                last_tick = now;
-
                 if let Some(s) = state.as_ref() {
-                    let n_samples = ((elapsed.as_secs_f64() * WIRE_SAMPLE_RATE as f64).round() as usize)
-                        .clamp(1, WIRE_SAMPLE_RATE as usize / 2);
+                    let n_samples = samples_to_mix(
+                        s.queued.load(Ordering::Relaxed),
+                        s.max_request.load(Ordering::Relaxed),
+                    );
+                    if n_samples == 0 {
+                        continue;
+                    }
                     let mut acc = vec![0.0f32; n_samples];
                     {
                         let mut voices = voices.lock().unwrap();
@@ -479,6 +502,8 @@ fn output_thread_main(
                         // harsh digital crunch
                         *sample = sample.tanh();
                     }
+                    // counted before sending, so the callback's subtraction doesn't underflow
+                    s.queued.fetch_add(acc.len(), Ordering::Relaxed);
                     let _ = s.mixed_tx.send(acc);
                 }
             }
@@ -784,5 +809,28 @@ impl SoundHandler {
 impl Default for SoundHandler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn samples_to_mix_tops_up_to_target() {
+        assert_eq!(samples_to_mix(0, 0), OUTPUT_QUEUE_MIN_TARGET);
+        assert_eq!(samples_to_mix(100, 0), OUTPUT_QUEUE_MIN_TARGET - 100);
+    }
+
+    #[test]
+    fn samples_to_mix_produces_nothing_when_card_stops_pulling() {
+        assert_eq!(samples_to_mix(OUTPUT_QUEUE_MIN_TARGET, 0), 0);
+        assert_eq!(samples_to_mix(10 * OUTPUT_QUEUE_MIN_TARGET, 0), 0);
+    }
+
+    #[test]
+    fn samples_to_mix_target_grows_with_large_device_buffers() {
+        let large_request = OUTPUT_QUEUE_MIN_TARGET;
+        assert_eq!(samples_to_mix(0, large_request), 2 * large_request);
     }
 }
