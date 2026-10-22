@@ -3,8 +3,7 @@
 Blabber is a peer-to-peer chat and voice application developed as for the course Distributed Programming and Internet Architecture. Instead of relying on a central server, identities, spaces, rooms, and messages are stored locally and synchronized directly between peers using [Iroh](https://iroh.computer/). The desktop application is built with [Tauri](https://tauri.app/) and uses a Vue 3 + TypeScript frontend together with a Rust backend.
 
 ## TODO
-- Voice channel view 
-- voice channel list include members that are in call
+- Voice channel view
 - Updater/CICD
 
 - Wordle
