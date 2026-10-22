@@ -9,7 +9,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 mod common;
-use common::{make_node, wait_until, wait_until_async};
+use common::{make_node, share_call_space, wait_until, wait_until_async};
 
 #[tokio::test]
 async fn two_peer_mesh_connects_both_directions() -> Result<()> {
@@ -17,6 +17,7 @@ async fn two_peer_mesh_connects_both_directions() -> Result<()> {
     let (node_b, _dir_b) = make_node("TestBob").await?;
 
     let room_id = Uuid::new_v4();
+    share_call_space(&[&node_a, &node_b], room_id).await?;
     let id_a = node_a.endpoint.as_ref().unwrap().id();
     let addr_a = node_a.endpoint.as_ref().unwrap().addr();
     let id_b = node_b.endpoint.as_ref().unwrap().id();
@@ -54,6 +55,7 @@ async fn three_peer_mesh_is_fully_connected() -> Result<()> {
     let (node_c, _dir_c) = make_node("TestCarol3").await?;
 
     let room_id = Uuid::new_v4();
+    share_call_space(&[&node_a, &node_b, &node_c], room_id).await?;
     let id_a = node_a.endpoint.as_ref().unwrap().id();
     let addr_a = node_a.endpoint.as_ref().unwrap().addr();
     let id_b = node_b.endpoint.as_ref().unwrap().id();
@@ -152,6 +154,7 @@ async fn audio_datagrams_flow_in_both_directions() -> Result<()> {
     let (node_b, _dir_b) = make_node("DatagramBob").await?;
 
     let room_id = Uuid::new_v4();
+    share_call_space(&[&node_a, &node_b], room_id).await?;
     let id_a = node_a.endpoint.as_ref().unwrap().id();
     let addr_a = node_a.endpoint.as_ref().unwrap().addr();
     let id_b = node_b.endpoint.as_ref().unwrap().id();
@@ -197,6 +200,7 @@ async fn disconnected_peer_is_cleaned_up_automatically() -> Result<()> {
     let (node_b, _dir_b) = make_node("CleanupBob").await?;
 
     let room_id = Uuid::new_v4();
+    share_call_space(&[&node_a, &node_b], room_id).await?;
     let id_a = node_a.endpoint.as_ref().unwrap().id();
     let addr_a = node_a.endpoint.as_ref().unwrap().addr();
     let id_b = node_b.endpoint.as_ref().unwrap().id();
@@ -520,5 +524,72 @@ async fn bystander_sees_call_participants_without_ever_joining() -> Result<()> {
         "bystander C never saw NewCallParticipant for A - a sidebar showing call presence would never update for peers who aren't dialing it directly"
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn outsider_cannot_dial_into_call() -> Result<()> {
+    let (node_a, _dir_a) = make_node("GateAlice").await?;
+    let (node_out, _dir_out) = make_node("GateOutsider").await?;
+
+    let room_id = Uuid::new_v4();
+    share_call_space(&[&node_a], room_id).await?;
+    let id_a = node_a.endpoint.as_ref().unwrap().id();
+    let addr_a = node_a.endpoint.as_ref().unwrap().addr();
+    let id_out = node_out.endpoint.as_ref().unwrap().id();
+
+    let (_call_a, mesh_a) = node_a.join_mesh(room_id, id_a.to_string(), vec![]).await?;
+
+    // the outsider knows the room id and A's address, but holds no member invite.
+    // join_mesh waits for A's ack, so once it returns A has made its decision
+    let (_call_out, mesh_out) = node_out
+        .join_mesh(room_id, id_out.to_string(), vec![(id_a.to_string(), addr_a)])
+        .await?;
+
+    assert_eq!(mesh_a.connection_count(), 0, "A accepted a dial from a non-member");
+    assert_eq!(mesh_out.connection_count(), 0, "outsider registered a connection to A");
+    Ok(())
+}
+
+#[tokio::test]
+async fn blind_relay_cannot_dial_into_call() -> Result<()> {
+    let (node_a, _dir_a) = make_node("GateRelayAlice").await?;
+    let (node_relay, _dir_relay) = make_node("GateRelayRelay").await?;
+
+    let room_id = Uuid::new_v4();
+    let space_a = share_call_space(&[&node_a], room_id).await?.remove(0);
+    let id_a = node_a.endpoint.as_ref().unwrap().id();
+    let addr_a = node_a.endpoint.as_ref().unwrap().addr();
+    let id_relay = node_relay.endpoint.as_ref().unwrap().id().to_string();
+
+    let space_relay = node_relay
+        .join_space_relay(space_a.create_relay_invite().await?)
+        .await?;
+    node_relay.room_spaces.lock().unwrap().insert(room_id, space_relay.id());
+
+    // wait until A actually knows the relay, so the rejection below is the
+    // is_relay exclusion and not just a member record that hasn't synced yet
+    let relay_known = wait_until_async(10000, 100, || {
+        let space_a = space_a.clone();
+        let id_relay = id_relay.clone();
+        async move {
+            space_a
+                .member_cache
+                .lock()
+                .await
+                .iter()
+                .any(|m| m.endpoint_id == id_relay && m.is_relay)
+        }
+    })
+    .await;
+    assert!(relay_known, "A never saw the relay's presence entry");
+
+    let (_call_a, mesh_a) = node_a.join_mesh(room_id, id_a.to_string(), vec![]).await?;
+    let (_call_relay, mesh_relay) = node_relay
+        .join_mesh(room_id, id_relay.clone(), vec![(id_a.to_string(), addr_a)])
+        .await?;
+
+    assert_eq!(mesh_a.connection_count(), 0, "A accepted a dial from a blind relay");
+    assert_eq!(mesh_relay.connection_count(), 0, "relay registered a connection to A");
     Ok(())
 }

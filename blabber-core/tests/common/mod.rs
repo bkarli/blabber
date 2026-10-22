@@ -9,6 +9,7 @@ use anyhow::Result;
 use blabber_core::call_rooms::CallRoom;
 use blabber_core::channel::MeshActiveCall;
 use blabber_core::room::{Message, MessageContent};
+use blabber_core::space::Space;
 use blabber_core::{Identity, Node};
 use iroh_docs::AuthorId;
 use tempfile::TempDir;
@@ -71,6 +72,39 @@ where
         tokio::time::sleep(std::time::Duration::from_millis(step_ms)).await;
     }
     check().await
+}
+
+/// Puts every node into one space (the first creates it, the rest join by
+/// invite), waits until each node's member cache lists every node's endpoint,
+/// and maps `room_id` to that space on every node. That's the state
+/// `CallRoomProtocol` requires before it accepts a mesh dial, so tests that
+/// drive `join_mesh` directly need it instead of a bare room id.
+pub async fn share_call_space(nodes: &[&Node], room_id: Uuid) -> Result<Vec<Space>> {
+    let (first, rest) = nodes.split_first().expect("share_call_space needs at least one node");
+    let space = first.create_space("Call Space").await?;
+    let mut spaces = vec![space.clone()];
+    for node in rest {
+        spaces.push(node.join_space(space.create_invite().await?).await?);
+    }
+
+    let endpoint_ids: Vec<String> = nodes
+        .iter()
+        .map(|node| node.endpoint.as_ref().unwrap().id().to_string())
+        .collect();
+    let endpoint_ids = &endpoint_ids;
+    for joined in &spaces {
+        let synced = wait_until_async(10000, 100, || async move {
+            let cache = joined.member_cache.lock().await;
+            endpoint_ids.iter().all(|id| cache.iter().any(|m| &m.endpoint_id == id))
+        })
+        .await;
+        anyhow::ensure!(synced, "member records never synced for space {}", joined.id());
+    }
+
+    for node in nodes {
+        node.room_spaces.lock().unwrap().insert(room_id, space.id());
+    }
+    Ok(spaces)
 }
 
 /// Mirrors blabber-app/src-tauri/src/call_room.rs's `leave_call_room` Tauri
