@@ -4,12 +4,19 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use tokio::sync::broadcast;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::sound::{MixSource, SoundHandler, VoiceHandle};
+use crate::space::Space;
 
 /// ALPN mesh call rooms use to dial each other for the group-call audio mesh.
 pub const CALL_ROOM_ALPN: &[u8] = b"blabber/callroom/0";
+
+/// How long an inbound dial waits for the caller's member record to show up
+/// before being rejected.
+const MEMBER_SYNC_GRACE: Duration = Duration::from_secs(3);
+const MEMBER_SYNC_POLL: Duration = Duration::from_millis(100);
 
 const FALLBACK_MAX_DATAGRAM_SIZE: usize = 1100;
 const SAFE_DATAGRAM_CEILING: usize = 1200;
@@ -292,6 +299,7 @@ pub struct CallRoomProtocol {
     active_rooms: ActiveCallRooms, //check if in the room that is being dialed for
     room_spaces: RoomSpaceMap, //to resolve room_id into space_id to correclty create the resulting event.
     events: broadcast::Sender<crate::events::AppEvent>, // for publishing newcallparticipant event
+    spaces: Arc<tokio::sync::Mutex<Vec<Space>>>, // node's spaces, to check the dialer is a member
 }
 
 impl CallRoomProtocol {
@@ -299,8 +307,40 @@ impl CallRoomProtocol {
         active_rooms: ActiveCallRooms,
         room_spaces: RoomSpaceMap,
         events: broadcast::Sender<crate::events::AppEvent>,
+        spaces: Arc<tokio::sync::Mutex<Vec<Space>>>,
     ) -> Self {
-        Self { active_rooms, room_spaces, events }
+        Self { active_rooms, room_spaces, events, spaces }
+    }
+
+    /// True if endpoint_id belongs to a member of the space.
+    async fn is_space_member(&self, space_id: Uuid, endpoint_id: &str) -> bool {
+        let member_cache = {
+            let spaces = self.spaces.lock().await;
+            match spaces.iter().find(|space| space.id() == space_id) {
+                Some(space) => space.member_cache.clone(),
+                None => return false,
+            }
+        };
+        member_cache
+            .lock()
+            .await
+            .iter()
+            .any(|member| !member.is_relay && member.endpoint_id == endpoint_id)
+    }
+
+    /// is_space_member, retried for MEMBER_SYNC_GRACE so a newly joined
+    /// member isn't rejected.
+    async fn wait_for_space_member(&self, space_id: Uuid, endpoint_id: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + MEMBER_SYNC_GRACE;
+        loop {
+            if self.is_space_member(space_id, endpoint_id).await {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(MEMBER_SYNC_POLL).await;
+        }
     }
 }
 
@@ -328,25 +368,34 @@ impl ProtocolHandler for CallRoomProtocol {
             rooms.get(&room_id).cloned()
         };
 
+        // only members of the space owning the room can join the mesh.
+        let authorized = match (&channel_opt, space_id_for_room(&self.room_spaces, room_id)) {
+            (Some(_), Some(space_id)) => {
+                if self.wait_for_space_member(space_id, &remote_id).await {
+                    Some(space_id)
+                } else {
+                    eprintln!("rejected dial from {remote_id} for room {room_id}");
+                    None
+                }
+            }
+            _ => None,
+        };
+
         // responds according to membership of room (ack[0] 1 byte for accept)
-        match channel_opt {
-            Some(mesh_channel) => {
+        match (channel_opt, authorized) {
+            (Some(mesh_channel), Some(space_id)) => {
                 send.write_all(&[1u8]).await.map_err(std::io::Error::other)?;
                 send.finish().map_err(std::io::Error::other)?;
                 mesh_channel.add_peer(remote_id.clone(), connection);
 
-                // resolves owning space and publish newcallparticipant event.
-                let space_id = space_id_for_room(&self.room_spaces, room_id);
-                if let Some(space_id) = space_id {
-                    let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
-                        space_id,
-                        room_id,
-                        endpoint_id: remote_id,
-                    });
-                }
+                let _ = self.events.send(crate::events::AppEvent::NewCallParticipant {
+                    space_id,
+                    room_id,
+                    endpoint_id: remote_id,
+                });
             }
-            // if no active channel for specified room, write back 0
-            None => {
+            // not in this room, or the dialer isnt a member of its space: write back 0
+            _ => {
                 send.write_all(&[0u8]).await.map_err(std::io::Error::other)?;
                 send.finish().map_err(std::io::Error::other)?;
             }
