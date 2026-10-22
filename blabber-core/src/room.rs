@@ -231,6 +231,11 @@ impl Room {
         postcard::from_bytes(&plaintext).ok()
     }
 
+    /// The payload's self-reported author must match the entry's signer.
+    fn is_signed_by_author(message: &Message, entry: &Entry) -> bool {
+        message.author == entry.author().to_string()
+    }
+
     /// returns all the messages in a specific room in no defined order.
     pub async fn list_messages(&self, blobs: FsStore) -> Result<Vec<Message>> {
         // a blind relay has no key, so it never learns message content
@@ -250,6 +255,9 @@ impl Room {
             let entry = entry?;
             let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { continue };
             let Some(message) = Self::decode_message(key, self.id.as_bytes(), &bytes) else { continue };
+            if !Self::is_signed_by_author(&message, &entry) {
+                continue;
+            }
             messages.push(message);
         }
         Ok(messages)
@@ -277,7 +285,8 @@ impl Room {
             return Ok(None);
         };
 
-        Ok(Self::decode_message(key, self.id.as_bytes(), &bytes))
+        Ok(Self::decode_message(key, self.id.as_bytes(), &bytes)
+            .filter(|message| Self::is_signed_by_author(message, &entry)))
     }
 
     /// the live sync entry handler. Turns incoming iroh-docs entry into cached Message and UI event.
@@ -290,9 +299,18 @@ impl Room {
         room_id: Uuid,
         key: Option<Arc<Zeroizing<[u8; 32]>>>,
     ) -> bool {
+        // only msg/ entries are messages, same prefix list_messages scans
+        let Ok(doc_key) = std::str::from_utf8(entry.key()) else { return true };
+        if !doc_key.starts_with("msg/") {
+            return true;
+        }
         let Some(key) = key else { return false };
         let Ok(bytes) = blobs.blobs().get_bytes(entry.content_hash()).await else { return false };
         let Some(message) = Self::decode_message(&key, room_id.as_bytes(), &bytes) else { return false };
+        // forged attribution: nothing to retry, drop it rather than parking it in pending
+        if !Self::is_signed_by_author(&message, entry) {
+            return true;
+        }
 
         /// on success: lock shared cache and push a message clone then send original into appevent newmessage payload
         /// over the broadcast channel. Value has to end up in two places: cache and the event.
