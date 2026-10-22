@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 const WIRE_SAMPLE_RATE: u32 = 48000;
 const MIX_CHUNK_MS: u64 = 10;
+/// The mixer always produces chunks of this size. Large chunks would pull a
+/// peer's jitter buffer empty in one go (silence) and let it overflow in
+/// between (trimmed audio).
+const MIX_CHUNK_SAMPLES: usize = WIRE_SAMPLE_RATE as usize * MIX_CHUNK_MS as usize / 1000;
 /// Lower bound for how much mixed audio waits between mixer and sound card.
 const OUTPUT_QUEUE_MIN_TARGET: usize = WIRE_SAMPLE_RATE as usize * 30 / 1000;
 const LEVELER_TARGET_RMS: f32 = 0.15;
@@ -448,15 +452,89 @@ struct OutputStreamState {
     max_request: Arc<AtomicUsize>,
 }
 
-/// How many wire samples the mixer should produce this tick: enough to top the
-/// queue to the sound card up to its target, nothing once it's full. Pacing by
-/// what the card consumed keeps the
-/// queue bounded however far the two clocks drift, and stops production
-/// entirely if the card stops pulling. The target is at least twice the largest
-/// callback request so a device with large buffers never drains it completely.
+/// How many wire samples the queue to the sound card is short of its target,
+/// nothing once it's full. Pacing by what the card consumed keeps the queue
+/// bounded however far the two clocks drift, and stops production entirely if
+/// the card stops pulling. The target covers the largest callback request plus
+/// two mix chunks of slack for a late mixer tick.
 fn samples_to_mix(queued: usize, max_request: usize) -> usize {
-    let target = OUTPUT_QUEUE_MIN_TARGET.max(max_request.saturating_mul(2));
+    let target = OUTPUT_QUEUE_MIN_TARGET.max(max_request + 2 * MIX_CHUNK_SAMPLES);
     target.saturating_sub(queued)
+}
+
+/// One mixer tick: tops the output queue up in MIX_CHUNK_SAMPLES chunks. A late
+/// tick produces several chunks, a full queue none.
+fn mix_tick(voices: &VoiceList, queued: &AtomicUsize, max_request: &AtomicUsize, mut send: impl FnMut(Vec<f32>)) {
+    while samples_to_mix(queued.load(Ordering::Relaxed), max_request.load(Ordering::Relaxed)) >= MIX_CHUNK_SAMPLES {
+        let mut acc = vec![0.0f32; MIX_CHUNK_SAMPLES];
+        voices.lock().unwrap().retain_mut(|(_, voice)| {
+            voice.mix_into(&mut acc);
+            !voice.is_finished()
+        });
+        for sample in acc.iter_mut() {
+            // voices are summed, not averaged, so several loud ones can
+            // exceed unity: round that off gently while leaving normal levels untouched
+            *sample = soft_limit(*sample);
+        }
+        // counted before sending, so the callback's subtraction doesn't underflow
+        queued.fetch_add(acc.len(), Ordering::Relaxed);
+        send(acc);
+    }
+}
+
+/// The output callback's side of the mixer queue: converts mixed wire-rate
+/// chunks to the device's rate/channels and hands out exactly what the card asks for.
+struct OutputFeed {
+    native_rate: u32,
+    channels: u16,
+    resampler: LinearResampler,
+    /// device-format samples already converted but not yet played
+    pending: Vec<f32>,
+    queued: Arc<AtomicUsize>,
+    max_request: Arc<AtomicUsize>,
+    /// the first callback is often a one-off prefill of the device buffer
+    /// (100 ms on PipeWire), not the steady request size
+    seen_first_request: bool,
+}
+
+impl OutputFeed {
+    fn new(native_rate: u32, channels: u16, queued: Arc<AtomicUsize>, max_request: Arc<AtomicUsize>) -> Self {
+        Self {
+            native_rate,
+            channels,
+            resampler: LinearResampler::new(WIRE_SAMPLE_RATE, native_rate),
+            pending: Vec::new(),
+            queued,
+            max_request,
+            seen_first_request: false,
+        }
+    }
+
+    /// Fills `output` (interleaved device samples), with silence where the mixer fell behind.
+    fn fill(&mut self, output: &mut [f32], mixed_rx: &std::sync::mpsc::Receiver<Vec<f32>>) {
+        let frames = output.len() / self.channels.max(1) as usize;
+        let wire_request = frames * WIRE_SAMPLE_RATE as usize / self.native_rate.max(1) as usize;
+        if self.seen_first_request {
+            self.max_request.fetch_max(wire_request, Ordering::Relaxed);
+        }
+        self.seen_first_request = true;
+        while self.pending.len() < output.len() {
+            match mixed_rx.try_recv() {
+                Ok(mono_chunk) => {
+                    self.queued.fetch_sub(mono_chunk.len(), Ordering::Relaxed);
+                    let resampled = self.resampler.process(&mono_chunk);
+                    self.pending.extend(upmix_from_mono(&resampled, self.channels));
+                }
+                Err(_) => break,
+            }
+        }
+        let n = output.len().min(self.pending.len());
+        output[..n].copy_from_slice(&self.pending[..n]);
+        for sample in &mut output[n..] {
+            *sample = 0.0;
+        }
+        self.pending.drain(..n);
+    }
 }
 
 fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamState> {
@@ -467,38 +545,14 @@ fn build_output_stream_for(device_name: &Option<String>) -> Result<OutputStreamS
     let channels = config.channels();
 
     let (mixed_tx, mixed_rx) = std::sync::mpsc::channel::<Vec<f32>>();
-    let mut pending: Vec<f32> = Vec::new();
-    let mut resampler = LinearResampler::new(WIRE_SAMPLE_RATE, native_rate);
     let queued = Arc::new(AtomicUsize::new(0));
     let max_request = Arc::new(AtomicUsize::new(0));
-    let callback_queued = queued.clone();
-    let callback_max_request = max_request.clone();
+    let mut feed = OutputFeed::new(native_rate, channels, queued.clone(), max_request.clone());
 
     let stream = open_output_stream(
         &device,
         config,
-        move |output: &mut [f32]| {
-            let frames = output.len() / channels.max(1) as usize;
-            let wire_request = frames * WIRE_SAMPLE_RATE as usize / native_rate.max(1) as usize;
-            callback_max_request.fetch_max(wire_request, Ordering::Relaxed);
-            while pending.len() < output.len() {
-                match mixed_rx.try_recv() {
-                    Ok(mono_chunk) => {
-                        callback_queued.fetch_sub(mono_chunk.len(), Ordering::Relaxed);
-                        let resampled = resampler.process(&mono_chunk);
-                        let upmixed = upmix_from_mono(&resampled, channels);
-                        pending.extend(upmixed);
-                    }
-                    Err(_) => break,
-                }
-            }
-            let n = output.len().min(pending.len());
-            output[..n].copy_from_slice(&pending[..n]);
-            for sample in &mut output[n..] {
-                *sample = 0.0;
-            }
-            pending.drain(..n);
-        },
+        move |output: &mut [f32]| feed.fill(output, &mixed_rx),
         |err| eprintln!("audio playback error: {err}"),
     )?;
     stream.play().context("failed to start playback stream")?;
@@ -543,27 +597,9 @@ fn output_thread_main(
             Ok(OutputCommand::Shutdown) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if let Some(s) = state.as_ref() {
-                    let n_samples = samples_to_mix(
-                        s.queued.load(Ordering::Relaxed),
-                        s.max_request.load(Ordering::Relaxed),
-                    );
-                    if n_samples == 0 {
-                        continue;
-                    }
-                    let mut acc = vec![0.0f32; n_samples];
-                    {
-                        let mut voices = voices.lock().unwrap();
-                        voices.retain_mut(|(_, voice)| {
-                            voice.mix_into(&mut acc);
-                            !voice.is_finished()
-                        });
-                    }
-                    for sample in acc.iter_mut() {
-                        *sample = soft_limit(*sample);
-                    }
-                    // counted before sending, so the callback's subtraction doesn't underflow
-                    s.queued.fetch_add(acc.len(), Ordering::Relaxed);
-                    let _ = s.mixed_tx.send(acc);
+                    mix_tick(&voices, &s.queued, &s.max_request, |chunk| {
+                        let _ = s.mixed_tx.send(chunk);
+                    });
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -891,7 +927,7 @@ mod tests {
     #[test]
     fn samples_to_mix_target_grows_with_large_device_buffers() {
         let large_request = OUTPUT_QUEUE_MIN_TARGET;
-        assert_eq!(samples_to_mix(0, large_request), 2 * large_request);
+        assert_eq!(samples_to_mix(0, large_request), large_request + 2 * MIX_CHUNK_SAMPLES);
     }
 
     const RATE: u32 = 48_000;
@@ -984,5 +1020,230 @@ mod tests {
         let mut resampler = LinearResampler::new(44_100, 48_000);
         let total: usize = (0..100).map(|_| resampler.process(&[0.0; 441]).len()).sum();
         assert!(total.abs_diff(48_000) <= 1, "produced {total}");
+    }
+
+    fn no_voices() -> VoiceList {
+        Arc::new(StdMutex::new(Vec::new()))
+    }
+
+    #[test]
+    fn mix_tick_tops_up_in_small_fixed_chunks() {
+        // a 44.1 kHz card's first callback asks for 100 ms at once; that must
+        // not turn into one huge chunk that drains every peer buffer in one go
+        let queued = AtomicUsize::new(0);
+        let max_request = AtomicUsize::new(4800);
+        let mut chunks = Vec::new();
+        mix_tick(&no_voices(), &queued, &max_request, |c| chunks.push(c));
+        assert!(chunks.iter().all(|c| c.len() == MIX_CHUNK_SAMPLES));
+        assert_eq!(chunks.len(), (4800 + 2 * MIX_CHUNK_SAMPLES) / MIX_CHUNK_SAMPLES);
+        assert_eq!(queued.load(Ordering::Relaxed), chunks.len() * MIX_CHUNK_SAMPLES);
+    }
+
+    #[test]
+    fn mix_tick_produces_nothing_while_queue_is_full() {
+        let queued = AtomicUsize::new(samples_to_mix(0, 0));
+        let max_request = AtomicUsize::new(0);
+        let mut chunks = 0;
+        mix_tick(&no_voices(), &queued, &max_request, |_| chunks += 1);
+        assert_eq!(chunks, 0);
+    }
+
+    #[test]
+    fn output_feed_upmixes_and_accounts_taken_chunks() {
+        let queued = Arc::new(AtomicUsize::new(0));
+        let max_request = Arc::new(AtomicUsize::new(0));
+        let mut feed = OutputFeed::new(WIRE_SAMPLE_RATE, 2, queued.clone(), max_request.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        queued.fetch_add(2 * MIX_CHUNK_SAMPLES, Ordering::Relaxed);
+        tx.send(vec![0.5; MIX_CHUNK_SAMPLES]).unwrap();
+        tx.send(vec![0.5; MIX_CHUNK_SAMPLES]).unwrap();
+
+        let mut out = vec![0.0; 2 * 600];
+        feed.fill(&mut out, &rx);
+        assert!(out.iter().all(|&s| s == 0.5));
+        assert_eq!(queued.load(Ordering::Relaxed), 0);
+        // the first request may be a prefill, it doesn't set the queue target
+        assert_eq!(max_request.load(Ordering::Relaxed), 0);
+        // the leftover of the second chunk plays next, then silence
+        let mut out = vec![1.0; 2 * 600];
+        feed.fill(&mut out, &rx);
+        assert!(out[..2 * 360].iter().all(|&s| s == 0.5));
+        assert!(out[2 * 360..].iter().all(|&s| s == 0.0));
+        assert_eq!(max_request.load(Ordering::Relaxed), 600);
+    }
+
+    /// End-to-end playout simulation, the guard for audible call quality. Runs
+    /// the real mixer tick, output feed and peer jitter buffer on a simulated
+    /// clock: a sender's mic delivers bursts, packets arrive with network
+    /// jitter, the mixer thread wakes late, the sound card pulls in its own
+    /// period (with a big first prefill request like real devices do). The
+    /// signal is a constant, so every played frame below it after warm-up is
+    /// an audible gap or fade.
+    mod playout {
+        use super::*;
+        use crate::channel::{PeerBuffer, PEER_BUFFER_MAX, PEER_BUFFER_TARGET};
+        use std::collections::VecDeque;
+
+        const LEVEL: f32 = 0.5;
+        const WARMUP_US: u64 = 1_000_000;
+        const STEP_US: u64 = 250;
+        const NETWORK_BASE_US: u64 = 5_000;
+
+        struct SharedPeer(Arc<StdMutex<PeerBuffer>>);
+
+        impl MixSource for SharedPeer {
+            fn mix_into(&mut self, out: &mut [f32]) {
+                self.0.lock().unwrap().mix_into(out);
+            }
+        }
+
+        /// deterministic xorshift, so failures are reproducible
+        struct Rng(u64);
+
+        impl Rng {
+            fn below(&mut self, max: u64) -> u64 {
+                if max == 0 {
+                    return 0;
+                }
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % max
+            }
+        }
+
+        struct Scenario {
+            card_rate: u32,
+            card_channels: u16,
+            first_request_frames: usize,
+            request_frames: usize,
+            mic_rate: u32,
+            mic_chunk_frames: usize,
+            network_jitter_us: u64,
+            tick_lateness_us: u64,
+        }
+
+        #[derive(Debug)]
+        struct Report {
+            gap_frames: usize,
+            trimmed_samples: usize,
+            max_latency_ms: f64,
+            played_frames: usize,
+        }
+
+        fn period_us(frames: usize, rate: u32) -> u64 {
+            frames as u64 * 1_000_000 / rate as u64
+        }
+
+        fn run(sc: &Scenario, seconds: u64) -> Report {
+            let peer = Arc::new(StdMutex::new(PeerBuffer::default()));
+            let voices: VoiceList = Arc::new(StdMutex::new(vec![(0, Box::new(SharedPeer(peer.clone())) as Box<dyn MixSource>)]));
+            let queued = Arc::new(AtomicUsize::new(0));
+            let max_request = Arc::new(AtomicUsize::new(0));
+            let mut feed = OutputFeed::new(sc.card_rate, sc.card_channels, queued.clone(), max_request.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+            let mut mic_resampler = LinearResampler::new(sc.mic_rate, WIRE_SAMPLE_RATE);
+            let mut unsent: Vec<f32> = Vec::new();
+            let mut in_flight: VecDeque<(u64, Vec<f32>)> = VecDeque::new();
+            let mut last_arrival = 0;
+
+            let card_period = period_us(sc.request_frames, sc.card_rate);
+            let mic_period = period_us(sc.mic_chunk_frames, sc.mic_rate);
+            let (mut next_callback, mut next_tick, mut next_mic) = (0, 0, mic_period);
+            let mut first_callback = true;
+            let mut report = Report { gap_frames: 0, trimmed_samples: 0, max_latency_ms: 0.0, played_frames: 0 };
+
+            let end = seconds * 1_000_000;
+            let mut now = 0;
+            while now < end {
+                if now >= next_mic {
+                    next_mic += mic_period;
+                    unsent.extend(mic_resampler.process(&vec![LEVEL; sc.mic_chunk_frames]));
+                    // the encoder sends whole 20 ms frames
+                    while unsent.len() >= 960 {
+                        let frame: Vec<f32> = unsent.drain(..960).collect();
+                        let arrival = (now + NETWORK_BASE_US + rng.below(sc.network_jitter_us)).max(last_arrival);
+                        last_arrival = arrival;
+                        in_flight.push_back((arrival, frame));
+                    }
+                }
+                while in_flight.front().is_some_and(|(at, _)| *at <= now) {
+                    let (_, frame) = in_flight.pop_front().unwrap();
+                    let mut buf = peer.lock().unwrap();
+                    if buf.len() + frame.len() > PEER_BUFFER_MAX {
+                        report.trimmed_samples += buf.len() + frame.len() - PEER_BUFFER_TARGET;
+                    }
+                    buf.push(frame);
+                }
+                if now >= next_tick {
+                    next_tick += MIX_CHUNK_MS * 1000 + rng.below(sc.tick_lateness_us);
+                    mix_tick(&voices, &queued, &max_request, |chunk| tx.send(chunk).unwrap());
+                }
+                if now >= next_callback {
+                    let frames = if first_callback { sc.first_request_frames } else { sc.request_frames };
+                    first_callback = false;
+                    next_callback += card_period;
+                    let mut out = vec![0.0; frames * sc.card_channels as usize];
+                    feed.fill(&mut out, &rx);
+                    if now >= WARMUP_US {
+                        let ch = sc.card_channels as usize;
+                        report.played_frames += frames;
+                        report.gap_frames += out.chunks(ch).filter(|f| f[0] < LEVEL - 0.01).count();
+                        let buffered_wire = peer.lock().unwrap().len()
+                            + queued.load(Ordering::Relaxed)
+                            + feed.pending.len() / ch * WIRE_SAMPLE_RATE as usize / sc.card_rate as usize;
+                        let latency_ms = buffered_wire as f64 / 48.0;
+                        report.max_latency_ms = report.max_latency_ms.max(latency_ms);
+                    }
+                }
+                now += STEP_US;
+            }
+            report
+        }
+
+        fn assert_clean(name: &str, sc: Scenario) {
+            let report = run(&sc, 10);
+            eprintln!("{name}: {report:?}");
+            assert!(report.played_frames > 0);
+            assert_eq!(report.gap_frames, 0, "{name}: audible gaps/fades in steady state: {report:?}");
+            assert_eq!(report.trimmed_samples, 0, "{name}: jitter buffer overflowed and dropped audio: {report:?}");
+            assert!(report.max_latency_ms < 200.0, "{name}: playout latency too high: {report:?}");
+        }
+
+        #[test]
+        fn pipewire_44k_card_with_large_prefill() {
+            // measured on a PipeWire/ALSA laptop: first callback 4410 frames,
+            // then 1411 every 32 ms; mic delivers 1882 frames every 42 ms
+            assert_clean("pipewire 44.1k", Scenario {
+                card_rate: 44_100, card_channels: 2, first_request_frames: 4410, request_frames: 1411,
+                mic_rate: 44_100, mic_chunk_frames: 1882, network_jitter_us: 15_000, tick_lateness_us: 3_000,
+            });
+        }
+
+        #[test]
+        fn low_latency_48k_card() {
+            assert_clean("low latency 48k", Scenario {
+                card_rate: 48_000, card_channels: 2, first_request_frames: 480, request_frames: 480,
+                mic_rate: 48_000, mic_chunk_frames: 480, network_jitter_us: 10_000, tick_lateness_us: 2_000,
+            });
+        }
+
+        #[test]
+        fn large_buffer_card_and_bursty_mic() {
+            assert_clean("large buffers", Scenario {
+                card_rate: 48_000, card_channels: 2, first_request_frames: 4096, request_frames: 2048,
+                mic_rate: 48_000, mic_chunk_frames: 2048, network_jitter_us: 20_000, tick_lateness_us: 4_000,
+            });
+        }
+
+        #[test]
+        fn mismatched_card_and_mic_rates() {
+            assert_clean("44.1k card / 48k mic", Scenario {
+                card_rate: 44_100, card_channels: 1, first_request_frames: 1024, request_frames: 512,
+                mic_rate: 48_000, mic_chunk_frames: 960, network_jitter_us: 15_000, tick_lateness_us: 3_000,
+            });
+        }
     }
 }

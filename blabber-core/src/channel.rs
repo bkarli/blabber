@@ -28,7 +28,13 @@ pub const PEER_BUFFER_MAX: usize = 48_000 * 200 / 1000;
 
 /// A peer starts and restarts playing only once this
 /// much audio is buffered, so normal network jitter doesn't cause gaps.
-const PEER_BUFFER_PRIME: usize = 48_000 * 40 / 1000;
+pub(crate) const PEER_BUFFER_PRIME: usize = 48_000 * 40 / 1000;
+/// Each time a peer runs dry its prime grows by this, up to PEER_PRIME_MAX:
+/// senders whose mic delivers large bursts, or bad networks, get a deeper
+/// buffer, everyone else keeps the low latency.
+const PEER_PRIME_STEP: usize = 48_000 * 20 / 1000;
+/// Stays well below PEER_BUFFER_MAX, so a full prime plus a burst never trims.
+const PEER_PRIME_MAX: usize = 48_000 * 100 / 1000;
 /// Fade length for starting/stopping a peer's playback without a click.
 const PEER_FADE_SAMPLES: usize = 48_000 * 5 / 1000;
 
@@ -52,22 +58,33 @@ fn push_samples(buf: &mut VecDeque<f32>, samples: Vec<f32>) {
 /// One peer's decoded audio waiting to be played, plus its playout state.
 /// Plays only once primed, fades out when it runs
 /// dry, then waits to be primed again and fades back in.
-#[derive(Default)]
-struct PeerBuffer {
+pub(crate) struct PeerBuffer {
     samples: VecDeque<f32>,
     playing: bool,
     fade_in_left: usize,
+    /// current adaptive prime, see PEER_PRIME_STEP
+    prime: usize,
+}
+
+impl Default for PeerBuffer {
+    fn default() -> Self {
+        Self { samples: VecDeque::new(), playing: false, fade_in_left: 0, prime: PEER_BUFFER_PRIME }
+    }
 }
 
 impl PeerBuffer {
-    fn push(&mut self, samples: Vec<f32>) {
+    pub(crate) fn push(&mut self, samples: Vec<f32>) {
         push_samples(&mut self.samples, samples);
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.samples.len()
+    }
+
     /// Adds up to out.len() samples of this peer onto out.
-    fn mix_into(&mut self, out: &mut [f32]) {
+    pub(crate) fn mix_into(&mut self, out: &mut [f32]) {
         if !self.playing {
-            if self.samples.len() < PEER_BUFFER_PRIME {
+            if self.samples.len() < self.prime {
                 return;
             }
             self.playing = true;
@@ -91,6 +108,7 @@ impl PeerBuffer {
         }
         if runs_dry {
             self.playing = false;
+            self.prime = (self.prime + PEER_PRIME_STEP).min(PEER_PRIME_MAX);
         }
     }
 }
@@ -332,7 +350,7 @@ impl MeshVoiceChannel {
 
     /// returns the amount of audio samples that havent been processed in the jitter buffer.
     pub fn buffered_sample_count(&self, peer_id: &str) -> Option<usize> {
-        self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.samples.len())
+        self.peer_buffers.lock().unwrap().get(peer_id).map(|b| b.len())
     }
 
     /// returns the amount of currently registered connections
@@ -607,6 +625,23 @@ mod tests {
         let mut out = vec![0.0; 480];
         buf.mix_into(&mut out);
         assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn peer_buffer_deepens_prime_each_time_it_runs_dry() {
+        let mut buf = PeerBuffer::default();
+        let mut primes = Vec::new();
+        for _ in 0..10 {
+            primes.push(buf.prime);
+            buf.push(vec![1.0; buf.prime]);
+            let mut out = vec![0.0; buf.prime];
+            buf.mix_into(&mut out);
+            assert!(!buf.playing);
+        }
+        assert_eq!(primes[0], PEER_BUFFER_PRIME);
+        assert_eq!(primes[1], PEER_BUFFER_PRIME + PEER_PRIME_STEP);
+        assert_eq!(*primes.last().unwrap(), PEER_PRIME_MAX);
+        assert!(PEER_PRIME_MAX + 3 * 960 < PEER_BUFFER_MAX, "a full prime plus a burst must not trim");
     }
 
     #[test]
