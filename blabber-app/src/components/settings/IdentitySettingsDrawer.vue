@@ -127,6 +127,16 @@ async function handleDelete() {
     deleting.value = false;
   }
 }
+
+async function handleLogout(){
+  if (!auth.displayName) return;
+  try {
+    await api.logout();
+    window.location.reload();
+  } catch (e) {
+    deleteError.value = String(e);
+  }
+}
 </script>
 
 <template>
@@ -229,7 +239,7 @@ async function handleDelete() {
           </div>
           <div class="flex justify-between text-sm">
             <span class="text-muted-foreground">Endpoint ID</span>
-            <span class="max-w-[220px] truncate font-mono text-xs">
+            <span class="max-w-55 truncate font-mono text-xs">
               {{ loadingEndpointId ? 'Loading...' : (endpointId ?? 'Unavailable') }}
             </span>
           </div>
@@ -239,6 +249,9 @@ async function handleDelete() {
 
         <div class="space-y-2">
           <h3 class="text-sm font-semibold text-destructive">Danger Zone</h3>
+          <Button variant="destructive" class="w-full" @click="handleLogout()">
+            Log Out
+          </Button>
           <Button variant="destructive" class="w-full" @click="confirmDeleteOpen = true">
             <Trash2 class="mr-2 h-4 w-4" />
             Delete Identity
