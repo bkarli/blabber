@@ -24,5 +24,7 @@ pub mod voice_codec;
 pub use events::AppEvent;
 pub mod call_rooms;
 pub mod room;
+pub mod storage;
+
 pub use identity::Identity;
 pub use node::Node;

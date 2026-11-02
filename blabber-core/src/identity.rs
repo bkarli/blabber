@@ -1,16 +1,15 @@
 use rand::prelude::*;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
 use argon2::Argon2;
 use std::path::Path;
-use std::fs::File;
-use std::io::{Read, Write};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::secret::LockedSecret;
+use crate::storage::atomic_write;
 
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
@@ -21,19 +20,6 @@ const KEY_LEN: usize = 32;
 pub struct Identity {
     pub display_name: String,
     pub secret: LockedSecret,
-}
-
-/// turns user supplied display name into file system safe path
-pub fn sanitize_path_component(name: &str) -> Option<String> {
-    let sanitized: String = name
-        .chars()
-        .filter(|character| character.is_alphanumeric() || *character == '-' || *character == '_')
-        .collect();
-    if sanitized.is_empty() {
-        None
-    } else {
-        Some(sanitized)
-    }
 }
 
 impl Identity {
@@ -55,8 +41,14 @@ impl Identity {
 
     /// On-disk layout: `salt | nonce | encrypt(name_len:u8 | name | secret:32)`.
     /// The `u8` length prefix caps display names at 255 bytes.
-    /// used to encrypt and persist the identity on disk
+    /// used to encrypt and persist the identity on disk. The parent directory
+    /// must already exist.
     pub fn store(&self, password: &str, path: impl AsRef<Path>) -> Result<()> {
+        atomic_write(path.as_ref(), &self.to_encrypted_bytes(password)?)
+            .context("failed to write identity file")
+    }
+
+    fn to_encrypted_bytes(&self, password: &str) -> Result<Vec<u8>> {
         let salt: [u8; SALT_LEN] = rand::rng().random();
         let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
 
@@ -74,20 +66,23 @@ impl Identity {
             .encrypt(nonce, plaintext.as_slice())
             .map_err(|e| anyhow!("encryption failed: {e}"))?;
 
-        let mut file = File::create(path).context("failed to create file")?;
-        file.write_all(&salt)?;
-        file.write_all(&nonce_bytes)?;
-        file.write_all(&ciphertext)?;
-        Ok(())
+        let mut bytes = Vec::with_capacity(SALT_LEN + NONCE_LEN + ciphertext.len());
+        bytes.extend_from_slice(&salt);
+        bytes.extend_from_slice(&nonce_bytes);
+        bytes.extend_from_slice(&ciphertext);
+        Ok(bytes)
     }
 
     /// used to load the identity from disk
     pub fn load_from_disk(path: impl AsRef<Path>, password: &str) -> Result<Self> {
-        let mut file = File::open(path).context("failed to open file")?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
+        let bytes = std::fs::read(path).context("failed to open file")?;
+        Self::from_encrypted_bytes(&bytes, password)
+    }
 
-        let (salt, rest) = buffer.split_at(SALT_LEN);
+    fn from_encrypted_bytes(bytes: &[u8], password: &str) -> Result<Self> {
+        ensure!(bytes.len() >= SALT_LEN + NONCE_LEN, "identity file is truncated");
+
+        let (salt, rest) = bytes.split_at(SALT_LEN);
         let (nonce_bytes, ciphertext) = rest.split_at(NONCE_LEN);
 
         let key = Self::derive_key(password.as_bytes(), salt)?;
@@ -104,10 +99,9 @@ impl Identity {
             .context("display name is not valid UTF-8")?;
 
         let offset = 1 + name_len;
-        let mut secret_bytes = [0u8; 32];
+        let mut secret_bytes = Zeroizing::new([0u8; 32]);
         secret_bytes.copy_from_slice(&plaintext[offset..offset + 32]);
         let secret = LockedSecret::from_bytes(&secret_bytes);
-        secret_bytes.zeroize();
 
         Ok(Self { display_name, secret })
     }
@@ -131,6 +125,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create tempdir");
         let path = dir.path().join("test_identity.bin");
         Identity::new("Alice").store("SecurePassword", &path).unwrap();
+    }
+
+    #[test]
+    fn truncated_identity_file_returns_an_error_instead_of_panicking() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let path = dir.path().join("test_identity.bin");
+        std::fs::write(&path, [0u8; SALT_LEN - 1]).unwrap();
+        assert!(Identity::load_from_disk(&path, "SecurePassword").is_err());
     }
 
     #[test]

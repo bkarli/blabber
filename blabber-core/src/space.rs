@@ -169,7 +169,7 @@ impl Space {
         };
 
         let key = format!("member/{author}");
-        let plaintext = postcard::to_allocvec(&member)?;
+        let plaintext = Zeroizing::new(postcard::to_allocvec(&member)?);
         let value = crypto::encrypt(space_key, &plaintext, self.id.as_bytes())?;
 
         self.members.set_bytes(author, key.into_bytes(), value).await?;
@@ -326,20 +326,14 @@ impl Space {
         RelayInvite::from_space(self).await
     }
 
-    /// Persists this space's invite under
-    /// `root_path/<space-id>/meta/invite.txt`, so `Node::load_spaces` can
-    /// reload it later. Picks a real `Invite` or a keyless `RelayInvite`
-    /// depending on whether this space has a key.
-    pub async fn create_directory(&self, root_path: &std::path::Path, storage_key: &[u8; 32]) -> Result<()> {
-        let meta_dir = root_path.join(self.id.to_string()).join("meta");
-        tokio::fs::create_dir_all(&meta_dir).await?;
-        let encrypted = if self.key.is_some() {
-            self.create_invite().await?.serialize_invite_encrypted(storage_key)?
+    /// This space's invite, encrypted for local storage. Picks a real `Invite`
+    /// or a keyless `RelayInvite` depending on whether this space has a key.
+    pub async fn encrypted_invite(&self, storage_key: &[u8; 32]) -> Result<Vec<u8>> {
+        if self.key.is_some() {
+            self.create_invite().await?.serialize_invite_encrypted(storage_key)
         } else {
-            self.create_relay_invite().await?.serialize_invite_encrypted(storage_key)?
-        };
-        tokio::fs::write(meta_dir.join("invite.txt"), encrypted).await?;
-        Ok(())
+            self.create_relay_invite().await?.serialize_invite_encrypted(storage_key)
+        }
     }
 
     pub async fn list_members(&self, blobs: &FsStore) -> Result<Vec<Member>> {
@@ -437,7 +431,7 @@ impl Space {
         };
 
         let key = format!("room/{}", room.id);
-        let plaintext = postcard::to_allocvec(&record)?;
+        let plaintext = Zeroizing::new(postcard::to_allocvec(&record)?);
         let value = crypto::encrypt(&space_key, &plaintext, self.id.as_bytes())?;
         self.info.set_bytes(author, key.into_bytes(), value).await?;
 
@@ -484,7 +478,7 @@ impl Space {
         };
 
         let key = format!("callroom/{}", room.id);
-        let plaintext = postcard::to_allocvec(&record)?;
+        let plaintext = Zeroizing::new(postcard::to_allocvec(&record)?);
         let value = crypto::encrypt(&space_key, &plaintext, self.id.as_bytes())?;
         self.info.set_bytes(author, key.into_bytes(), value).await?;
 

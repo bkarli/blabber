@@ -116,7 +116,7 @@ impl Room {
 
         // opaque doc key: timestamp/author only live inside the encrypted payload
         let doc_key = format!("msg/{}", Uuid::new_v4());
-        let plaintext = postcard::to_allocvec(&message)?;
+        let plaintext = Zeroizing::new(postcard::to_allocvec(&message)?);
         let value = crypto::encrypt(key, &plaintext, self.id.as_bytes())?;
         self.messages.set_bytes(author, doc_key.into_bytes(), value).await?;
 

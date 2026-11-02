@@ -1,12 +1,11 @@
 use blabber_core::identity::Identity;
 use blabber_core::node::Node;
-use blabber_core::space::Space;
+use blabber_core::storage::NodeStorage;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use zeroize::Zeroizing;
 use crate::result_ext::ResultExt;
-use crate::space::spaces_dir;
 
 use crate::AppState;
 
@@ -24,7 +23,7 @@ fn identities_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn identity_path(app: &AppHandle, display_name: &str) -> Result<PathBuf, String> {
     let directory = identities_dir(app)?;
-    let safe_name = blabber_core::identity::sanitize_path_component(display_name)
+    let safe_name = blabber_core::storage::sanitize_path_component(display_name)
         .ok_or("Invalid display name")?;
     Ok(directory.join(format!("{safe_name}.bin")))
 }
@@ -39,12 +38,18 @@ pub async fn delete_identity(
     let node = state.node.lock().await.take();
     end_session(&state, node).await?;
 
-    let path = identity_path(&app, display_name.trim())?;
+    let display_name = display_name.trim();
+    let path = identity_path(&app, display_name)?;
     if path.exists() {
         std::fs::remove_file(&path).stringify_err()?;
     }
 
-    Ok(())
+    let data_dir = app.path().app_data_dir().stringify_err()?;
+    NodeStorage::new(data_dir, display_name)
+        .stringify_err()?
+        .remove_all()
+        .await
+        .stringify_err()
 }
 
 /// Tears down a session: hangs up the active call, stops the event bridge so
@@ -78,15 +83,10 @@ async fn start_node_for_identity(
         eprintln!("failed to cleanly end the previous session: {e}");
     }
 
-    let blobs_path = app
-        .path()
-        .app_data_dir()
-        .stringify_err()?
-        .join("blobs");
-    fs::create_dir_all(&blobs_path).stringify_err()?;
+    let data_dir = app.path().app_data_dir().stringify_err()?;
 
     let mut node = Node::new(identity);
-    node.run(blobs_path).await.stringify_err()?;
+    node.run(data_dir).await.stringify_err()?;
 
     // apply any previously saved audio device preference. a device that no
     // longer exists shouldn't block login, fall back to the OS default
@@ -100,7 +100,7 @@ async fn start_node_for_identity(
     }
 
     let bridge = crate::event_bridge::spawn_event_bridge(app.clone(), &node);
-    let loaded_spaces = match load_spaces(app, &mut node).await {
+    let loaded_spaces = match node.load_spaces().await.stringify_err() {
         Ok(spaces) => spaces,
         Err(e) => {
             // don't leave a half-started node and its bridge running
@@ -115,12 +115,6 @@ async fn start_node_for_identity(
     *state.event_bridge.lock().unwrap() = Some(bridge);
     *node_slot = Some(node);
     Ok(())
-}
-
-async fn load_spaces(app: &AppHandle, node: &mut Node) -> Result<Vec<Space>, String> {
-    let spaces_root = spaces_dir(app)?;
-    fs::create_dir_all(&spaces_root).stringify_err()?;
-    node.load_spaces(spaces_root).await.stringify_err()
 }
 
 #[tauri::command]

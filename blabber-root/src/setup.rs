@@ -1,12 +1,12 @@
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use blabber_core::identity::Identity;
 use blabber_core::invite::RelayInvite;
+use blabber_core::storage::atomic_write;
 use zeroize::Zeroizing;
 
 use crate::config::render_config;
@@ -168,10 +168,7 @@ fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating directory {}", parent.display()))?;
     }
-    fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("setting permissions on {}", path.display()))?;
-    Ok(())
+    atomic_write(path, contents.as_bytes())
 }
 
 fn read_password_twice() -> Result<Zeroizing<String>> {

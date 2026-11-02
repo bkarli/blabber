@@ -19,7 +19,7 @@ use common::{make_node, message_text, wait_until, wait_until_async};
 #[tokio::test]
 async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
     let (node_a, _dir_a) = make_node("CycleAlice").await?;
-    let (node_b, dir_b) = make_node("CycleBob").await?;
+    let (node_b, _dir_b) = make_node("CycleBob").await?;
 
     let blobs_a = node_a.blobs.clone().unwrap();
     let blobs_b = node_b.blobs.clone().unwrap();
@@ -117,8 +117,7 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
     );
 
     // --- leave (the space) ---
-    let spaces_root = dir_b.path().join("spaces");
-    node_b.leave_space(space_b.id(), spaces_root).await?;
+    node_b.leave_space(space_b.id()).await?;
     assert!(
         wait_until_async(3000, 100, || async {
             !space_a
@@ -207,7 +206,7 @@ async fn full_cycle_join_chat_call_leave_rejoin_chat() -> Result<()> {
 #[tokio::test]
 async fn three_peers_interleaved_join_chat_leave_rejoin() -> Result<()> {
     let (node_a, _dir_a) = make_node("TriAlice").await?;
-    let (node_b, dir_b) = make_node("TriBob").await?;
+    let (node_b, _dir_b) = make_node("TriBob").await?;
     let (node_c, _dir_c) = make_node("TriCarol").await?;
 
     let blobs_a = node_a.blobs.clone().unwrap();
@@ -274,8 +273,7 @@ async fn three_peers_interleaved_join_chat_leave_rejoin() -> Result<()> {
     );
 
     // B leaves
-    let spaces_root = dir_b.path().join("spaces");
-    node_b.leave_space(space_b.id(), spaces_root).await?;
+    node_b.leave_space(space_b.id()).await?;
 
     assert!(
         wait_until_async(3000, 100, || async {
@@ -660,7 +658,7 @@ async fn full_component_state_audit_after_complex_flow() -> Result<()> {
 #[tokio::test]
 async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<()> {
     let (node_a, _dir_a) = make_node("MultiAlice").await?;
-    let (node_b, dir_b) = make_node("MultiBob").await?;
+    let (node_b, _dir_b) = make_node("MultiBob").await?;
 
     let space_a = node_a.create_space("Multi Space").await?;
     let author_a = space_a.author().unwrap();
@@ -673,7 +671,7 @@ async fn multiple_rooms_and_call_rooms_all_discovered_after_rejoin() -> Result<(
     space_b.sync_rooms(&node_b, &blobs_b).await?;
     space_b.sync_call_rooms(&node_b, &blobs_b).await?;
 
-    node_b.leave_space(space_b.id(), dir_b.path().join("spaces")).await?;
+    node_b.leave_space(space_b.id()).await?;
 
     // B rejoins and does the same one-shot bulk resync the Tauri join_space
     // command always does - this is what actually protects against a batch

@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use iroh::{protocol::Router, Endpoint, SecretKey, endpoint::presets};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
@@ -10,18 +10,21 @@ use iroh_docs::engine::LiveEvent;
 use iroh_docs::{protocol::Docs, AuthorId, ALPN as DOCS_ALPN};
 use iroh_gossip::{Gossip, ALPN as GOSSIP_ALPN};
 use n0_future::StreamExt;
-use tokio::fs;
 use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::events::AppEvent;
 use crate::invite::{Invite, RelayInvite};
 use crate::space::Space;
+use crate::storage::NodeStorage;
 use crate::Identity;
 
 pub struct Node {
     identity: Identity,
+    /// this identity's on-disk layout, set by `open_storage`
+    storage: Option<NodeStorage>,
     pub endpoint: Option<Endpoint>,
     pub gossip: Option<Gossip>,
     pub router: Option<Router>,
@@ -46,6 +49,7 @@ impl Node {
         let (events, _) = broadcast::channel(256);
         Self {
             identity,
+            storage: None,
             endpoint: None,
             gossip: None,
             router: None,
@@ -59,18 +63,20 @@ impl Node {
         }
     }
 
-    /// Scopes a shared root path (blob store, spaces directory, ...) under
-    /// this identity's own subdirectory, so multiple identities on the same
-    /// machine never collide.
-    pub fn identity_scoped_path(&self, path: &PathBuf) -> Result<PathBuf> {
-        let identity_dir = crate::identity::sanitize_path_component(&self.identity.display_name)
-            .ok_or_else(|| anyhow!("identity display name has no path-safe characters"))?;
-        Ok(path.join(identity_dir))
+    /// Points this node at its state under `data_dir`. Has to run
+    /// before the blob store and docs engine are created.
+    pub fn open_storage(&mut self, data_dir: impl AsRef<Path>) -> Result<()> {
+        self.storage = Some(NodeStorage::new(data_dir, &self.identity.display_name)?);
+        Ok(())
+    }
+    
+    pub fn storage(&self) -> Result<&NodeStorage> {
+        self.storage.as_ref().context("storage not opened yet")
     }
 
     /// produces key used to encrypt persisted invite.txt files
-    pub fn local_storage_key(&self) -> [u8; 32] {
-        blake3::derive_key("blabber-app invite local storage v1", self.identity.secret.as_bytes())
+    pub fn local_storage_key(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(blake3::derive_key("blabber-app invite local storage v1", self.identity.secret.as_bytes()))
     }
 
     /// Helpers for option typed fields, has to account for the possibility to option isnt ready yet.
@@ -104,8 +110,8 @@ impl Node {
     }
 
     /// initializes the blob sotre (is on disk).
-    pub async fn create_blobs(&mut self, path: &PathBuf) -> Result<()> {
-        let blobs = FsStore::load(self.identity_scoped_path(path)?).await?;
+    pub async fn create_blobs(&mut self) -> Result<()> {
+        let blobs = FsStore::load(self.storage()?.blobs_dir()).await?;
         self.blobs = Some(blobs);
         Ok(())
     }
@@ -118,12 +124,12 @@ impl Node {
         Ok(())
     }
 
-    pub async fn create_docs_engine(&mut self, path: &PathBuf) -> Result<()> {
+    pub async fn create_docs_engine(&mut self) -> Result<()> {
         let endpoint = self.require_endpoint()?.clone();
         let gossip = self.require_gossip()?.clone();
         let blobs = self.require_blobs()?.clone();
 
-        let docs = Docs::persistent(self.identity_scoped_path(path)?)
+        let docs = Docs::persistent(self.storage()?.blobs_dir().to_path_buf())
             .spawn(endpoint, blobs.into(), gossip)
             .await?;
 
@@ -161,10 +167,11 @@ impl Node {
     /// engine so it can sign entries.
     pub async fn space_author(&self, space_id: Uuid) -> Result<AuthorId> {
         let docs = self.require_docs()?;
-        let seed = blake3::derive_key(
-            "blabber space author v1",
-            &[self.identity.secret.as_bytes().as_slice(), space_id.as_bytes()].concat(),
+        // holds a full copy of the identity secret until the hash is done.
+        let key_material = Zeroizing::new(
+            [self.identity.secret.as_bytes().as_slice(), space_id.as_bytes()].concat(),
         );
+        let seed = Zeroizing::new(blake3::derive_key("blabber space author v1", &key_material));
         let author = iroh_docs::Author::from_bytes(&seed);
         let author_id = author.id();
         docs.author_import(author).await?;
@@ -228,7 +235,7 @@ impl Node {
     /// list, stop syncing it, drop the local
     /// document replicas, and delete the invite/meta directory so
     /// `load_spaces` won't load it on next launch.
-    pub async fn leave_space(&self, space_id: Uuid, spaces_root: PathBuf) -> Result<()> {
+    pub async fn leave_space(&self, space_id: Uuid) -> Result<()> {
         let space = {
             let mut spaces = self.spaces.lock().await;
             let index = spaces
@@ -243,55 +250,33 @@ impl Node {
             .context("this space has no writable author (blind relay?)")?;
         space.leave(author).await?;
 
-        let user_root = self.identity_scoped_path(&spaces_root)?;
-        let space_dir = user_root.join(space_id.to_string());
-        if space_dir.is_dir() {
-            fs::remove_dir_all(&space_dir).await?;
-        }
-        Ok(())
+        self.storage()?.remove_space(space_id).await
     }
-
-    /// Reloads every space this identity previously joined, from
-    /// `root_path/<identity>/<space-uuid>/meta/invite.txt`.
-    pub async fn load_spaces(&mut self, root_path: PathBuf) -> Result<Vec<Space>> {
-        // load spaces-root and create all necessary option fields.
-        let root_path = self.identity_scoped_path(&root_path)?;
-        tokio::fs::create_dir_all(&root_path).await?;
+    
+    pub async fn persist_space(&self, space: &Space) -> Result<()> {
+        let encrypted = space.encrypted_invite(&self.local_storage_key()).await?;
+        self.storage()?.save_invite(space.id(), encrypted).await
+    }
+    
+    pub async fn load_spaces(&mut self) -> Result<Vec<Space>> {
+        // load all necessary option fields.
         let docs = self.require_docs()?;
         let endpoint_id = self.require_endpoint()?.id().to_string();
         let display_name = self.identity.display_name.clone();
         let blobs = self.require_blobs()?;
 
-        // asynchronous directory scan checking for validity
         let mut spaces = Vec::new();
-        let mut entries = fs::read_dir(root_path).await?;
 
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-
-            if !path.is_dir() {
-                continue;
-            }
-
-            let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if Uuid::parse_str(dir_name).is_err() {
-                continue;
-            }
-            let invite_path = path.join("meta").join("invite.txt");
-            if !invite_path.is_file() {
-                continue;
-            }
-
-            // read encrypted invite file and decode it as a member invite.
-            let encrypted = fs::read(&invite_path).await?;
+        // decode each stored invite as a member invite first.
+        for stored in self.storage()?.load_invites().await? {
+            let space_id = stored.space_id;
+            let encrypted = stored.encrypted;
             let storage_key = self.local_storage_key();
             let space = if let Ok(invite) = Invite::deserialize_invite_encrypted(&encrypted, &storage_key) {
                 let author = match self.space_author(invite.space_id).await {
                     Ok(author) => author,
                     Err(e) => {
-                        eprintln!("skipping space {dir_name}: failed to derive author: {e:#}");
+                        eprintln!("skipping space {space_id}: failed to derive author: {e:#}");
                         continue;
                     }
                 };
@@ -308,14 +293,14 @@ impl Node {
                         let author = match self.space_author(invite.space_id).await {
                             Ok(author) => author,
                             Err(e) => {
-                                eprintln!("skipping relay space {dir_name}: failed to derive author: {e:#}");
+                                eprintln!("skipping relay space {space_id}: failed to derive author: {e:#}");
                                 continue;
                             }
                         };
                         Space::from_relay_invite(docs, invite, author, endpoint_id.clone(), display_name.clone()).await?
                     }
                     Err(e) => {
-                        eprintln!("skipping unreadable space {dir_name}: {e}");
+                        eprintln!("skipping unreadable space {space_id}: {e}");
                         continue;
                     }
                 }
@@ -326,24 +311,24 @@ impl Node {
                 .sync_rooms(self, blobs)
                 .await
                 .map_err(|error| {
-                    anyhow::anyhow!("failed to sync rooms for space {dir_name}: {error}")
+                    anyhow::anyhow!("failed to sync rooms for space {space_id}: {error}")
                 })?;
 
             space
                 .sync_call_rooms(self, blobs)
                 .await
                 .map_err(|error| {
-                    anyhow::anyhow!("failed to sync call rooms for space {dir_name}: {error}")
+                    anyhow::anyhow!("failed to sync call rooms for space {space_id}: {error}")
                 })?;
 
             // load the members of a space.
             let label = format!("{}/members", space.name());
             space.watch_members(self, blobs.clone(), label).await
-                .map_err(|error| anyhow::anyhow!("failed to watch members for space {dir_name}: {error}"))?;
+                .map_err(|error| anyhow::anyhow!("failed to watch members for space {space_id}: {error}"))?;
 
             let label = format!("{}/info", space.name());
             space.watch_info(self, blobs.clone(), label).await
-                .map_err(|error| anyhow::anyhow!("failed to watch info for space {dir_name}: {error}"))?;
+                .map_err(|error| anyhow::anyhow!("failed to watch info for space {space_id}: {error}"))?;
 
             spaces.push(space);
         }
@@ -375,7 +360,8 @@ impl Node {
     }
 
     /// Boots every subsystem in order: endpoint, gossip, blob store, docs engine, router.
-    pub async fn run(&mut self, blobs_path: PathBuf) -> Result<()> {
+    pub async fn run(&mut self, data_dir: impl AsRef<Path>) -> Result<()> {
+        self.open_storage(data_dir)?;
         self.create_endpoint().await?;
         // tests need a connected endpoint before proceeding; production doesn't wait
         #[cfg(test)]
@@ -383,8 +369,8 @@ impl Node {
             self.wait_online().await?;
         }
         self.create_gossip().await?;
-        self.create_blobs(&blobs_path).await?;
-        self.create_docs_engine(&blobs_path).await?;
+        self.create_blobs().await?;
+        self.create_docs_engine().await?;
         self.create_router().await?;
         Ok(())
     }
@@ -654,7 +640,7 @@ mod tests {
         let space = node.create_space("Test Space").await?;
         let space_id = space.id();
 
-        node.leave_space(space_id, dir.path().join("spaces")).await?;
+        node.leave_space(space_id).await?;
 
         let spaces = node.spaces.lock().await;
         assert!(spaces.iter().all(|s| s.id() != space_id));

@@ -53,23 +53,21 @@ async fn main() -> Result<()> {
     };
 
     let mut node = Node::new(identity);
-    node.run(config.data_dir.join("blobs"))
+    node.run(&config.data_dir)
         .await
         .context("failed to start node (endpoint/gossip/blobs/docs/router)")?;
 
-    let spaces_root = config.data_dir.join("spaces");
-    tokio::fs::create_dir_all(&spaces_root).await?;
     let loaded = node
-        .load_spaces(spaces_root.clone())
+        .load_spaces()
         .await
         .context("failed to load previously known spaces")?;
     println!("loaded {} previously known space(s)", loaded.len());
 
-    join_new_invites(&node, &spaces_root, &config.invites).await;
+    join_new_invites(&node, &config.invites).await;
 
     log_events(&node);
 
-    run_until_shutdown(&node, &config_path, &spaces_root).await?;
+    run_until_shutdown(&node, &config_path).await?;
 
     node.shutdown().await.context("failed to shut down cleanly")?;
     println!("shutdown complete");
@@ -91,20 +89,22 @@ fn parse_config_flag(mut args: impl Iterator<Item = String>) -> PathBuf {
 }
 
 fn read_password_file(path: &Path) -> Result<Zeroizing<String>> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading password file {}", path.display()))?;
+    let raw = Zeroizing::new(
+        std::fs::read_to_string(path)
+            .with_context(|| format!("reading password file {}", path.display()))?,
+    );
     Ok(Zeroizing::new(raw.trim_end_matches(['\n', '\r']).to_string()))
 }
 
-async fn join_new_invites(node: &Node, spaces_root: &Path, invites: &[String]) {
+async fn join_new_invites(node: &Node, invites: &[String]) {
     for ticket in invites {
-        if let Err(e) = try_join_invite(node, spaces_root, ticket).await {
+        if let Err(e) = try_join_invite(node, ticket).await {
             eprintln!("failed to join invite (skipping): {e:#}");
         }
     }
 }
 
-async fn try_join_invite(node: &Node, spaces_root: &Path, ticket: &str) -> Result<()> {
+async fn try_join_invite(node: &Node, ticket: &str) -> Result<()> {
     let invite = RelayInvite::deserialize_invite(ticket.trim().to_string())?;
 
     {
@@ -116,10 +116,7 @@ async fn try_join_invite(node: &Node, spaces_root: &Path, ticket: &str) -> Resul
 
     let space = node.join_space_relay(invite).await?;
 
-    let user_root = node.identity_scoped_path(&spaces_root.to_path_buf())?;
-    space
-        .create_directory(&user_root, &node.local_storage_key())
-        .await?;
+    node.persist_space(&space).await?;
 
     let blobs = node.blobs.clone().context("blobs not created yet")?;
     space.sync_rooms(node, &blobs).await?;
@@ -138,7 +135,7 @@ fn log_events(node: &Node) {
     });
 }
 
-async fn run_until_shutdown(node: &Node, config_path: &Path, spaces_root: &Path) -> Result<()> {
+async fn run_until_shutdown(node: &Node, config_path: &Path) -> Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sighup = signal(SignalKind::hangup())?;
 
@@ -156,7 +153,7 @@ async fn run_until_shutdown(node: &Node, config_path: &Path, spaces_root: &Path)
                 println!("received SIGHUP, reloading config");
                 match Config::load_or_init(config_path) {
                     Ok(LoadOutcome::Loaded(config)) => {
-                        join_new_invites(node, spaces_root, &config.invites).await;
+                        join_new_invites(node, &config.invites).await;
                     }
                     Ok(LoadOutcome::TemplateWritten(_)) => {
                         eprintln!("config file disappeared; wrote a fresh template, but keeping running with existing spaces");

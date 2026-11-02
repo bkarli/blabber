@@ -10,7 +10,7 @@ use common::make_node;
 #[tokio::test]
 async fn rejoin_after_leaving_resyncs_rooms_and_membership() -> Result<()> {
     let (node_a, _dir_a) = make_node("RejoinAlice").await?;
-    let (node_b, dir_b) = make_node("RejoinBob").await?;
+    let (node_b, _dir_b) = make_node("RejoinBob").await?;
 
     let space_a = node_a.create_space("Rejoin Test Space").await?;
     let author_a = space_a.author().unwrap();
@@ -49,9 +49,8 @@ async fn rejoin_after_leaving_resyncs_rooms_and_membership() -> Result<()> {
     );
 
     // B leaves
-    let spaces_root = dir_b.path().join("spaces");
     let space_b_id = space_b.id();
-    node_b.leave_space(space_b_id, spaces_root.clone()).await?;
+    node_b.leave_space(space_b_id).await?;
 
     // A should observe B leaving
     let mut members_a_after_leave = vec![];
@@ -111,7 +110,7 @@ async fn rejoin_with_same_invite_string_resyncs_rooms_and_membership() -> Result
     use blabber_core::invite::Invite;
 
     let (node_a, _dir_a) = make_node("SameInviteAlice").await?;
-    let (node_b, dir_b) = make_node("SameInviteBob").await?;
+    let (node_b, _dir_b) = make_node("SameInviteBob").await?;
 
     let space_a = node_a.create_space("Same Invite Test Space").await?;
     let author_a = space_a.author().unwrap();
@@ -133,9 +132,8 @@ async fn rejoin_with_same_invite_string_resyncs_rooms_and_membership() -> Result
     }
     assert!(saw_room_initially, "B should see the existing room on initial join");
 
-    let spaces_root = dir_b.path().join("spaces");
     let space_b_id = space_b.id();
-    node_b.leave_space(space_b_id, spaces_root.clone()).await?;
+    node_b.leave_space(space_b_id).await?;
 
     let blobs_a = node_a.blobs.clone().unwrap();
     let id_b = node_b.endpoint.as_ref().unwrap().id().to_string();

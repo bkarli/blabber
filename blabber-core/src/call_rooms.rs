@@ -65,7 +65,7 @@ impl CallRoom {
         let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         let membership = CallMembership { endpoint_id, active, updated_at };
         let doc_key = format!("member/{author}");
-        let plaintext = postcard::to_allocvec(&membership)?;
+        let plaintext = Zeroizing::new(postcard::to_allocvec(&membership)?);
         let value = crypto::encrypt(key, &plaintext, self.id.as_bytes())?;
         self.call_log.set_bytes(author, doc_key.into_bytes(), value).await?;
         Ok(())

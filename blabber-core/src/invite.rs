@@ -13,7 +13,8 @@ const RELAY_INVITE_MAGIC: u8 = 0x02;
 /// turns value into binary blob with one byte tag prefix.
 /// Used for both types of invites.
 fn tag_and_postcard<T: Serialize>(magic: u8, value: &T) -> Result<Zeroizing<Vec<u8>>> {
-    let plaintext = postcard::to_allocvec(value)?;
+    // carries the space key for a member invite.
+    let plaintext = Zeroizing::new(postcard::to_allocvec(value)?);
     let mut tagged = Zeroizing::new(Vec::with_capacity(1 + plaintext.len()));
     tagged.push(magic);
     tagged.extend_from_slice(&plaintext);
@@ -38,7 +39,8 @@ fn serialize_tagged<T: Serialize>(magic: u8, value: &T) -> Result<String> {
 
 /// turns pasted invites into raw bytes
 fn deserialize_tagged<T: for<'de> Deserialize<'de>>(magic: u8, data: impl Into<String>) -> Result<T> {
-    let data = data.into();
+    // the base32 text is the space key in another encoding.
+    let data = Zeroizing::new(data.into());
     let tagged: Zeroizing<Vec<u8>> = Zeroizing::new(
         BASE32_NOPAD
             .decode(data.as_bytes())
